@@ -9,6 +9,7 @@ import {
   type CreateDatasetInput,
   type DocumentMetaFields,
   type RagflowDataset,
+  type RagflowDownload,
 } from "../adapters/ragflow";
 import type { AppDatabase } from "../db/client";
 import { ulid } from "../db/id";
@@ -300,6 +301,46 @@ export async function listObjectContent(
 ): Promise<ContentRef[]> {
   const object = await getObject(db, ownerSub, objectId);
   return new SqliteContentStore(db).listByOwner(object.type, object.id);
+}
+
+export interface DownloadContentOptions {
+  client?: ContentDownloadGateway;
+  env?: Record<string, string | undefined>;
+}
+
+export interface ContentDownloadGateway {
+  downloadDocument(datasetId: string, documentId: string): Promise<RagflowDownload>;
+}
+
+export interface DownloadedContent {
+  ref: ContentRef;
+  file: RagflowDownload;
+}
+
+/**
+ * 下载对象的内容原文：先按身份校验对象与引用归属，再从 RAGFlow 取文件流。
+ * 引用必须属于该对象，避免拿别的对象 id 读取任意文档。
+ */
+export async function downloadObjectContent(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+  refId: string,
+  options: DownloadContentOptions = {},
+): Promise<DownloadedContent> {
+  const object = await getObject(db, ownerSub, objectId);
+  const store = new SqliteContentStore(db);
+  const ref = await store.findById(refId);
+
+  if (!ref || ref.ownerType !== object.type || ref.ownerId !== object.id) {
+    throw new NotFoundError("内容引用不存在或不属于该对象", { objectId, refId });
+  }
+
+  const client =
+    options.client ?? createRagflowClientFromEnv(options.env ?? process.env);
+  const file = await client.downloadDocument(ref.datasetId, ref.documentId);
+
+  return { ref, file };
 }
 
 export async function uploadObjectContent(

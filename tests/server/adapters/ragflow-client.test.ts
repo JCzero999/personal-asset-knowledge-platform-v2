@@ -240,6 +240,44 @@ describe("RagflowClient.listDocuments / startParsing", () => {
   });
 });
 
+describe("RagflowClient.downloadDocument", () => {
+  it("透传文件流与响应头，不当作 JSON 解析", async () => {
+    const { client, fetchMock } = makeClient(
+      new Response("hello ragflow", {
+        status: 200,
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": "13",
+          "content-disposition": "attachment; filename=note.txt",
+        },
+      }),
+    );
+
+    const file = await client.downloadDocument("ds_1", "doc_1");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/v1/datasets/ds_1/documents/doc_1`);
+    expect(init.method).toBe("GET");
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${API_KEY}`);
+    expect(file).toMatchObject({
+      contentType: "application/octet-stream",
+      contentLength: 13,
+      filename: "note.txt",
+    });
+    expect(await new Response(file.body).text()).toBe("hello ragflow");
+  });
+
+  it("文档不存在时抛 NotFoundError", async () => {
+    const { client } = makeClient(
+      jsonResponse({ code: 100, message: "Document not found" }, 404),
+    );
+
+    await expect(client.downloadDocument("ds_1", "doc_missing")).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+  });
+});
+
 describe("RagflowClient.deleteDocument", () => {
   it("按 { ids } 批量删除", async () => {
     const { client, fetchMock } = makeClient(jsonResponse({ code: 0 }));

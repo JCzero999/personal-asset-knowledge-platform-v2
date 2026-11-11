@@ -89,6 +89,13 @@ export interface RagflowDocumentPage {
   total: number;
 }
 
+export interface RagflowDownload {
+  body: ReadableStream<Uint8Array> | null;
+  contentType: string;
+  contentLength: number | null;
+  filename: string | null;
+}
+
 /** RAGFlow 所有接口的统一响应信封。 */
 interface RagflowEnvelope<T> {
   code: number;
@@ -288,6 +295,60 @@ export class RagflowClient {
     return {
       documents: data.docs.map((raw) => toDocument(raw, datasetId)),
       total: data.total ?? data.docs.length,
+    };
+  }
+
+  /**
+   * 下载文档原始内容：`GET /api/v1/datasets/{dataset_id}/documents/{document_id}`。
+   * 该路径返回的是文件流而不是 JSON 信封，因此不能走 `request()`。
+   */
+  async downloadDocument(
+    datasetId: string,
+    documentId: string,
+  ): Promise<RagflowDownload> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+    if (!documentId) {
+      throw new ValidationError("documentId 不能为空");
+    }
+
+    const path = `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents/${encodeURIComponent(documentId)}`;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (error) {
+      throw new DomainError("INTERNAL", `RAGFlow 请求失败：GET ${path}`, {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!response.ok) {
+      throw await this.errorFromResponse(response, `GET ${path}`);
+    }
+
+    const disposition = response.headers.get("content-disposition");
+    const filenameMatch = disposition ? /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(disposition) : null;
+    const rawFilename = filenameMatch?.[1]?.replace(/"$/, "") ?? null;
+    let filename: string | null = rawFilename;
+    if (rawFilename) {
+      try {
+        filename = decodeURIComponent(rawFilename);
+      } catch {
+        filename = rawFilename;
+      }
+    }
+    const length = Number(response.headers.get("content-length"));
+
+    return {
+      body: response.body,
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+      contentLength: Number.isFinite(length) && length > 0 ? length : null,
+      filename,
     };
   }
 

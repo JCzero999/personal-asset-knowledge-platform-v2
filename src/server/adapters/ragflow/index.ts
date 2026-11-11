@@ -10,4 +10,5 @@ export {
   type RagflowDataset,
   type RagflowDocument,
   type RagflowDocumentPage,
+  type RagflowDownload,
 } from "./client";

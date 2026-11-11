@@ -7,7 +7,9 @@ import { SqliteContentStore } from "../../src/server/repositories/sqlite-content
 import {
   DEFAULT_DATASET_NAME,
   MAX_CONTENT_BYTES,
+  downloadObjectContent,
   uploadObjectContent,
+  type ContentDownloadGateway,
   type ContentGateway,
 } from "../../src/server/services/content-service";
 import { createObject } from "../../src/server/services/object-service";
@@ -595,5 +597,74 @@ describe("dataset 解析（ADR-007 单一 Dataset）", () => {
 
     expect(gateway.createDatasetCalls).toEqual([{ name: "my-content" }]);
     expect(ref.datasetId).toBe("ds_1");
+  });
+});
+
+describe("downloadObjectContent", () => {
+  class FakeDownloadGateway implements ContentDownloadGateway {
+    calls: { datasetId: string; documentId: string }[] = [];
+
+    async downloadDocument(datasetId: string, documentId: string) {
+      this.calls.push({ datasetId, documentId });
+      return {
+        body: null,
+        contentType: "text/plain",
+        contentLength: 3,
+        filename: "note.txt",
+      };
+    }
+  }
+
+  it("按身份与引用归属校验后返回文件流", async () => {
+    const object = await createObject(handle.db, OWNER, {
+      type: "asset",
+      title: "下载",
+      library: "internal",
+    });
+    const ref = await uploadObjectContent(
+      handle.db,
+      OWNER,
+      object.id,
+      formWith(textFile("abc")),
+      { client: new FakeGateway(), env: { RAGFLOW_DATASET_ID: "ds_main" } },
+    );
+    const gateway = new FakeDownloadGateway();
+
+    const result = await downloadObjectContent(handle.db, OWNER, object.id, ref.id, {
+      client: gateway,
+    });
+
+    expect(result.ref.id).toBe(ref.id);
+    expect(result.file).toMatchObject({ contentType: "text/plain", filename: "note.txt" });
+    expect(gateway.calls).toEqual([{ datasetId: "ds_main", documentId: "doc_1" }]);
+  });
+
+  it("他人对象、别的对象的引用都按不存在处理", async () => {
+    const mine = await createObject(handle.db, OWNER, {
+      type: "asset",
+      title: "我的",
+      library: "internal",
+    });
+    const other = await createObject(handle.db, OTHER, {
+      type: "asset",
+      title: "别人的",
+      library: "internal",
+    });
+    const otherRef = await uploadObjectContent(
+      handle.db,
+      OTHER,
+      other.id,
+      formWith(textFile("secret")),
+      { client: new FakeGateway(), env: { RAGFLOW_DATASET_ID: "ds_main" } },
+    );
+    const gateway = new FakeDownloadGateway();
+
+    await expect(
+      downloadObjectContent(handle.db, OWNER, mine.id, otherRef.id, { client: gateway }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      downloadObjectContent(handle.db, OWNER, other.id, otherRef.id, { client: gateway }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(gateway.calls).toHaveLength(0);
   });
 });
