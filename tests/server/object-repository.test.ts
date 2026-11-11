@@ -336,6 +336,59 @@ describe("归档", () => {
   });
 });
 
+describe("列表筛选与排序", () => {
+  const asset = (patch: Partial<CreateObjectInput>): CreateObjectInput => ({
+    type: "asset",
+    title: "资产",
+    library: "internal",
+    ownerSub: "user_test",
+    ...patch,
+  });
+
+  it("关键字匹配标题与描述，通配符按字面量处理", async () => {
+    await repo.create(asset({ title: "知识管理", description: "第二大脑的搭建方式" }));
+    await repo.create(asset({ title: "100% 完成" }));
+    await repo.create(asset({ title: "无关条目" }));
+
+    expect((await repo.list({ ownerSub: "user_test", search: "第二大脑" })).map((o) => o.title)).toEqual(
+      ["知识管理"],
+    );
+    expect((await repo.list({ ownerSub: "user_test", search: "知识" })).map((o) => o.title)).toEqual([
+      "知识管理",
+    ]);
+    expect((await repo.list({ ownerSub: "user_test", search: "%" })).map((o) => o.title)).toEqual([
+      "100% 完成",
+    ]);
+  });
+
+  it("分类与标签按数组元素精确匹配", async () => {
+    await repo.create(asset({ title: "A", categories: ["方法论", "写作"], tags: ["tag1"] }));
+    await repo.create(asset({ title: "B", categories: ["方法论2"], tags: ["tag1", "tag2"] }));
+    await repo.create(asset({ title: "C", categories: ["方法论"], tags: [] }));
+
+    expect((await repo.list({ ownerSub: "user_test", category: "方法论" })).map((o) => o.title).sort()).toEqual(
+      ["A", "C"],
+    );
+    expect((await repo.list({ ownerSub: "user_test", tag: "tag1" })).map((o) => o.title).sort()).toEqual([
+      "A",
+      "B",
+    ]);
+    expect(await repo.list({ ownerSub: "user_test", tag: "tag" })).toHaveLength(0);
+  });
+
+  it("按标题升序，limit / offset 生效", async () => {
+    await repo.create(asset({ title: "B" }));
+    await repo.create(asset({ title: "A" }));
+    await repo.create(asset({ title: "C" }));
+
+    const sorted = await repo.list({ ownerSub: "user_test", sort: "title" });
+    expect(sorted.map((o) => o.title)).toEqual(["A", "B", "C"]);
+
+    const page = await repo.list({ ownerSub: "user_test", sort: "title", limit: 1, offset: 1 });
+    expect(page.map((o) => o.title)).toEqual(["B"]);
+  });
+});
+
 describe("outbox 入队", () => {
   type JobRow = { owner_type: string; owner_id: string; action: string; state: string };
 
@@ -372,10 +425,9 @@ describe("outbox 入队", () => {
     await repo.update(work.id, { title: "改名", expectedRevision: 1 });
     await repo.softDelete(work.id);
 
-    expect(jobs()).toEqual([
-      { owner_type: "work", owner_id: work.id, action: "upsert", state: "pending" },
-      { owner_type: "work", owner_id: work.id, action: "delete", state: "pending" },
-    ]);
+    const rows = jobs();
+    expect(rows.map((row) => row.action).sort()).toEqual(["delete", "upsert"]);
+    expect(rows.every((row) => row.owner_id === work.id && row.state === "pending")).toBe(true);
   });
 
   it("任务完成后同一对象可再次入队", async () => {

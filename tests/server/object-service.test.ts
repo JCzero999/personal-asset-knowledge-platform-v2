@@ -285,4 +285,37 @@ describe("parseListObjectsQuery", () => {
       ValidationError,
     );
   });
+
+  it("解析关键字、分类、标签、状态、排序与分页", () => {
+    const query = parseListObjectsQuery(
+      new URLSearchParams(
+        "q=%20知识%20&category=方法论&tag=tag1&status=finished&sort=title&limit=20&offset=5",
+      ),
+    );
+
+    expect(query).toEqual({
+      search: "知识",
+      category: "方法论",
+      tag: "tag1",
+      status: "finished",
+      sort: "title",
+      limit: 20,
+      offset: 5,
+    });
+  });
+
+  it("越界或非法的筛选值一律报错", () => {
+    expect(() => parseListObjectsQuery(new URLSearchParams("sort=random"))).toThrow(
+      ValidationError,
+    );
+    expect(() => parseListObjectsQuery(new URLSearchParams("status=done"))).toThrow(
+      ValidationError,
+    );
+    expect(() => parseListObjectsQuery(new URLSearchParams("limit=0"))).toThrow(ValidationError);
+    expect(() => parseListObjectsQuery(new URLSearchParams("limit=201"))).toThrow(ValidationError);
+    expect(() => parseListObjectsQuery(new URLSearchParams("offset=-1"))).toThrow(ValidationError);
+    expect(() => parseListObjectsQuery(new URLSearchParams(`q=${"长".repeat(101)}`))).toThrow(
+      ValidationError,
+    );
+  });
 });

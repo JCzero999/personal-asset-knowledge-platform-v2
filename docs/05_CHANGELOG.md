@@ -123,3 +123,9 @@
 - 迁移目录改为运行时解析，并支持 `MIGRATIONS_FOLDER` 覆盖：以 `next start` 从其他工作目录启动时不再依赖「cwd 恰好是仓库根」；目录里缺 `meta/_journal.json` 时直接给出可读错误，而不是让 drizzle 抛出晦涩异常
 - 迁移 `drizzle/0004_library_events_cross_check.sql`：`library_events` 增加 `from_library <> to_library` CHECK，同库迁移记录在数据库层被拒绝（服务层此前已拒绝）
 - 验证：typecheck、lint、8 个测试文件 90 项用例通过（新增迁移目录缺失、同库审计记录两项断言）
+
+## 2026-11-11（列表检索与分页）
+
+- `GET /api/objects` 支持 `q`（标题/描述关键字，`%` 与 `_` 按字面量匹配）、`category`、`tag`（按数组元素精确匹配）、`status`、`sort`（`updated` / `created` / `title`）、`limit`（1~200）、`offset`
+- 非法筛选值一律 400，不做静默忽略；`limit` / `offset` 越界同样拒绝
+- 验证：typecheck、lint、8 个测试文件 95 项用例通过（新增关键字含通配符、分类/标签精确匹配、标题排序与分页断言）

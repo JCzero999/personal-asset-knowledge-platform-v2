@@ -59,6 +59,13 @@ export interface ListObjectsQuery {
   type?: ObjectType;
   library?: Library;
   status?: WorkStatus;
+  /** 标题或描述包含该关键字（大小写不敏感）。 */
+  search?: string;
+  /** 分类或标签精确匹配其中之一。 */
+  category?: string;
+  tag?: string;
+  /** 默认按更新时间倒序。 */
+  sort?: "updated" | "created" | "title";
   /** 默认 false：过滤已软删除。 */
   includeDeleted?: boolean;
   /** 默认 false：过滤已归档。 */

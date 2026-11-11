@@ -2,6 +2,7 @@ import { NotFoundError, ValidationError } from "../../domain/errors";
 import {
   isLibrary,
   isObjectType,
+  isWorkStatus,
   libraries,
   workFormatValues,
   workStatuses,
@@ -388,11 +389,87 @@ export function parseListObjectsQuery(searchParams: URLSearchParams): ListObject
     query.library = library;
   }
 
+  const status = searchParams.get("status");
+  if (status) {
+    if (!isWorkStatus(status)) {
+      throw new ValidationError("status 取值非法", { field: "status" });
+    }
+    query.status = status;
+  }
+
+  const search = searchParams.get("q")?.trim();
+  if (search) {
+    if (search.length > 100) {
+      throw new ValidationError("q 最长 100 个字符", { field: "q" });
+    }
+    query.search = search;
+  }
+
+  for (const field of ["category", "tag"] as const) {
+    const value = searchParams.get(field)?.trim();
+    if (value) {
+      if (value.length > 64) {
+        throw new ValidationError(`${field} 最长 64 个字符`, { field });
+      }
+      query[field] = value;
+    }
+  }
+
+  const sort = searchParams.get("sort");
+  if (sort) {
+    if (sort !== "updated" && sort !== "created" && sort !== "title") {
+      throw new ValidationError("sort 取值非法", { field: "sort" });
+    }
+    query.sort = sort;
+  }
+
+  const limit = readPositiveInt(searchParams.get("limit"), "limit", 200);
+  if (limit !== undefined) {
+    query.limit = limit;
+  }
+
+  const offset = readNonNegativeInt(searchParams.get("offset"), "offset");
+  if (offset !== undefined) {
+    query.offset = offset;
+  }
+
   if (searchParams.get("archived") === "true") {
     query.includeArchived = true;
   }
 
   return query;
+}
+
+function readPositiveInt(
+  raw: string | null,
+  field: string,
+  max: number,
+): number | undefined {
+  if (raw === null || raw.trim() === "") {
+    return undefined;
+  }
+
+  const value = Number(raw);
+
+  if (!Number.isInteger(value) || value < 1 || value > max) {
+    throw new ValidationError(`${field} 必须是 1~${max} 的整数`, { field });
+  }
+
+  return value;
+}
+
+function readNonNegativeInt(raw: string | null, field: string): number | undefined {
+  if (raw === null || raw.trim() === "") {
+    return undefined;
+  }
+
+  const value = Number(raw);
+
+  if (!Number.isInteger(value) || value < 0) {
+    throw new ValidationError(`${field} 必须是非负整数`, { field });
+  }
+
+  return value;
 }
 
 export async function listObjects(

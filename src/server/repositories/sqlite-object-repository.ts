@@ -75,6 +75,11 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** LIKE 通配符按字面量匹配，避免用户输入的 % / _ 扩大搜索范围。 */
+function likePattern(value: string): string {
+  return `%${value.replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+}
+
 function toObject(row: ObjectRow): BusinessObject {
   const base = {
     id: row.id,
@@ -237,11 +242,37 @@ export class SqliteObjectRepository implements ObjectRepository {
       conditions.push(eq(objects.status, query.status));
     }
 
+    if (query.search) {
+      const pattern = likePattern(query.search);
+      conditions.push(
+        sql`(${objects.title} LIKE ${pattern} ESCAPE '\\' OR ${objects.description} LIKE ${pattern} ESCAPE '\\')`,
+      );
+    }
+
+    if (query.category) {
+      conditions.push(
+        sql`exists (select 1 from json_each(${objects.categories}) where json_each.value = ${query.category})`,
+      );
+    }
+
+    if (query.tag) {
+      conditions.push(
+        sql`exists (select 1 from json_each(${objects.tags}) where json_each.value = ${query.tag})`,
+      );
+    }
+
+    const orderBy =
+      query.sort === "created"
+        ? [desc(objects.createdAt), asc(objects.id)]
+        : query.sort === "title"
+          ? [asc(objects.title), asc(objects.id)]
+          : [desc(objects.updatedAt), asc(objects.id)];
+
     const rows = await this.db
       .select()
       .from(objects)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
-      .orderBy(desc(objects.updatedAt), asc(objects.id))
+      .orderBy(...orderBy)
       .limit(query.limit ?? 100)
       .offset(query.offset ?? 0);
 
