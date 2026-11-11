@@ -317,5 +317,14 @@ describe("parseListObjectsQuery", () => {
     expect(() => parseListObjectsQuery(new URLSearchParams(`q=${"长".repeat(101)}`))).toThrow(
       ValidationError,
     );
+    expect(() => parseListObjectsQuery(new URLSearchParams("archived=yes"))).toThrow(
+      ValidationError,
+    );
+  });
+
+  it("archived 三种取值：默认排除、包含、只看归档", () => {
+    expect(parseListObjectsQuery(new URLSearchParams("archived=true")).includeArchived).toBe(true);
+    expect(parseListObjectsQuery(new URLSearchParams("archived=false")).includeArchived).toBeUndefined();
+    expect(parseListObjectsQuery(new URLSearchParams("archived=only")).archivedOnly).toBe(true);
   });
 });

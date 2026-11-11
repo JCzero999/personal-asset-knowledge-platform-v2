@@ -222,7 +222,9 @@ export class SqliteObjectRepository implements ObjectRepository {
       conditions.push(isNull(objects.deletedAt));
     }
 
-    if (!query.includeArchived) {
+    if (query.archivedOnly) {
+      conditions.push(isNotNull(objects.archivedAt));
+    } else if (!query.includeArchived) {
       conditions.push(isNull(objects.archivedAt));
     }
 

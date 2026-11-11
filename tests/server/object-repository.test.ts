@@ -387,6 +387,21 @@ describe("列表筛选与排序", () => {
     const page = await repo.list({ ownerSub: "user_test", sort: "title", limit: 1, offset: 1 });
     expect(page.map((o) => o.title)).toEqual(["B"]);
   });
+
+  it("归档视图：默认排除，archivedOnly 只返回已归档", async () => {
+    const active = await repo.create(asset({ title: "在用" }));
+    const archived = await repo.create(asset({ title: "归档" }));
+    await repo.archive(archived.id);
+
+    expect((await repo.list({ ownerSub: "user_test" })).map((o) => o.title)).toEqual(["在用"]);
+    expect(
+      (await repo.list({ ownerSub: "user_test", includeArchived: true })).map((o) => o.title).sort(),
+    ).toEqual(["在用", "归档"].sort());
+    expect(
+      (await repo.list({ ownerSub: "user_test", archivedOnly: true })).map((o) => o.id),
+    ).toEqual([archived.id]);
+    expect(active.archivedAt).toBeNull();
+  });
 });
 
 describe("outbox 入队", () => {

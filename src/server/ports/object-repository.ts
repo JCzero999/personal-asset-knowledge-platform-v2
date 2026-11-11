@@ -68,8 +68,10 @@ export interface ListObjectsQuery {
   sort?: "updated" | "created" | "title";
   /** 默认 false：过滤已软删除。 */
   includeDeleted?: boolean;
-  /** 默认 false：过滤已归档。 */
+  /** 默认 false：过滤已归档；与 archivedOnly 同时为真时只看已归档。 */
   includeArchived?: boolean;
+  /** 只返回已归档对象（归档视图）。 */
+  archivedOnly?: boolean;
   limit?: number;
   offset?: number;
 }

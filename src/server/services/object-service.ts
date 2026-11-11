@@ -433,8 +433,15 @@ export function parseListObjectsQuery(searchParams: URLSearchParams): ListObject
     query.offset = offset;
   }
 
-  if (searchParams.get("archived") === "true") {
-    query.includeArchived = true;
+  const archived = searchParams.get("archived");
+  if (archived !== null) {
+    if (archived === "true") {
+      query.includeArchived = true;
+    } else if (archived === "only") {
+      query.archivedOnly = true;
+    } else if (archived !== "false") {
+      throw new ValidationError("archived 取值非法", { field: "archived", allowed: ["true", "false", "only"] });
+    }
   }
 
   return query;
