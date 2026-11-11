@@ -3,7 +3,7 @@ import Link from "next/link";
 import type { Session } from "@/server/ports/session";
 import { Icon, type IconName } from "./icon";
 
-export type NavKey = "workspace" | "search";
+export type NavKey = "workspace" | "search" | "graph";
 
 interface NavItem {
   key: NavKey | "recent" | "track";
@@ -15,6 +15,7 @@ interface NavItem {
 const navigation: NavItem[] = [
   { key: "workspace", label: "工作台", icon: "grid", href: "/workspace" },
   { key: "search", label: "内容检索", icon: "search", href: "/search" },
+  { key: "graph", label: "知识图谱", icon: "graph", href: "/graph" },
   { key: "recent", label: "最近内容", icon: "archive", href: "/workspace#recent" },
   { key: "track", label: "作品进程", icon: "workflow", href: "/workspace#track" },
 ];
@@ -66,10 +67,6 @@ export function AppSidebar({
       </nav>
 
       <div className="sidebar-bottom">
-        <div className="nav-preview">
-          <p className="nav-label">即将开放</p>
-          <p className="preview-row"><Icon name="graph" size={16} /><span>知识图谱</span></p>
-        </div>
         <div className="sidebar-user">
           <span className="sidebar-avatar" aria-hidden="true">{session.name.slice(0, 1)}</span>
           <span className="sidebar-user-copy">
