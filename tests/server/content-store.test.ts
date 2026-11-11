@@ -117,4 +117,115 @@ describe("sync jobs (outbox)", () => {
 
     expect(await store.listPendingJobs(50, "2026-11-11T00:00:00.000Z")).toEqual([]);
   });
+
+  it("相同 owner + action 已有活跃任务时不重复入队", async () => {
+    const first = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "upsert",
+    });
+    const second = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "upsert",
+    });
+
+    expect(second.id).toBe(first.id);
+
+    const otherAction = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "delete",
+    });
+    expect(otherAction.id).not.toBe(first.id);
+    expect(await store.listPendingJobs()).toHaveLength(2);
+  });
+
+  it("任务完成后可以再次入队", async () => {
+    const first = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "upsert",
+    });
+    await store.markJobDone(first.id);
+
+    const second = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "upsert",
+    });
+
+    expect(second.id).not.toBe(first.id);
+    expect(second.state).toBe("pending");
+  });
+
+  it("认领后置为 running、attempts 加一，且不会重复认领", async () => {
+    const job = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "upsert",
+      now: "2026-11-11T06:00:00.000Z",
+    });
+
+    const claimed = await store.claimJobs({ now: "2026-11-11T06:00:00.000Z" });
+
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]).toMatchObject({ id: job.id, state: "running", attempts: 1 });
+    expect(await store.claimJobs({ now: "2026-11-11T06:00:00.000Z" })).toEqual([]);
+  });
+
+  it("租约过期的 running 任务可被重新认领", async () => {
+    const job = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "upsert",
+      now: "2026-11-11T06:00:00.000Z",
+    });
+    await store.claimJobs({ now: "2026-11-11T06:00:00.000Z" });
+
+    // 未开启租约回收时看不到它
+    expect(await store.claimJobs({ now: "2026-11-11T06:30:00.000Z" })).toEqual([]);
+
+    const reclaimed = await store.claimJobs({
+      now: "2026-11-11T06:30:00.000Z",
+      staleAfterMs: 10 * 60_000,
+    });
+
+    expect(reclaimed).toHaveLength(1);
+    expect(reclaimed[0]).toMatchObject({ id: job.id, state: "running", attempts: 2 });
+  });
+
+  it("失败后按退避重试，达到上限置为 failed", async () => {
+    const job = await store.enqueueJob({
+      ownerType: "work",
+      ownerId: baseRef.ownerId,
+      action: "upsert",
+      now: "2026-11-11T06:00:00.000Z",
+    });
+
+    await store.claimJobs({ now: "2026-11-11T06:00:00.000Z" });
+    const retried = await store.markJobFailed({
+      id: job.id,
+      error: "RAGFlow 502",
+      now: "2026-11-11T06:00:00.000Z",
+    });
+
+    expect(retried).toMatchObject({ state: "pending", lastError: "RAGFlow 502" });
+    expect(retried.availableAt).toBe("2026-11-11T06:01:00.000Z");
+
+    await store.claimJobs({ now: "2026-11-11T06:02:00.000Z" });
+    const failed = await store.markJobFailed({
+      id: job.id,
+      error: "RAGFlow 502",
+      maxAttempts: 2,
+      now: "2026-11-11T06:02:00.000Z",
+    });
+
+    expect(failed).toMatchObject({ state: "failed", lastError: "RAGFlow 502" });
+    expect(await store.claimJobs({ now: "2026-11-11T07:00:00.000Z" })).toEqual([]);
+  });
+
+  it("标记不存在或已完成的任务时如实报错", async () => {
+    await expect(store.markJobDone("01HZZZZZZZZZZZZZZZZZZZZZZZ")).rejects.toThrow();
+  });
 });

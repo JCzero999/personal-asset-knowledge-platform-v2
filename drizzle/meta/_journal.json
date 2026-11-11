@@ -15,6 +15,13 @@
       "when": 1794379584164,
       "tag": "0001_objects_value_domains",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794379811466,
+      "tag": "0002_sync_jobs_active_dedupe",
+      "breakpoints": true
     }
   ]
 }

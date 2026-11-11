@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, lte } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 
 import type { ContentRef } from "../../domain/content-ref";
 import { ConflictError, DomainError, NotFoundError } from "../../domain/errors";
@@ -6,8 +6,10 @@ import type { AppDatabase } from "../db/client";
 import { ulid } from "../db/id";
 import { contentRefs, syncJobs, type ContentRefRow, type NewContentRefRow, type SyncJobRow } from "../db/schema";
 import type {
+  ClaimJobsInput,
   ContentStore,
   EnqueueJobInput,
+  FailJobInput,
   SyncJob,
   UpsertContentRefInput,
 } from "../ports/content-store";
@@ -21,6 +23,16 @@ import type {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** 指数退避：第 1 次失败等 1 分钟，逐次翻倍，最长 30 分钟。 */
+function backoffAfter(now: string, attempts: number): string {
+  const minutes = Math.min(2 ** Math.max(attempts - 1, 0), 30);
+  return new Date(Date.parse(now) + minutes * 60_000).toISOString();
+}
+
+function isoBefore(now: string, ms: number): string {
+  return new Date(Date.parse(now) - ms).toISOString();
 }
 
 function toContentRef(row: ContentRefRow): ContentRef {
@@ -260,24 +272,64 @@ export class SqliteContentStore implements ContentStore {
 
   async enqueueJob(input: EnqueueJobInput): Promise<SyncJob> {
     const now = input.now ?? nowIso();
-    const [row] = await this.db
-      .insert(syncJobs)
-      .values({
-        id: ulid(),
-        ownerType: input.ownerType,
-        ownerId: input.ownerId,
-        contentRefId: input.contentRefId ?? null,
-        action: input.action,
-        state: "pending",
-        attempts: 0,
-        lastError: null,
-        availableAt: input.availableAt ?? now,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+    const contentRefId = input.contentRefId ?? null;
 
-    return toSyncJob(row);
+    const findActive = async (): Promise<SyncJob | null> => {
+      const [row] = await this.db
+        .select()
+        .from(syncJobs)
+        .where(
+          and(
+            eq(syncJobs.ownerType, input.ownerType),
+            eq(syncJobs.ownerId, input.ownerId),
+            contentRefId === null
+              ? isNull(syncJobs.contentRefId)
+              : eq(syncJobs.contentRefId, contentRefId),
+            eq(syncJobs.action, input.action),
+            inArray(syncJobs.state, ["pending", "running"]),
+          ),
+        )
+        .limit(1);
+
+      return row ? toSyncJob(row) : null;
+    };
+
+    const active = await findActive();
+    if (active) {
+      return active;
+    }
+
+    try {
+      const [row] = await this.db
+        .insert(syncJobs)
+        .values({
+          id: ulid(),
+          ownerType: input.ownerType,
+          ownerId: input.ownerId,
+          contentRefId,
+          action: input.action,
+          state: "pending",
+          attempts: 0,
+          lastError: null,
+          availableAt: input.availableAt ?? now,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      return toSyncJob(row);
+    } catch (error) {
+      // 并发入队撞上活跃任务唯一索引：返回已有任务，不算失败。
+      const message = error instanceof Error ? error.message : String(error);
+      if (/UNIQUE constraint failed/i.test(message)) {
+        const existing = await findActive();
+        if (existing) {
+          return existing;
+        }
+      }
+
+      return translate(error);
+    }
   }
 
   async listPendingJobs(limit = 50, at: string = nowIso()): Promise<SyncJob[]> {
@@ -289,5 +341,90 @@ export class SqliteContentStore implements ContentStore {
       .limit(limit);
 
     return rows.map(toSyncJob);
+  }
+
+  async claimJobs(input: ClaimJobsInput = {}): Promise<SyncJob[]> {
+    const now = input.now ?? nowIso();
+    const limit = input.limit ?? 10;
+
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new DomainError("VALIDATION_FAILED", "limit 必须是正整数", { limit });
+    }
+
+    const claimable = input.staleAfterMs
+      ? or(
+          and(eq(syncJobs.state, "pending"), lte(syncJobs.availableAt, now)),
+          and(
+            eq(syncJobs.state, "running"),
+            lte(syncJobs.updatedAt, isoBefore(now, input.staleAfterMs)),
+          ),
+        )
+      : and(eq(syncJobs.state, "pending"), lte(syncJobs.availableAt, now));
+
+    const dueIds = this.db
+      .select({ id: syncJobs.id })
+      .from(syncJobs)
+      .where(claimable)
+      .orderBy(asc(syncJobs.availableAt), asc(syncJobs.createdAt))
+      .limit(limit);
+
+    // 单条 UPDATE ... WHERE id IN (SELECT ...) 保证认领原子性：两个 worker 不会拿到同一条。
+    const rows = await this.db
+      .update(syncJobs)
+      .set({
+        state: "running",
+        attempts: sql`${syncJobs.attempts} + 1`,
+        updatedAt: now,
+      })
+      .where(inArray(syncJobs.id, dueIds))
+      .returning();
+
+    return rows.map(toSyncJob);
+  }
+
+  async markJobDone(id: string, now: string = nowIso()): Promise<SyncJob> {
+    const [row] = await this.db
+      .update(syncJobs)
+      .set({ state: "done", lastError: null, updatedAt: now })
+      .where(eq(syncJobs.id, id))
+      .returning();
+
+    if (!row) {
+      throw new NotFoundError("同步任务不存在", { id });
+    }
+
+    return toSyncJob(row);
+  }
+
+  async markJobFailed(input: FailJobInput): Promise<SyncJob> {
+    const now = input.now ?? nowIso();
+    const [current] = await this.db
+      .select()
+      .from(syncJobs)
+      .where(eq(syncJobs.id, input.id))
+      .limit(1);
+
+    if (!current) {
+      throw new NotFoundError("同步任务不存在", { id: input.id });
+    }
+
+    const maxAttempts = input.maxAttempts ?? 5;
+    const exhausted = current.attempts >= maxAttempts;
+    const retryAt = exhausted
+      ? current.availableAt
+      : (input.retryAt ?? backoffAfter(now, current.attempts));
+
+    const [row] = await this.db
+      .update(syncJobs)
+      .set({
+        state: exhausted ? "failed" : "pending",
+        lastError: input.error,
+        availableAt: retryAt,
+        updatedAt: now,
+      })
+      .where(eq(syncJobs.id, input.id))
+      .returning();
+
+    return toSyncJob(row);
   }
 }

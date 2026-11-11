@@ -161,6 +161,15 @@ export const syncJobs = sqliteTable(
   (table) => [
     check("sync_jobs_action_check", sql`action in ('upsert', 'delete')`),
     check("sync_jobs_state_check", sql`state in ('pending', 'running', 'done', 'failed')`),
+    // 同一对象同一动作最多一个活跃任务：重复入队直接返回已有任务（outbox 去重）。
+    uniqueIndex("sync_jobs_active_uq")
+      .on(
+        table.ownerType,
+        table.ownerId,
+        sql`coalesce(${table.contentRefId}, '')`,
+        table.action,
+      )
+      .where(sql`state in ('pending', 'running')`),
     index("sync_jobs_state_idx").on(table.state, table.availableAt),
   ],
 );

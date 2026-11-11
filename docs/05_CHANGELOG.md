@@ -72,3 +72,11 @@
 - **新建作品只能从 draft 开始**：`CreateObjectInput` 移除 `status` 字段，仓储插入时固定写 `draft`，请求体携带任何 `status` 一律 400；此前仓储可被直接插入 `practiced`
 - **补齐作品状态写路径**：新增 `ObjectRepository.changeStatus` 与 `POST /api/objects/{id}/status`（请求体 `{ "to": "<状态>", "expectedRevision": <可选正整数> }`）。迁移先过 `src/domain/workflow.ts` 的显式迁移表：跳级返回 `INVALID_TRANSITION`（409），外库试图 `practiced` 返回 `EXTERNAL_LIBRARY_PRACTICED`（409），资产返回 400；写入带 revision 条件，过期版本返回 `CONFLICT`；按 `ownerSub` 过滤，他人对象按 404 处理
 - 验证：typecheck、lint、7 个测试文件 55 项用例、生产构建通过；mock 身份实测 `draft → finished` 200、跳级 409、过期 revision 409、资产 400、未知 id 404
+
+## 2026-11-11（outbox 生命周期补齐）
+
+- `sync_jobs` 增加活跃任务分区唯一索引 `sync_jobs_active_uq`（`owner_type + owner_id + coalesce(content_ref_id,'') + action`，仅覆盖 `pending` / `running`），迁移 `drizzle/0002_sync_jobs_active_dedupe.sql`
+- `enqueueJob` 去重：同一对象同一动作已有活跃任务时直接返回已有任务；并发入队撞唯一索引也返回已有任务而不是报冲突
+- 新增 `claimJobs`：单条 `UPDATE ... WHERE id IN (SELECT ...)` 原子认领，置 `running`、`attempts + 1`；可选 `staleAfterMs` 回收租约过期的 `running` 任务
+- 新增 `markJobDone` 与 `markJobFailed`：失败未达上限回到 `pending` 并按指数退避（1 分钟起翻倍，上限 30 分钟）安排下次执行，达到 `maxAttempts`（默认 5）置 `failed`
+- 验证：typecheck、lint、7 个测试文件 61 项用例通过
