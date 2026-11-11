@@ -129,3 +129,13 @@
 - `GET /api/objects` 支持 `q`（标题/描述关键字，`%` 与 `_` 按字面量匹配）、`category`、`tag`（按数组元素精确匹配）、`status`、`sort`（`updated` / `created` / `title`）、`limit`（1~200）、`offset`
 - 非法筛选值一律 400，不做静默忽略；`limit` / `offset` 越界同样拒绝
 - 验证：typecheck、lint、8 个测试文件 95 项用例通过（新增关键字含通配符、分类/标签精确匹配、标题排序与分页断言）
+
+## 2026-11-11（Phase 2：内容上传与 RAGFlow 映射）
+
+- 新增 `POST /api/objects/{id}/content`（multipart：`file` 必填，`role` = primary | attachment，`documentName` 可选），单次上限 25 MB；按会话身份校验归属，他人对象 404 且不触达 RAGFlow
+- 单一 Dataset（ADR-007）：`RAGFLOW_DATASET_ID` 优先，否则按 `RAGFLOW_DATASET_NAME`（默认 `pakp-content`）查找，缺失时自动创建
+- `content_key` 作幂等键：主内容 `obj:{objectId}:primary`，附件带 ULID；上传成功后写 `content_refs` 并入队 `sync_jobs(upsert)`
+- 主内容替换改为「先以临时名上传新文档 → 写 meta → 落库并入队 → 删旧文档 → 改回原名」：新上传失败时旧内容与旧引用保持不变，不再有先删后传的丢内容窗口
+- `meta_fields` 只镜像 `content_key` / `owner_type` / `owner_id` / `library` / `archived` / `format` / `source`；实测上传接口不接受 meta，需要上传后 `PUT` 整体替换
+- 适配器新增 `createDataset`、`renameDocument`、`updateDocumentMetaFields`；RAGFlow 同名重传行为不确定（列表出现 `(1)` 后缀），替换流程据此改用临时名 + 改名（改名接口实测可用）
+- 验证：typecheck、lint、9 个测试文件 117 项用例通过；mock 身份 + 真实 RAGFlow 端到端上传 201，落 1 条 `content_ref` 与 1 条 pending upsert；冒烟文档与测试残留已删除，内容库恢复 0 文档

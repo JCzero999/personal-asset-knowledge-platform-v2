@@ -43,7 +43,7 @@
 - 部署方式：本地 Docker Compose（`infra/ragflow/docker-compose.yml`，基于官方 v0.20.5 编排精简，只保留 elasticsearch 文档引擎）
 - 内容职责：统一内容存储、解析、分块、向量化与检索（ADR-005）
 - 当前状态：已部署并通过 API 实测（2026-11-11）；dataset / document 的创建、上传、删除与清理均已跑通，解析流水线尚未实测
-- 应用侧适配器：`src/server/adapters/ragflow/client.ts`（`listDatasets` / `createDocument` / `deleteDocument`，mock 单测见 `tests/server/adapters/ragflow-client.test.ts`）
+- 应用侧适配器：`src/server/adapters/ragflow/client.ts`（`listDatasets` / `createDataset` / `createDocument` / `updateDocumentMetaFields` / `deleteDocument`，mock 单测见 `tests/server/adapters/ragflow-client.test.ts`）
 
 | 字段 | 实测值 |
 |---|---|
@@ -54,13 +54,13 @@
 | 服务端口 | API 9380；Web UI 18080（容器 80，nginx）；MySQL 5455；Elasticsearch 1200；MinIO 19000 / 控制台 19001；Redis 16379（均为宿主机端口，刻意避开 Logto 的 3001/3002） |
 | 管理界面地址 | `http://localhost:18080`（实测 HTTP 200） |
 | 健康检查 | 容器自带 healthcheck：ragflow-server 用 Python 探 127.0.0.1:9380；ES 用带密码的 `_cluster/health` |
-| 已验证环境变量名 | 编排层：`RAGFLOW_IMAGE`、`STACK_VERSION`、`MINIO_IMAGE`、`SVR_HTTP_PORT`、`SVR_WEB_PORT`、`MYSQL_PORT`、`ES_PORT`、`MINIO_PORT`、`MINIO_CONSOLE_PORT`、`REDIS_PORT`、`TIMEZONE`、`HF_ENDPOINT`、`MEM_LIMIT`、`MYSQL_DBNAME`、`MYSQL_PASSWORD`、`MINIO_USER`、`MINIO_PASSWORD`、`REDIS_PASSWORD`、`ELASTIC_PASSWORD`、`REGISTER_ENABLED`；应用侧：`RAGFLOW_BASE_URL`、`RAGFLOW_API_KEY` |
+| 已验证环境变量名 | 编排层：`RAGFLOW_IMAGE`、`STACK_VERSION`、`MINIO_IMAGE`、`SVR_HTTP_PORT`、`SVR_WEB_PORT`、`MYSQL_PORT`、`ES_PORT`、`MINIO_PORT`、`MINIO_CONSOLE_PORT`、`REDIS_PORT`、`TIMEZONE`、`HF_ENDPOINT`、`MEM_LIMIT`、`MYSQL_DBNAME`、`MYSQL_PASSWORD`、`MINIO_USER`、`MINIO_PASSWORD`、`REDIS_PASSWORD`、`ELASTIC_PASSWORD`、`REGISTER_ENABLED`；应用侧：`RAGFLOW_BASE_URL`、`RAGFLOW_API_KEY`、`RAGFLOW_DATASET_ID`、`RAGFLOW_DATASET_NAME` |
 | 鉴权方式 | `POST /v1/user/register`（密码需用容器内 `conf/private.pem` 对应公钥做 RSA 加密后 base64）→ `POST /v1/system/new_token` 返回 `token`（`ragflow-` 前缀）。后续 API 用 `Authorization: Bearer <token>`；该 token 对应 `api_token.token`，不是返回里的 `beta` |
 | ES 前置条件 | Docker Desktop 的 Linux VM 需 `vm.max_map_count=262144`（本机实测已为该值） |
 | 镜像拉取 | 本机从华为云镜像 `swr.cn-north-4.myhuaweicloud.com/infiniflow/ragflow:v0.20.5` 拉取后重打 tag；`docker pull` 需分段续传，见 `infra/ragflow/README.md` |
 | Dataset / Document 接口契约 | 见下方“已验证 API 调用”，均为实测请求/响应 |
 | 解析与检索验证结果 | 待实测：未调用 `POST /api/v1/datasets/{id}/chunks`，未执行 chunk / embedding / 检索 |
-| Asset / Work 映射结果 | 待 Phase 2 验证 |
+| Asset / Work 映射结果 | 已实测单对象内容上传 / 替换（2026-11-11 15:02）；附件、批量与对账未实测 |
 
 ### 已验证 API 调用（2026-11-11 14:52，全部使用上面的真实 API key）
 
@@ -72,6 +72,32 @@
 | 列 document | `GET /api/v1/datasets/{dataset_id}/documents?page=1&page_size=10` | `{"code":0,"data":{"docs":[{…"id":"779a934c…","chunk_count":0,…}],"total":1}}`（注意是 `data.docs`，不是数组） |
 | 删 document | `DELETE /api/v1/datasets/{dataset_id}/documents`，body `{"ids":["779a934c…"]}` | `{"code":0}`；随后列表 `docs:[] , total:0` |
 | 删 dataset | `DELETE /api/v1/datasets`，body `{"ids":["6ef7a234…"]}` | `{"code":0}`；随后 `GET /api/v1/datasets` → `{"code":0,"data":[]}`（测试数据已清理干净） |
+
+### 内容上传契约（2026-11-11 15:02 实测，含应用侧端到端冒烟）
+
+内容上传走 `src/server/services/content-service.ts`，适配器新增 `createDataset` / `updateDocumentMetaFields`。以下四条是**实测结论**，不是推测：
+
+| 结论 | 实测依据 |
+|---|---|
+| 上传接口**不接受** `meta_fields` | `POST /api/v1/datasets/{id}/documents` 只读取 multipart 的 `file` 字段（服务端 `api/apps/sdk/doc.py` 的 `upload()` 里没有读取 `meta_fields`）；只能上传后再更新 |
+| meta 写入用 `PUT /api/v1/datasets/{id}/documents/{doc_id}`，body `{"meta_fields":{…}}` | 实测返回 `code:0`；随后列表接口读回 `meta_fields` 与写入值完全一致（`content_key` / `owner_type` / `owner_id` / `library` / `archived` / `format` / `source`） |
+| 该更新是**整体替换**，不是合并 | 服务端 `DocumentService.update_meta_fields()` 直接覆盖 `meta_fields` JSON 列；所以每次都要传完整字段集 |
+| `GET /api/v1/datasets/{id}/documents/{doc_id}` 是**下载**接口（返回文件流） | 直接请求拿到的是原文内容而非 JSON；文档元数据（含 `meta_fields`）只能从列表接口 `data.docs[]` 读 |
+
+建 dataset 契约：`POST /api/v1/datasets`，body `{name, description?, embedding_model?}`，响应 `data` 是**单个对象**（不是数组）；不传 `embedding_model` 时落到租户默认模型 `BAAI/bge-large-zh-v1.5@BAAI`。
+
+应用侧 dataset 选择（ADR-007 单一 Dataset）：
+
+- `RAGFLOW_DATASET_ID` 非空则直接用，不做查找；
+- 否则按 `RAGFLOW_DATASET_NAME`（默认 `pakp-content`）调 `GET /api/v1/datasets?name=…` 精确匹配；RAGFlow 对不存在的名称返回**错误码**而不是空列表（`lacks permission for dataset '…'`），服务层把这种情况当作「没有」并新建；
+- 本机已创建 `pakp-content`（id `cdca6016dd9d11f1820ba6aa99b57ab2`），作为统一内容库保留，冒烟测试产生的临时文档已删除，当前 `document_count = 0`。
+
+端到端冒烟（真实 RAGFlow v0.20.5，内存 SQLite，临时 `pakp-smoke.txt`）：
+
+1. 首次上传 → `document_id` 落库、`meta_fields` 写入并可读回；
+2. 再次上传主内容 → 旧文档在列表中消失、`content_refs` 仍是同一行（`refIdStable: true`）、`content_key` 不变、`document_id` 换成新值；
+3. 本地库：1 条 `primary` 引用 + 1 条 `pending` 的 `upsert` 同步任务；
+4. 冒烟结束后删除临时文档，`docs:[] , total:0`。
 
 ### 还缺什么才能跑通解析
 

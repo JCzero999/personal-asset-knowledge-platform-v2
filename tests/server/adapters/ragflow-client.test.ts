@@ -191,6 +191,136 @@ describe("RagflowClient.deleteDocument", () => {
   });
 });
 
+describe("RagflowClient.createDataset", () => {
+  it("POST /api/v1/datasets 传 name/description，解析单个对象", async () => {
+    const { client, fetchMock } = makeClient(
+      jsonResponse({
+        code: 0,
+        data: {
+          id: "ds_new",
+          name: "pakp-content",
+          description: "统一内容库",
+          embedding_model: "BAAI/bge-large-zh-v1.5@BAAI",
+          document_count: 0,
+          chunk_count: 0,
+          create_date: "2026-11-11 15:00:00",
+          update_date: "2026-11-11 15:00:00",
+        },
+      }),
+    );
+
+    const dataset = await client.createDataset({
+      name: "pakp-content",
+      description: "统一内容库",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/v1/datasets`);
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: "pakp-content",
+      description: "统一内容库",
+    });
+
+    expect(dataset).toEqual({
+      id: "ds_new",
+      name: "pakp-content",
+      description: "统一内容库",
+      embeddingModel: "BAAI/bge-large-zh-v1.5@BAAI",
+      documentCount: 0,
+      chunkCount: 0,
+      createdAt: "2026-11-11 15:00:00",
+      updatedAt: "2026-11-11 15:00:00",
+    });
+  });
+
+  it("名称缺失或响应结构不对时报错", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0, data: {} }));
+
+    await expect(client.createDataset({ name: "  " })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+
+    // 响应缺 id：不允许把空 id 落到 content_refs。
+    const error = await client.createDataset({ name: "pakp-content" }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(DomainError);
+    expect((error as DomainError).code).toBe("INTERNAL");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("RagflowClient.updateDocumentMetaFields", () => {
+  it("PUT 文档并整体提交 meta_fields", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0, data: {} }));
+
+    await client.updateDocumentMetaFields("ds_1", "doc_1", {
+      content_key: "obj:01ABC:primary",
+      owner_type: "asset",
+      owner_id: "01ABC",
+      library: "internal",
+      archived: "false",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/v1/datasets/ds_1/documents/doc_1`);
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({
+      meta_fields: {
+        content_key: "obj:01ABC:primary",
+        owner_type: "asset",
+        owner_id: "01ABC",
+        library: "internal",
+        archived: "false",
+      },
+    });
+  });
+
+  it("路径参数做 URL 编码，缺失参数本地拒绝", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0, data: {} }));
+
+    await client.updateDocumentMetaFields("ds/1", "doc 1", { k: "v" });
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toBe(`${BASE_URL}/api/v1/datasets/ds%2F1/documents/doc%201`);
+
+    await expect(
+      client.updateDocumentMetaFields("", "doc_1", { k: "v" }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.updateDocumentMetaFields("ds_1", "doc_1", [] as unknown as Record<string, string>),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe("RagflowClient.renameDocument", () => {
+  it("PUT 文档只提交 name，路径参数做 URL 编码", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0, data: {} }));
+
+    await client.renameDocument("ds/1", "doc 1", "知识系统.txt");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/v1/datasets/ds%2F1/documents/doc%201`);
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(init.body as string)).toEqual({ name: "知识系统.txt" });
+  });
+
+  it("缺失参数在本地拒绝", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0, data: {} }));
+
+    await expect(client.renameDocument("", "doc_1", "a.txt")).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    await expect(client.renameDocument("ds_1", "doc_1", "  ")).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("RagflowClient 错误映射", () => {
   it("HTTP 401 映射为 INTERNAL 并保留状态码", async () => {
     const { client } = makeClient(jsonResponse({ message: "unauthorized" }, 401));

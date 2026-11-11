@@ -46,12 +46,25 @@ export interface RagflowDataset {
   updatedAt: string | null;
 }
 
+export interface CreateDatasetInput {
+  name: string;
+  description?: string;
+  /** 不传则由 RAGFlow 落到租户默认 embedding 模型。 */
+  embeddingModel?: string;
+}
+
 export interface CreateDocumentInput {
   filename: string;
   data: Uint8Array;
   /** 可选 MIME；不传时由 FormData 按 Blob 默认值处理。 */
   mimeType?: string;
 }
+
+/**
+ * 写入 RAGFlow `meta_fields` 的镜像字段（ADR-007）。
+ * RAGFlow 侧按字符串存储与过滤，这里不做类型臆测，一律用字符串。
+ */
+export type DocumentMetaFields = Record<string, string>;
 
 export interface RagflowDocument {
   id: string;
@@ -89,6 +102,19 @@ interface RawDocument {
   token_count?: number;
   chunk_method?: string;
   run?: string;
+}
+
+function toDataset(raw: RawDataset): RagflowDataset {
+  return {
+    id: raw.id ?? "",
+    name: raw.name ?? "",
+    description: raw.description ?? null,
+    embeddingModel: raw.embedding_model ?? null,
+    documentCount: raw.document_count ?? 0,
+    chunkCount: raw.chunk_count ?? 0,
+    createdAt: raw.create_date ?? null,
+    updatedAt: raw.update_date ?? null,
+  };
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -136,16 +162,29 @@ export class RagflowClient {
       throw unexpectedShape("GET /api/v1/datasets", data);
     }
 
-    return data.map((raw) => ({
-      id: raw.id ?? "",
-      name: raw.name ?? "",
-      description: raw.description ?? null,
-      embeddingModel: raw.embedding_model ?? null,
-      documentCount: raw.document_count ?? 0,
-      chunkCount: raw.chunk_count ?? 0,
-      createdAt: raw.create_date ?? null,
-      updatedAt: raw.update_date ?? null,
-    }));
+    return data.map(toDataset);
+  }
+
+  /**
+   * 新建 dataset：`POST /api/v1/datasets`，body 只传 name / description /
+   * embedding_model（v0.20.5 实测契约）。响应 `data` 是单个对象而不是数组。
+   */
+  async createDataset(input: CreateDatasetInput): Promise<RagflowDataset> {
+    const name = input.name?.trim();
+    if (!name) {
+      throw new ValidationError("dataset name 不能为空");
+    }
+
+    const body: Record<string, unknown> = { name };
+    if (input.description) body.description = input.description;
+    if (input.embeddingModel) body.embedding_model = input.embeddingModel;
+
+    const data = await this.request<RawDataset>("POST", "/api/v1/datasets", body);
+    if (!data || typeof data !== "object" || Array.isArray(data) || !data.id) {
+      throw unexpectedShape("POST /api/v1/datasets", data);
+    }
+
+    return toDataset(data);
   }
 
   /**
@@ -193,6 +232,63 @@ export class RagflowClient {
       chunkMethod: raw.chunk_method ?? "",
       run: raw.run ?? "",
     };
+  }
+
+  /**
+   * 写文档的 `meta_fields`：`PUT /api/v1/datasets/{dataset_id}/documents/{document_id}`，
+   * body `{ "meta_fields": { ... } }`。
+   *
+   * 两个实测结论（v0.20.5）：
+   * 1. 上传接口 `POST .../documents` **不接受** meta_fields，只能上传后再更新；
+   * 2. 该更新是**整体替换**（`DocumentService.update_meta_fields` 直接覆盖 JSON 列），
+   *    因此调用方每次都要传完整字段集，不能只传变化的键。
+   */
+  async updateDocumentMetaFields(
+    datasetId: string,
+    documentId: string,
+    metaFields: DocumentMetaFields,
+  ): Promise<void> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+    if (!documentId) {
+      throw new ValidationError("documentId 不能为空");
+    }
+    if (!metaFields || typeof metaFields !== "object" || Array.isArray(metaFields)) {
+      throw new ValidationError("metaFields 必须是对象");
+    }
+
+    await this.request<unknown>(
+      "PUT",
+      `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents/${encodeURIComponent(documentId)}`,
+      { meta_fields: metaFields },
+    );
+  }
+
+  /**
+   * 重命名文档。实测 v0.20.5 的 `PUT .../documents/{id}` 接受 `{ name }`，
+   * 与 meta_fields 一样是部分字段更新，可分开调用。
+   */
+  async renameDocument(
+    datasetId: string,
+    documentId: string,
+    name: string,
+  ): Promise<void> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+    if (!documentId) {
+      throw new ValidationError("documentId 不能为空");
+    }
+    if (!name.trim()) {
+      throw new ValidationError("name 不能为空");
+    }
+
+    await this.request<unknown>(
+      "PUT",
+      `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents/${encodeURIComponent(documentId)}`,
+      { name },
+    );
   }
 
   /** 删除一个或多个文档；RAGFlow 只按 `{ ids: [...] }` 批量删除。 */
