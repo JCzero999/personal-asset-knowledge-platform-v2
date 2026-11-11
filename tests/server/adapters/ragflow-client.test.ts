@@ -145,6 +145,7 @@ describe("RagflowClient.createDocument", () => {
       tokenCount: 0,
       chunkMethod: "naive",
       run: "UNSTART",
+      progressMessage: null,
     });
   });
 
@@ -157,6 +158,84 @@ describe("RagflowClient.createDocument", () => {
     await expect(
       client.createDocument("ds_1", { filename: "a.txt", data: new Uint8Array() }),
     ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("RagflowClient.listDocuments / startParsing", () => {
+  it("列表响应是 { docs, total }，解析 run 与 progress_msg", async () => {
+    const { client, fetchMock } = makeClient(
+      jsonResponse({
+        code: 0,
+        data: {
+          total: 2,
+          docs: [
+            {
+              id: "doc_1",
+              name: "a.txt",
+              dataset_id: "ds_1",
+              chunk_count: 3,
+              token_count: 20,
+              chunk_method: "naive",
+              run: "DONE",
+              progress_msg: "\nDone.",
+            },
+            { id: "doc_2", run: "FAIL", progress_msg: "parse failed\n" },
+          ],
+        },
+      }),
+    );
+
+    const page = await client.listDocuments("ds_1", { page: 2, pageSize: 50 });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(
+      `${BASE_URL}/api/v1/datasets/ds_1/documents?page=2&page_size=50`,
+    );
+    expect(init.method).toBe("GET");
+    expect(page.total).toBe(2);
+    expect(page.documents).toEqual([
+      {
+        id: "doc_1",
+        name: "a.txt",
+        datasetId: "ds_1",
+        chunkCount: 3,
+        tokenCount: 20,
+        chunkMethod: "naive",
+        run: "DONE",
+        progressMessage: "Done.",
+      },
+      {
+        id: "doc_2",
+        name: "",
+        datasetId: "ds_1",
+        chunkCount: 0,
+        tokenCount: 0,
+        chunkMethod: "",
+        run: "FAIL",
+        progressMessage: "parse failed",
+      },
+    ]);
+  });
+
+  it("触发解析按 { document_ids } POST chunks 接口", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0 }));
+
+    await client.startParsing("ds_1", ["doc_1", "doc_2"]);
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/v1/datasets/ds_1/chunks`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      document_ids: ["doc_1", "doc_2"],
+    });
+  });
+
+  it("datasetId 或 documentIds 为空时本地拒绝", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0 }));
+
+    await expect(client.listDocuments("")).rejects.toBeInstanceOf(ValidationError);
+    await expect(client.startParsing("ds_1", [])).rejects.toBeInstanceOf(ValidationError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

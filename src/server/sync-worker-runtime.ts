@@ -39,6 +39,19 @@ async function tick(db: AppDatabase): Promise<void> {
       "[sync] worker 本轮异常",
       error instanceof Error ? error.message : String(error),
     );
+  }
+
+  try {
+    const { pollParsingOnce } = await import("./services/parse-service");
+    const parsed = await pollParsingOnce(db, { limit: 50 });
+    if (parsed.failed > 0) {
+      console.warn("[parse] 有文档解析失败或无法查询", parsed.errors);
+    }
+  } catch (error) {
+    console.error(
+      "[parse] worker 本轮异常",
+      error instanceof Error ? error.message : String(error),
+    );
   } finally {
     holder.__pakpSyncRunning = false;
   }

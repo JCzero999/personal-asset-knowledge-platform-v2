@@ -206,6 +206,22 @@ export class SqliteContentStore implements ContentStore {
     return row ? toContentRef(row) : null;
   }
 
+  async listParsing(limit = 50): Promise<ContentRef[]> {
+    const rows = await this.db
+      .select()
+      .from(contentRefs)
+      .where(
+        and(
+          inArray(contentRefs.parseStatus, ["pending", "running"]),
+          isNull(contentRefs.deletedAt),
+        ),
+      )
+      .orderBy(asc(contentRefs.updatedAt), asc(contentRefs.createdAt))
+      .limit(limit);
+
+    return rows.map(toContentRef);
+  }
+
   async updateState(
     id: string,
     patch: Partial<

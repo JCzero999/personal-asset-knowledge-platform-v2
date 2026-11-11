@@ -73,7 +73,20 @@ export interface RagflowDocument {
   chunkCount: number;
   tokenCount: number;
   chunkMethod: string;
+  /** RAGFlow 的解析状态原值：UNSTART / RUNNING / DONE / FAIL / CANCEL。 */
   run: string;
+  /** 解析任务日志，失败时用于定位原因。 */
+  progressMessage: string | null;
+}
+
+export interface ListDocumentsQuery {
+  page?: number;
+  pageSize?: number;
+}
+
+export interface RagflowDocumentPage {
+  documents: RagflowDocument[];
+  total: number;
 }
 
 /** RAGFlow 所有接口的统一响应信封。 */
@@ -102,6 +115,25 @@ interface RawDocument {
   token_count?: number;
   chunk_method?: string;
   run?: string;
+  progress_msg?: string | null;
+}
+
+interface RawDocumentList {
+  docs?: RawDocument[];
+  total?: number;
+}
+
+function toDocument(raw: RawDocument, datasetId: string): RagflowDocument {
+  return {
+    id: raw.id ?? "",
+    name: raw.name ?? "",
+    datasetId: raw.dataset_id ?? datasetId,
+    chunkCount: raw.chunk_count ?? 0,
+    tokenCount: raw.token_count ?? 0,
+    chunkMethod: raw.chunk_method ?? "",
+    run: raw.run ?? "",
+    progressMessage: raw.progress_msg?.trim() || null,
+  };
 }
 
 function toDataset(raw: RawDataset): RagflowDataset {
@@ -223,15 +255,63 @@ export class RagflowClient {
       throw unexpectedShape("POST /api/v1/datasets/{id}/documents", data);
     }
 
+    const document = toDocument(raw, datasetId);
+    return { ...document, name: document.name || input.filename };
+  }
+
+  /**
+   * 列出一个 dataset 下的文档（含解析状态）。
+   * v0.20.5 的列表响应是 `{ docs: [...], total }`，不是数组。
+   * 注意：`GET /documents/{id}` 是下载接口，不能当详情用。
+   */
+  async listDocuments(
+    datasetId: string,
+    query: ListDocumentsQuery = {},
+  ): Promise<RagflowDocumentPage> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+
+    const params = new URLSearchParams({
+      page: String(query.page ?? 1),
+      page_size: String(query.pageSize ?? 100),
+    });
+    const data = await this.request<RawDocumentList>(
+      "GET",
+      `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents?${params.toString()}`,
+    );
+
+    if (!data || !Array.isArray(data.docs)) {
+      throw unexpectedShape("GET /api/v1/datasets/{id}/documents", data);
+    }
+
     return {
-      id: raw.id ?? "",
-      name: raw.name ?? input.filename,
-      datasetId: raw.dataset_id ?? datasetId,
-      chunkCount: raw.chunk_count ?? 0,
-      tokenCount: raw.token_count ?? 0,
-      chunkMethod: raw.chunk_method ?? "",
-      run: raw.run ?? "",
+      documents: data.docs.map((raw) => toDocument(raw, datasetId)),
+      total: data.total ?? data.docs.length,
     };
+  }
+
+  /**
+   * 触发解析：`POST /api/v1/datasets/{dataset_id}/chunks`，body `{ document_ids }`。
+   * 调用返回即代表任务已被接收，完成后状态需通过 `listDocuments` 轮询。
+   */
+  async startParsing(
+    datasetId: string,
+    documentIds: string | string[],
+  ): Promise<void> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+    const ids = Array.isArray(documentIds) ? documentIds : [documentIds];
+    if (ids.length === 0 || ids.some((id) => !id)) {
+      throw new ValidationError("documentIds 不能为空");
+    }
+
+    await this.request<unknown>(
+      "POST",
+      `/api/v1/datasets/${encodeURIComponent(datasetId)}/chunks`,
+      { document_ids: ids },
+    );
   }
 
   /**

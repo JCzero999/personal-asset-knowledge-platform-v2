@@ -31,10 +31,12 @@ class FakeGateway implements ContentGateway {
   deleted: { datasetId: string; ids: string[] }[] = [];
   renamed: { id: string; name: string }[] = [];
   metaByDocument = new Map<string, Record<string, string>>();
+  parseStarted: { datasetId: string; ids: string[] }[] = [];
   createDatasetCalls: { name: string }[] = [];
   createDocumentCalls = 0;
   failCreateDocument: Error | null = null;
   failMetaUpdate: Error | null = null;
+  failStartParsing: Error | null = null;
 
   async listDatasets(query?: { name?: string }): Promise<RagflowDataset[]> {
     const name = query?.name;
@@ -103,6 +105,16 @@ class FakeGateway implements ContentGateway {
     doc.filename = name;
     this.renamed.push({ id: documentId, name });
   }
+
+  async startParsing(datasetId: string, documentIds: string | string[]): Promise<void> {
+    if (this.failStartParsing) {
+      throw this.failStartParsing;
+    }
+    this.parseStarted.push({
+      datasetId,
+      ids: Array.isArray(documentIds) ? documentIds : [documentIds],
+    });
+  }
 }
 
 function formWith(
@@ -169,6 +181,8 @@ describe("uploadObjectContent 成功路径", () => {
     expect(ref.sizeBytes).toBe(13);
     expect(ref.contentHash).toHaveLength(64);
     expect(ref.syncState).toBe("pending");
+    expect(ref.parseStatus).toBe("running");
+    expect(gateway.parseStarted).toEqual([{ datasetId: "ds_main", ids: ["doc_1"] }]);
 
     // 数据库里只有一条引用，且 outbox 里有对应任务。
     const refs = await store.listByOwner("asset", object.id);
@@ -482,6 +496,25 @@ describe("uploadObjectContent RAGFlow 失败", () => {
     expect((error as DomainError).message).toContain("RAGFlow");
     expect(await store.listByOwner("asset", object.id)).toHaveLength(0);
     expect(await store.listPendingJobs()).toHaveLength(0);
+  });
+
+  it("解析触发失败不影响上传，状态停在 pending 等轮询重试", async () => {
+    const object = await createObject(handle.db, OWNER, {
+      type: "asset",
+      title: "解析触发失败",
+      library: "internal",
+    });
+    const gateway = new FakeGateway();
+    gateway.failStartParsing = new DomainError("INTERNAL", "RAGFlow chunks 接口失败");
+
+    const ref = await uploadObjectContent(handle.db, OWNER, object.id, formWith(textFile("x")), {
+      client: gateway,
+      env: { RAGFLOW_DATASET_ID: "ds_main" },
+    });
+
+    expect(ref.parseStatus).toBe("pending");
+    expect((await store.listByOwner("asset", object.id))[0].parseStatus).toBe("pending");
+    expect(await store.listParsing()).toHaveLength(1);
   });
 
   it("meta 写入失败时删掉刚上传的文档并抛错，不落库", async () => {

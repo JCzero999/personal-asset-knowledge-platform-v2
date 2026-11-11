@@ -1,11 +1,27 @@
 import { ValidationError } from "@/domain/errors";
 import { getDb } from "@/server/db/client";
-import { created, fail, fromError } from "@/server/http/respond";
-import { uploadObjectContent } from "@/server/services/content-service";
+import { created, fail, fromError, ok } from "@/server/http/respond";
+import { listObjectContent, uploadObjectContent } from "@/server/services/content-service";
 import { getSession } from "@/server/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/** 列出对象的内容引用（含解析/同步状态）。 */
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const session = await getSession();
+  if (!session) return fail("UNAUTHORIZED", "请先登录");
+
+  try {
+    const { id } = await params;
+    return ok(await listObjectContent(getDb(), session.sub, id));
+  } catch (error) {
+    return fromError(error);
+  }
+}
 
 /** multipart 上传：字段 file（必填）、role（primary | attachment）、documentName（可选）。 */
 export async function POST(

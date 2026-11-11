@@ -84,6 +84,9 @@ export interface ContentStore {
 
   findPrimary(ownerType: ObjectType, ownerId: string): Promise<ContentRef | null>;
 
+  /** 待解析或解析中的引用，供解析轮询使用。 */
+  listParsing(limit?: number): Promise<ContentRef[]>;
+
   /** 解析/同步状态回写；`documentId` 可在重传后更新（可变指针）。 */
   updateState(
     id: string,

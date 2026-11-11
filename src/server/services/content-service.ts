@@ -55,6 +55,7 @@ export interface ContentGateway {
     documentId: string,
     metaFields: DocumentMetaFields,
   ): Promise<void>;
+  startParsing(datasetId: string, documentIds: string | string[]): Promise<void>;
 }
 
 export interface UploadContentOptions {
@@ -292,6 +293,15 @@ async function deletePreviousDocument(
   }
 }
 
+export async function listObjectContent(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+): Promise<ContentRef[]> {
+  const object = await getObject(db, ownerSub, objectId);
+  return new SqliteContentStore(db).listByOwner(object.type, object.id);
+}
+
 export async function uploadObjectContent(
   db: AppDatabase,
   ownerSub: string,
@@ -385,6 +395,21 @@ export async function uploadObjectContent(
     await client
       .renameDocument(datasetId, document.id, upload.filename)
       .catch(() => undefined);
+  }
+
+  // 解析失败不影响上传结果：状态停在 pending，由解析轮询在 UNSTART 时补触发。
+  try {
+    await client.startParsing(datasetId, document.id);
+    ref = await store.updateState(ref.id, {
+      parseStatus: "running",
+      parseError: null,
+      ...(options.now ? { now: options.now } : {}),
+    });
+  } catch (error) {
+    console.warn("[content] 触发解析失败，等待轮询重试", {
+      documentId: document.id,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 
   return ref;
