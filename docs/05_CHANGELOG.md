@@ -95,3 +95,11 @@
 - 新增 `POST /api/objects/{id}/library`（跨库迁移，`reason` 必填）与 `POST /api/objects/{id}/archive`（`{ "archived": true | false }`）
 - 服务层统一按 `ownerSub` 校验归属，非本人对象一律 404；请求体解析集中在 `object-service`，可空字段区分「缺席」与「显式 null」
 - 验证：typecheck、lint、8 个测试文件 84 项用例、生产构建通过；mock 身份实测编辑 200 / 改库别 400 / 过期 revision 409 / 迁移 200 / 缺理由 400 / 归档 200 / 取消归档 200 / 删除 204
+
+## 2026-11-11（RAGFlow 部署与适配器）
+
+- **RAGFlow v0.20.5 以 Docker 部署并实测连通**：`infra/ragflow/docker-compose.yml` 精简为 elasticsearch 单一文档引擎；`ragflow-server` 9380 API / 18080 Web、MySQL 5455、ES 1200、MinIO 19000/19001、Redis 16379，全部避开 Logto 端口
+- 实测链路：取 API key → `GET /datasets`（空）→ 建 dataset（`BAAI/bge-large-zh-v1.5@BAAI`）→ multipart 上传 document → 列表核对 → 删 document → 删 dataset → 列表恢复空；契约纠正：v0.20.5 上传是单次 multipart POST（字段 `file`），文档列表在 `data.docs`
+- 新增 `src/server/adapters/ragflow/{client,index}.ts`：`listDatasets` / `createDocument` / `deleteDocument`，错误映射到领域错误，配置缺失即拒绝启动；15 个 mock fetch 单测
+- 已知限制：解析流水线未实测（缺 chat model API key）；MinIO 使用社区重建镜像 `pgsty/minio`
+- 验证：typecheck、lint、8 个测试文件 84 项用例通过（构建此前已通过）

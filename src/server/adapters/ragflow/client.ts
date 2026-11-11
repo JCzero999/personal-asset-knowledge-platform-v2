@@ -1,0 +1,340 @@
+import {
+  ConflictError,
+  DomainError,
+  NotFoundError,
+  ValidationError,
+} from "../../../domain/errors";
+
+/**
+ * RAGFlow HTTP API 客户端（v0.20.5 实测契约）。
+ *
+ * 只覆盖当前阶段需要的三个动作：列 dataset、上传 document、删除 document。
+ * 不在这里做业务映射、重试或 outbox；那些属于 server/services。
+ *
+ * 鉴权：`Authorization: Bearer <token>`，token 取自 `api_token.token`（`ragflow-` 前缀），
+ * 不是 `/v1/system/new_token` 返回的 `beta` 字段。
+ */
+
+export interface RagflowClientOptions {
+  /** 例：http://localhost:9380 */
+  baseUrl: string;
+  apiKey: string;
+  /** 便于单测注入；默认使用全局 fetch。 */
+  fetch?: typeof fetch;
+  /** 单次请求超时，默认 30s。 */
+  timeoutMs?: number;
+}
+
+export interface ListDatasetsQuery {
+  page?: number;
+  pageSize?: number;
+  /** 默认 create_time。 */
+  orderBy?: string;
+  /** 默认 true。 */
+  desc?: boolean;
+  name?: string;
+}
+
+export interface RagflowDataset {
+  id: string;
+  name: string;
+  description: string | null;
+  embeddingModel: string | null;
+  documentCount: number;
+  chunkCount: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface CreateDocumentInput {
+  filename: string;
+  data: Uint8Array;
+  /** 可选 MIME；不传时由 FormData 按 Blob 默认值处理。 */
+  mimeType?: string;
+}
+
+export interface RagflowDocument {
+  id: string;
+  name: string;
+  datasetId: string;
+  chunkCount: number;
+  tokenCount: number;
+  chunkMethod: string;
+  run: string;
+}
+
+/** RAGFlow 所有接口的统一响应信封。 */
+interface RagflowEnvelope<T> {
+  code: number;
+  data?: T;
+  message?: string;
+}
+
+interface RawDataset {
+  id?: string;
+  name?: string;
+  description?: string | null;
+  embedding_model?: string | null;
+  document_count?: number;
+  chunk_count?: number;
+  create_date?: string | null;
+  update_date?: string | null;
+}
+
+interface RawDocument {
+  id?: string;
+  name?: string;
+  dataset_id?: string;
+  chunk_count?: number;
+  token_count?: number;
+  chunk_method?: string;
+  run?: string;
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000;
+const SUCCESS_CODE = 0;
+
+export class RagflowClient {
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+  private readonly fetchImpl: typeof fetch;
+  private readonly timeoutMs: number;
+
+  constructor(options: RagflowClientOptions) {
+    const baseUrl = options.baseUrl?.trim().replace(/\/+$/, "");
+    const apiKey = options.apiKey?.trim();
+
+    if (!baseUrl) {
+      throw new ValidationError("RAGFlow baseUrl 不能为空");
+    }
+    if (!apiKey) {
+      throw new ValidationError("RAGFlow apiKey 不能为空");
+    }
+
+    this.baseUrl = baseUrl;
+    this.apiKey = apiKey;
+    this.fetchImpl = options.fetch ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  async listDatasets(query: ListDatasetsQuery = {}): Promise<RagflowDataset[]> {
+    const params = new URLSearchParams({
+      page: String(query.page ?? 1),
+      page_size: String(query.pageSize ?? 30),
+      orderby: query.orderBy ?? "create_time",
+      desc: String(query.desc ?? true),
+    });
+    if (query.name) {
+      params.set("name", query.name);
+    }
+
+    const data = await this.request<RawDataset[]>(
+      "GET",
+      `/api/v1/datasets?${params.toString()}`,
+    );
+    if (!Array.isArray(data)) {
+      throw unexpectedShape("GET /api/v1/datasets", data);
+    }
+
+    return data.map((raw) => ({
+      id: raw.id ?? "",
+      name: raw.name ?? "",
+      description: raw.description ?? null,
+      embeddingModel: raw.embedding_model ?? null,
+      documentCount: raw.document_count ?? 0,
+      chunkCount: raw.chunk_count ?? 0,
+      createdAt: raw.create_date ?? null,
+      updatedAt: raw.update_date ?? null,
+    }));
+  }
+
+  /**
+   * 上传单个文档。RAGFlow v0.20.5 是单次 multipart POST
+   * （`POST /api/v1/datasets/{dataset_id}/documents`，字段名 `file`），
+   * 返回数组，这里取第一个元素。
+   */
+  async createDocument(
+    datasetId: string,
+    input: CreateDocumentInput,
+  ): Promise<RagflowDocument> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+    if (!input.filename) {
+      throw new ValidationError("filename 不能为空");
+    }
+    if (input.data.byteLength === 0) {
+      throw new ValidationError("文档内容不能为空");
+    }
+
+    const form = new FormData();
+    const blob = new Blob([new Uint8Array(input.data)], {
+      type: input.mimeType ?? "application/octet-stream",
+    });
+    form.append("file", blob, input.filename);
+
+    const data = await this.request<RawDocument[]>(
+      "POST",
+      `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents`,
+      form,
+    );
+
+    const raw = Array.isArray(data) ? data[0] : undefined;
+    if (!raw) {
+      throw unexpectedShape("POST /api/v1/datasets/{id}/documents", data);
+    }
+
+    return {
+      id: raw.id ?? "",
+      name: raw.name ?? input.filename,
+      datasetId: raw.dataset_id ?? datasetId,
+      chunkCount: raw.chunk_count ?? 0,
+      tokenCount: raw.token_count ?? 0,
+      chunkMethod: raw.chunk_method ?? "",
+      run: raw.run ?? "",
+    };
+  }
+
+  /** 删除一个或多个文档；RAGFlow 只按 `{ ids: [...] }` 批量删除。 */
+  async deleteDocument(
+    datasetId: string,
+    documentIds: string | string[],
+  ): Promise<void> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+    const ids = Array.isArray(documentIds) ? documentIds : [documentIds];
+    if (ids.length === 0 || ids.some((id) => !id)) {
+      throw new ValidationError("documentIds 不能为空");
+    }
+
+    await this.request<unknown>(
+      "DELETE",
+      `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents`,
+      { ids },
+    );
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: FormData | Record<string, unknown>,
+  ): Promise<T> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.apiKey}`,
+    };
+    let payload: BodyInit | undefined;
+
+    if (body instanceof FormData) {
+      // 让 fetch 自己带 multipart boundary。
+      payload = body;
+    } else if (body) {
+      headers["Content-Type"] = "application/json";
+      payload = JSON.stringify(body);
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method,
+        headers,
+        body: payload,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (error) {
+      throw new DomainError("INTERNAL", `RAGFlow 请求失败：${method} ${path}`, {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!response.ok) {
+      throw await this.errorFromResponse(response, `${method} ${path}`);
+    }
+
+    let envelope: RagflowEnvelope<T>;
+    try {
+      envelope = (await response.json()) as RagflowEnvelope<T>;
+    } catch (error) {
+      throw new DomainError("INTERNAL", "RAGFlow 返回了非 JSON 响应", {
+        method,
+        path,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (typeof envelope?.code !== "number" || envelope.code !== SUCCESS_CODE) {
+      throw this.errorFromEnvelope(envelope, `${method} ${path}`);
+    }
+
+    return envelope.data as T;
+  }
+
+  private async errorFromResponse(
+    response: Response,
+    context: string,
+  ): Promise<DomainError> {
+    let message = `RAGFlow ${context} 返回 HTTP ${response.status}`;
+    try {
+      const text = await response.text();
+      if (text) {
+        message = `${message}：${text.slice(0, 500)}`;
+      }
+    } catch {
+      // 读不到 body 时保留状态码信息。
+    }
+
+    if (response.status === 404) {
+      return new NotFoundError(message, { status: response.status, context });
+    }
+    if (response.status === 409) {
+      return new ConflictError(message, { status: response.status, context });
+    }
+    if (response.status === 400 || response.status === 422) {
+      return new ValidationError(message, { status: response.status, context });
+    }
+    return new DomainError("INTERNAL", message, {
+      status: response.status,
+      context,
+    });
+  }
+
+  private errorFromEnvelope(
+    envelope: RagflowEnvelope<unknown>,
+    context: string,
+  ): DomainError {
+    const message = `RAGFlow ${context} 调用失败（code=${String(envelope?.code)}）：${
+      envelope?.message ?? "未知错误"
+    }`;
+    const details = { code: envelope?.code, context };
+
+    if (/(not found|can't find|don't own|lacks permission)/i.test(message)) {
+      return new NotFoundError(message, details);
+    }
+    // RAGFlow 用 code=102 表示参数错误。
+    if (envelope?.code === 102) {
+      return new ValidationError(message, details);
+    }
+    return new DomainError("INTERNAL", message, details);
+  }
+}
+
+function unexpectedShape(context: string, data: unknown): DomainError {
+  return new DomainError("INTERNAL", `RAGFlow ${context} 返回结构不符合预期`, {
+    received: JSON.stringify(data)?.slice(0, 500),
+  });
+}
+
+/** 从应用环境变量构造客户端；缺少配置时抛 DomainError，避免带病启动。 */
+export function createRagflowClientFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): RagflowClient {
+  const baseUrl = env.RAGFLOW_BASE_URL;
+  const apiKey = env.RAGFLOW_API_KEY;
+  if (!baseUrl || !apiKey) {
+    throw new DomainError(
+      "INTERNAL",
+      "缺少 RAGFlow 配置：需要 RAGFLOW_BASE_URL 与 RAGFLOW_API_KEY",
+    );
+  }
+  return new RagflowClient({ baseUrl, apiKey });
+}

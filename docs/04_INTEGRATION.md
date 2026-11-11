@@ -2,7 +2,7 @@
 
 > 本文件只记录已确认决策与已实测的集成事实。`待实测` 表示当前没有可填写的真实值；禁止把历史建议端口、规划地址或草案字段写成已可用配置。
 >
-> 当前环境：本机 Docker 可用（Docker 29.9.2 / Compose v5.6.1）；已完成 Logto 自托管部署与连通性实测，RAGFlow / LightRAG / Embedding 仍未部署。
+> 当前环境：本机 Docker 可用（Docker 29.9.2 / Compose v5.6.1）；已完成 Logto 与 RAGFlow 自托管部署及连通性实测，LightRAG 仍未部署。
 
 ## 填写规则
 
@@ -40,20 +40,47 @@
 
 ## RAGFlow
 
-- 部署方式：本地 Docker
+- 部署方式：本地 Docker Compose（`infra/ragflow/docker-compose.yml`，基于官方 v0.20.5 编排精简，只保留 elasticsearch 文档引擎）
 - 内容职责：统一内容存储、解析、分块、向量化与检索（ADR-005）
-- 当前状态：等待 Docker；未部署、未连接、未验证
+- 当前状态：已部署并通过 API 实测（2026-11-11）；dataset / document 的创建、上传、删除与清理均已跑通，解析流水线尚未实测
+- 应用侧适配器：`src/server/adapters/ragflow/client.ts`（`listDatasets` / `createDocument` / `deleteDocument`，mock 单测见 `tests/server/adapters/ragflow-client.test.ts`）
 
 | 字段 | 实测值 |
 |---|---|
-| 版本 | 待实测 |
-| Base URL | 待实测 |
-| 服务端口 | 待实测 |
-| 管理界面地址 | 待实测 |
-| 已验证环境变量名 | 待实现并验证 |
-| Dataset / Document 接口契约 | 待 Phase 2 真实调用验证 |
-| 解析与检索验证结果 | 待 Phase 2 验证 |
+| 版本 | 镜像 tag `infiniflow/ragflow:v0.20.5`（image id `sha256:e9438614aec3…`，即 22.6GB 的 full 版）；`GET /v1/system/version` → `{"code":0,"data":"v0.20.5 full"}` |
+| 依赖镜像 | `mysql:8.0.39`、`elasticsearch:8.11.3`、`valkey/valkey:8`、`pgsty/minio:latest`（MinIO 官方镜像已无法匿名拉取，暂用社区重建版，命令与官方一致） |
+| 容器名 / 状态 | `ragflow-server`、`ragflow-mysql`、`ragflow-minio`、`ragflow-redis`、`ragflow-es-01`，`docker compose ps` 均 `Up (healthy)` |
+| Base URL | `http://localhost:9380` |
+| 服务端口 | API 9380；Web UI 18080（容器 80，nginx）；MySQL 5455；Elasticsearch 1200；MinIO 19000 / 控制台 19001；Redis 16379（均为宿主机端口，刻意避开 Logto 的 3001/3002） |
+| 管理界面地址 | `http://localhost:18080`（实测 HTTP 200） |
+| 健康检查 | 容器自带 healthcheck：ragflow-server 用 Python 探 127.0.0.1:9380；ES 用带密码的 `_cluster/health` |
+| 已验证环境变量名 | 编排层：`RAGFLOW_IMAGE`、`STACK_VERSION`、`MINIO_IMAGE`、`SVR_HTTP_PORT`、`SVR_WEB_PORT`、`MYSQL_PORT`、`ES_PORT`、`MINIO_PORT`、`MINIO_CONSOLE_PORT`、`REDIS_PORT`、`TIMEZONE`、`HF_ENDPOINT`、`MEM_LIMIT`、`MYSQL_DBNAME`、`MYSQL_PASSWORD`、`MINIO_USER`、`MINIO_PASSWORD`、`REDIS_PASSWORD`、`ELASTIC_PASSWORD`、`REGISTER_ENABLED`；应用侧：`RAGFLOW_BASE_URL`、`RAGFLOW_API_KEY` |
+| 鉴权方式 | `POST /v1/user/register`（密码需用容器内 `conf/private.pem` 对应公钥做 RSA 加密后 base64）→ `POST /v1/system/new_token` 返回 `token`（`ragflow-` 前缀）。后续 API 用 `Authorization: Bearer <token>`；该 token 对应 `api_token.token`，不是返回里的 `beta` |
+| ES 前置条件 | Docker Desktop 的 Linux VM 需 `vm.max_map_count=262144`（本机实测已为该值） |
+| 镜像拉取 | 本机从华为云镜像 `swr.cn-north-4.myhuaweicloud.com/infiniflow/ragflow:v0.20.5` 拉取后重打 tag；`docker pull` 需分段续传，见 `infra/ragflow/README.md` |
+| Dataset / Document 接口契约 | 见下方“已验证 API 调用”，均为实测请求/响应 |
+| 解析与检索验证结果 | 待实测：未调用 `POST /api/v1/datasets/{id}/chunks`，未执行 chunk / embedding / 检索 |
 | Asset / Work 映射结果 | 待 Phase 2 验证 |
+
+### 已验证 API 调用（2026-11-11 14:52，全部使用上面的真实 API key）
+
+| 动作 | 请求 | 实测响应 |
+|---|---|---|
+| 列 dataset（空库） | `GET /api/v1/datasets` | `{"code":0,"data":[]}` |
+| 建 dataset | `POST /api/v1/datasets`，body `{"name":"phase0-smoke-test","description":"…"}` | `{"code":0,"data":{…"id":"6ef7a234…","name":"phase0-smoke-test","embedding_model":"BAAI/bge-large-zh-v1.5@BAAI",…}}`（未传 embedding_model 时落到租户默认模型） |
+| 上传 document | `POST /api/v1/datasets/{dataset_id}/documents`，multipart 字段 `file` | `{"code":0,"data":[{"id":"779a934c…","name":"smoke.txt","dataset_id":"…","chunk_method":"naive","run":"UNSTART","size":56,"suffix":"txt",…}]}`（单次请求即落库，不是先建记录再 PUT） |
+| 列 document | `GET /api/v1/datasets/{dataset_id}/documents?page=1&page_size=10` | `{"code":0,"data":{"docs":[{…"id":"779a934c…","chunk_count":0,…}],"total":1}}`（注意是 `data.docs`，不是数组） |
+| 删 document | `DELETE /api/v1/datasets/{dataset_id}/documents`，body `{"ids":["779a934c…"]}` | `{"code":0}`；随后列表 `docs:[] , total:0` |
+| 删 dataset | `DELETE /api/v1/datasets`，body `{"ids":["6ef7a234…"]}` | `{"code":0}`；随后 `GET /api/v1/datasets` → `{"code":0,"data":[]}`（测试数据已清理干净） |
+
+### 还缺什么才能跑通解析
+
+- 未配置任何外部模型 API key。full 版镜像自带 embedding 模型（实测租户默认 `BAAI/bge-large-zh-v1.5@BAAI`），建库和上传可用；
+- 但解析链路（`POST /api/v1/datasets/{id}/chunks` → task executor → chunk / 向量化 / 写索引）**未实测**，需要：
+  1. 确认本地 embedding 模型可加载（首次会按 `HF_ENDPOINT` 拉取模型，本机已指向 `https://hf-mirror.com`，尚未验证下载结果）；
+  2. 对话 / 问答与 GraphRAG、RAPTOR 需要 chat model API key（当前没有）；
+  3. 若改用 `-slim` 镜像，则必须额外配置外部 embedding 服务，否则创建 dataset 就会失败。
+- 因此本阶段只把 RAGFlow 当作内容 CRUD 与后续解析的接入点，解析结果字段（`parse_status` / `chunk_count`）暂不接线。
 
 ## LightRAG
 
