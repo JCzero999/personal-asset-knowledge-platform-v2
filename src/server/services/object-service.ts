@@ -17,7 +17,11 @@ import {
   type WorkStatus,
 } from "../../domain/objects";
 import type { AppDatabase } from "../db/client";
-import type { CreateObjectInput, ListObjectsQuery } from "../ports/object-repository";
+import type {
+  CreateObjectInput,
+  ListObjectsQuery,
+  UpdateObjectInput,
+} from "../ports/object-repository";
 import { SqliteObjectRepository } from "../repositories/sqlite-object-repository";
 
 /**
@@ -201,6 +205,21 @@ export function parseChangeStatusBody(body: unknown): ChangeStatusParams {
   return { to, expectedRevision: expected };
 }
 
+/** 单用户阶段也按 ownerSub 过滤：别人的对象一律当作不存在，避免通过 id 探测。 */
+async function requireOwned(
+  repo: SqliteObjectRepository,
+  ownerSub: string,
+  objectId: string,
+): Promise<BusinessObject> {
+  const current = await repo.findById(objectId);
+
+  if (!current || current.ownerSub !== ownerSub) {
+    throw new NotFoundError("对象不存在或已删除", { id: objectId });
+  }
+
+  return current;
+}
+
 /**
  * 迁移作品状态。单用户阶段也按 ownerSub 过滤：别人的对象一律当作不存在，
  * 避免通过 id 探测他人数据。
@@ -212,13 +231,140 @@ export async function changeObjectStatus(
   body: unknown,
 ): Promise<BusinessObject> {
   const repo = new SqliteObjectRepository(db);
-  const current = await repo.findById(objectId);
-
-  if (!current || current.ownerSub !== ownerSub) {
-    throw new NotFoundError("对象不存在或已删除", { id: objectId });
-  }
+  await requireOwned(repo, ownerSub, objectId);
 
   return repo.changeStatus({ objectId, ...parseChangeStatusBody(body) });
+}
+
+const immutableUpdateFields = ["type", "library", "status"] as const;
+
+/** 编辑请求体：可改字段都按「缺席不变、显式 null 清空」处理。 */
+export function parseUpdateObjectBody(body: unknown): UpdateObjectInput {
+  const record = asRecord(body);
+  const expected = record.expectedRevision;
+
+  if (typeof expected !== "number" || !Number.isInteger(expected) || expected < 1) {
+    throw new ValidationError("expectedRevision 必须是正整数", { field: "expectedRevision" });
+  }
+
+  for (const field of immutableUpdateFields) {
+    if (field in record) {
+      throw new ValidationError(`${field} 不能通过编辑接口修改`, { field });
+    }
+  }
+
+  const patch: UpdateObjectInput = { expectedRevision: expected };
+
+  if ("title" in record) {
+    patch.title = readString(record.title, "title", MAX_TITLE, true) as string;
+  }
+  if ("description" in record) {
+    patch.description = readString(record.description, "description", MAX_DESCRIPTION);
+  }
+  if ("categories" in record) {
+    patch.categories = readList(record.categories, "categories");
+  }
+  if ("tags" in record) {
+    patch.tags = readList(record.tags, "tags");
+  }
+  if ("priority" in record) {
+    patch.priority = readEnum(record.priority, "priority", priorities);
+  }
+  if ("source" in record) {
+    patch.source = readEnum<ObjectSource>(record.source, "source", ["handwritten", "ai_extracted"]);
+  }
+  if ("origin" in record) {
+    patch.origin = readEnum<ObjectOrigin>(record.origin, "origin", objectOrigins);
+  }
+  if ("format" in record) {
+    patch.format = readEnum<WorkFormat>(record.format, "format", workFormatValues);
+  }
+  if ("sourceNote" in record) {
+    patch.sourceNote = readString(record.sourceNote, "sourceNote", MAX_DESCRIPTION);
+  }
+
+  return patch;
+}
+
+export async function updateObject(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+  body: unknown,
+): Promise<BusinessObject> {
+  const repo = new SqliteObjectRepository(db);
+  await requireOwned(repo, ownerSub, objectId);
+
+  return repo.update(objectId, parseUpdateObjectBody(body));
+}
+
+export async function deleteObject(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+): Promise<void> {
+  const repo = new SqliteObjectRepository(db);
+  await requireOwned(repo, ownerSub, objectId);
+  await repo.softDelete(objectId);
+}
+
+export interface ChangeLibraryParams {
+  to: Library;
+  reason: string;
+  expectedRevision?: number;
+}
+
+/** 跨库迁移请求体：理由必填，它是「内库 = 已验证」承诺的审计依据。 */
+export function parseChangeLibraryBody(body: unknown): ChangeLibraryParams {
+  const record = asRecord(body);
+  const to = readEnum<Library>(record.to, "to", libraries);
+  const reason = readString(record.reason, "reason", MAX_DESCRIPTION, true) as string;
+  const expected = record.expectedRevision;
+
+  if (expected === undefined || expected === null) {
+    return { to, reason };
+  }
+
+  if (typeof expected !== "number" || !Number.isInteger(expected) || expected < 1) {
+    throw new ValidationError("expectedRevision 必须是正整数", { field: "expectedRevision" });
+  }
+
+  return { to, reason, expectedRevision: expected };
+}
+
+export async function changeObjectLibrary(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+  body: unknown,
+): Promise<BusinessObject> {
+  const repo = new SqliteObjectRepository(db);
+  await requireOwned(repo, ownerSub, objectId);
+
+  return repo.changeLibrary({
+    objectId,
+    actorSub: ownerSub,
+    ...parseChangeLibraryBody(body),
+  });
+}
+
+/** 归档 / 取消归档：请求体 `{ "archived": true | false }`。 */
+export async function setObjectArchived(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+  body: unknown,
+): Promise<BusinessObject> {
+  const record = asRecord(body);
+
+  if (typeof record.archived !== "boolean") {
+    throw new ValidationError("archived 必须是布尔值", { field: "archived" });
+  }
+
+  const repo = new SqliteObjectRepository(db);
+  await requireOwned(repo, ownerSub, objectId);
+
+  return record.archived ? repo.archive(objectId) : repo.unarchive(objectId);
 }
 
 /** 列表筛选参数只接受已知取值，非法值直接报错，不做静默忽略。 */

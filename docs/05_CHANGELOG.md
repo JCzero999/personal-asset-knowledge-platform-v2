@@ -88,3 +88,10 @@
 - `contentRefs.upsert` 改为单条 `INSERT ... ON CONFLICT DO UPDATE`，消除「先查再写」的竞态；字段改为「缺席保持原值、显式 null 才清空」，修掉 `??` 永远无法清空 `parseError` 等问题
 - 迁移 `drizzle/0003_content_refs_integrity.sql`：`library_events.object_id → objects.id`、`sync_jobs.content_ref_id → content_refs.id` 两条外键，`dataset_id` / `document_id` / `content_key` 非空长度约束
 - 验证：typecheck、lint、8 个测试文件 80 项用例通过
+
+## 2026-11-11（对象 CRUD 接口补齐）
+
+- 新增 `PATCH /api/objects/{id}`（编辑，`expectedRevision` 必填，`type` / `library` / `status` 不可改）、`DELETE /api/objects/{id}`（软删除，204）
+- 新增 `POST /api/objects/{id}/library`（跨库迁移，`reason` 必填）与 `POST /api/objects/{id}/archive`（`{ "archived": true | false }`）
+- 服务层统一按 `ownerSub` 校验归属，非本人对象一律 404；请求体解析集中在 `object-service`，可空字段区分「缺席」与「显式 null」
+- 验证：typecheck、lint、8 个测试文件 84 项用例、生产构建通过；mock 身份实测编辑 200 / 改库别 400 / 过期 revision 409 / 迁移 200 / 缺理由 400 / 归档 200 / 取消归档 200 / 删除 204

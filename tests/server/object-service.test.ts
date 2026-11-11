@@ -3,12 +3,18 @@ import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 import { NotFoundError, ValidationError } from "../../src/domain/errors";
 import { openDatabase, type DatabaseHandle } from "../../src/server/db/client";
 import {
+  changeObjectLibrary,
   changeObjectStatus,
   createObject,
+  deleteObject,
   listObjects,
+  parseChangeLibraryBody,
   parseChangeStatusBody,
   parseCreateObjectBody,
   parseListObjectsQuery,
+  parseUpdateObjectBody,
+  setObjectArchived,
+  updateObject,
 } from "../../src/server/services/object-service";
 
 /**
@@ -163,6 +169,74 @@ describe("changeObjectStatus", () => {
     await expect(
       changeObjectStatus(handle.db, "u2", work.id, { to: "published" }),
     ).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe("parseUpdateObjectBody", () => {
+  it("必须带 expectedRevision，且拒绝通过编辑改库别 / 类型 / 状态", () => {
+    expect(() => parseUpdateObjectBody({ title: "改名" })).toThrow(ValidationError);
+    expect(() =>
+      parseUpdateObjectBody({ title: "改名", expectedRevision: 1, library: "internal" }),
+    ).toThrow(/library/);
+    expect(() =>
+      parseUpdateObjectBody({ status: "finished", expectedRevision: 1 }),
+    ).toThrow(/status/);
+  });
+
+  it("显式 null 表示清空，缺席表示不变", () => {
+    const patch = parseUpdateObjectBody({ description: null, expectedRevision: 2 });
+    expect(patch).toEqual({ description: null, expectedRevision: 2 });
+  });
+});
+
+describe("parseChangeLibraryBody", () => {
+  it("迁移理由必填", () => {
+    expect(() => parseChangeLibraryBody({ to: "internal" })).toThrow(ValidationError);
+    expect(() => parseChangeLibraryBody({ to: "internal", reason: "  " })).toThrow(
+      ValidationError,
+    );
+    expect(parseChangeLibraryBody({ to: "internal", reason: "已复盘" })).toEqual({
+      to: "internal",
+      reason: "已复盘",
+    });
+  });
+});
+
+describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject", () => {
+  it("按身份完成编辑、迁移、归档与删除", async () => {
+    const work = await createObject(handle.db, "u1", {
+      type: "work",
+      title: "一门课",
+      library: "external",
+      format: "course",
+    });
+
+    const updated = await updateObject(handle.db, "u1", work.id, {
+      title: "一门课（终稿）",
+      expectedRevision: 1,
+    });
+    expect(updated.title).toBe("一门课（终稿）");
+    expect(updated.revision).toBe(2);
+
+    await expect(
+      updateObject(handle.db, "u2", work.id, { title: "抢改", expectedRevision: 2 }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+
+    const moved = await changeObjectLibrary(handle.db, "u1", work.id, {
+      to: "internal",
+      reason: "已复盘并确认",
+      expectedRevision: 2,
+    });
+    expect(moved.library).toBe("internal");
+
+    const archived = await setObjectArchived(handle.db, "u1", work.id, { archived: true });
+    expect(archived.archivedAt).not.toBeNull();
+    expect(await listObjects(handle.db, { ownerSub: "u1" })).toHaveLength(0);
+
+    await deleteObject(handle.db, "u1", work.id);
+    expect(await listObjects(handle.db, { ownerSub: "u1", includeArchived: true })).toHaveLength(
+      0,
+    );
   });
 });
 
