@@ -216,8 +216,11 @@ function buildContentKey(objectId: string, role: ContentRole): string {
     : `obj:${objectId}:attachment:${ulid()}`;
 }
 
-/** ADR-007 规定只镜像过滤要用的字段；`status` 不镜像。 */
-function buildMetaFields(object: BusinessObject, contentKey: string): DocumentMetaFields {
+/** ADR-007 规定只镜像过滤要用的字段；`status` 不镜像。上传与同步共用一个实现。 */
+export function buildMetaFields(
+  object: BusinessObject,
+  contentKey: string,
+): DocumentMetaFields {
   const meta: DocumentMetaFields = {
     content_key: contentKey,
     owner_type: object.type,
