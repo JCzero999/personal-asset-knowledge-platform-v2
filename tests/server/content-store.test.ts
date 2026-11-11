@@ -91,6 +91,35 @@ describe("content refs", () => {
     expect(parsed.parseStatus).toBe("succeeded");
     expect(parsed.syncState).toBe("synced");
   });
+
+  it("upsert 省略字段保持原值，显式 null 才清空", async () => {
+    const withError = await store.upsert({
+      ...baseRef,
+      documentName: "笔记.md",
+      contentHash: "sha256:abc",
+      parseError: "解析失败",
+    });
+
+    const touched = await store.upsert({
+      ...baseRef,
+      documentId: "doc_a",
+      parseError: null,
+    });
+
+    expect(touched.id).toBe(withError.id);
+    expect(touched.parseError).toBeNull();
+    expect(touched.documentName).toBe("笔记.md");
+    expect(touched.contentHash).toBe("sha256:abc");
+
+    const cleared = await store.upsert({
+      ...baseRef,
+      documentId: "doc_a",
+      documentName: null,
+    });
+
+    expect(cleared.documentName).toBeNull();
+    expect(cleared.contentHash).toBe("sha256:abc");
+  });
 });
 
 describe("sync jobs (outbox)", () => {

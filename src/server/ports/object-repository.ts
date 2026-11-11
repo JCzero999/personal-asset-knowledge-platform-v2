@@ -83,6 +83,8 @@ export interface ChangeLibraryInput {
   /** 必填的迁移理由，写入审计表。 */
   reason: string;
   actorSub: string;
+  /** 乐观锁：与库中 revision 不一致时抛 ConflictError；省略则按本次读取的 revision。 */
+  expectedRevision?: number;
   now?: string;
 }
 
@@ -114,6 +116,11 @@ export interface ObjectRepository {
 
   /** 软删除；不物理删除行，便于审计与对账。 */
   softDelete(id: string, at?: string): Promise<void>;
+
+  /** 归档只改元数据（archivedAt），不移动内容；已归档时原样返回。 */
+  archive(id: string, at?: string): Promise<BusinessObject>;
+
+  unarchive(id: string, at?: string): Promise<BusinessObject>;
 
   /**
    * 跨库迁移：更新 library / libraryChangedAt / revision，并写入 library_events。

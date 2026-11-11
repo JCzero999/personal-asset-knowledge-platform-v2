@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, isNull, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
 
 import {
   isLibrary,
@@ -350,6 +350,45 @@ export class SqliteObjectRepository implements ObjectRepository {
     }
   }
 
+  async archive(id: string, at: string = nowIso()): Promise<BusinessObject> {
+    const [row] = await this.db
+      .update(objects)
+      .set({ archivedAt: at, updatedAt: at, revision: sql`${objects.revision} + 1` })
+      .where(and(eq(objects.id, id), isNull(objects.archivedAt), isNull(objects.deletedAt)))
+      .returning();
+
+    if (row) {
+      return toObject(row);
+    }
+
+    // 已归档则原样返回；不存在才报错。
+    const existing = await this.findById(id);
+    if (!existing) {
+      throw new NotFoundError("对象不存在或已删除", { id });
+    }
+
+    return existing;
+  }
+
+  async unarchive(id: string, at: string = nowIso()): Promise<BusinessObject> {
+    const [row] = await this.db
+      .update(objects)
+      .set({ archivedAt: null, updatedAt: at, revision: sql`${objects.revision} + 1` })
+      .where(and(eq(objects.id, id), isNotNull(objects.archivedAt), isNull(objects.deletedAt)))
+      .returning();
+
+    if (row) {
+      return toObject(row);
+    }
+
+    const existing = await this.findById(id);
+    if (!existing) {
+      throw new NotFoundError("对象不存在或已删除", { id });
+    }
+
+    return existing;
+  }
+
   async changeLibrary(input: ChangeLibraryInput): Promise<BusinessObject> {
     const now = input.now ?? nowIso();
 
@@ -374,6 +413,25 @@ export class SqliteObjectRepository implements ObjectRepository {
       });
     }
 
+    // 先于数据库 CHECK 给出可读错误：已 practiced 的作品不能迁回外库。
+    if (current.type === "work" && input.to === "external" && current.status === "practiced") {
+      throw new DomainError(
+        "EXTERNAL_LIBRARY_PRACTICED",
+        "已 practiced 的作品不能迁回外库",
+        { id: input.objectId, status: current.status },
+      );
+    }
+
+    const expectedRevision = input.expectedRevision ?? current.revision;
+
+    if (expectedRevision !== current.revision) {
+      throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+        id: input.objectId,
+        expectedRevision,
+        actualRevision: current.revision,
+      });
+    }
+
     try {
       // 更新对象与写审计必须同事务：不能出现「库别已变但没有记录」。
       // better-sqlite3 的事务是同步的，这里用 .get()/.run() 而不是 await。
@@ -386,7 +444,7 @@ export class SqliteObjectRepository implements ObjectRepository {
             updatedAt: now,
             revision: current.revision + 1,
           })
-          .where(and(eq(objects.id, input.objectId), eq(objects.revision, current.revision)))
+          .where(and(eq(objects.id, input.objectId), eq(objects.revision, expectedRevision)))
           .returning()
           .get();
 

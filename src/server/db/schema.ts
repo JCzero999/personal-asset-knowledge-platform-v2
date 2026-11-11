@@ -101,6 +101,9 @@ export const contentRefs = sqliteTable(
     check("content_refs_owner_type_check", sql`owner_type in ('asset', 'work')`),
     check("content_refs_provider_check", sql`provider = 'ragflow'`),
     check("content_refs_role_check", sql`role in ('primary', 'attachment')`),
+    check("content_refs_dataset_id_check", sql`length(dataset_id) > 0`),
+    check("content_refs_document_id_check", sql`length(document_id) > 0`),
+    check("content_refs_content_key_check", sql`length(content_key) > 0`),
     check(
       "content_refs_parse_status_check",
       sql`parse_status in ('pending', 'running', 'succeeded', 'failed')`,
@@ -123,7 +126,9 @@ export const libraryEvents = sqliteTable(
   "library_events",
   {
     id: text("id").primaryKey(),
-    objectId: text("object_id").notNull(),
+    objectId: text("object_id")
+      .notNull()
+      .references(() => objects.id),
     fromLibrary: text("from_library").notNull(),
     toLibrary: text("to_library").notNull(),
     /** 迁移理由，必填：内库是「已验证」的承诺，需要可追溯。 */
@@ -149,7 +154,7 @@ export const syncJobs = sqliteTable(
     id: text("id").primaryKey(),
     ownerType: text("owner_type").notNull(),
     ownerId: text("owner_id").notNull(),
-    contentRefId: text("content_ref_id"),
+    contentRefId: text("content_ref_id").references(() => contentRefs.id),
     action: text("action").notNull(),
     state: text("state").notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),

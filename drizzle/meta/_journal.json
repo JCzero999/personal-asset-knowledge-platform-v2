@@ -22,6 +22,13 @@
       "when": 1794379811466,
       "tag": "0002_sync_jobs_active_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794379922399,
+      "tag": "0003_content_refs_integrity",
+      "breakpoints": true
     }
   ]
 }

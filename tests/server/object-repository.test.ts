@@ -266,7 +266,7 @@ describe("library 迁移与审计", () => {
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
-  it("把 practiced 作品迁回外库会被数据库 CHECK 拒绝", async () => {
+  it("把 practiced 作品迁回外库会在领域层被拒绝", async () => {
     const work = await repo.create({ ...workInput, library: "internal" });
     // 通过 SQL 直接把状态推进到 practiced，绕开本用例不关心的状态机前置条件
     handle.sqlite
@@ -280,7 +280,59 @@ describe("library 迁移与审计", () => {
         reason: "放回外库",
         actorSub: "user_test",
       }),
-    ).rejects.toMatchObject({ code: "CONSTRAINT_VIOLATION" });
+    ).rejects.toMatchObject({ code: "EXTERNAL_LIBRARY_PRACTICED" });
+
+    expect((await repo.findById(work.id))?.library).toBe("internal");
+  });
+
+  it("跨库迁移同样受乐观锁保护", async () => {
+    const work = await repo.create(workInput);
+    await repo.changeStatus({ objectId: work.id, to: "finished" });
+
+    await expect(
+      repo.changeLibrary({
+        objectId: work.id,
+        to: "internal",
+        reason: "已发布",
+        actorSub: "user_test",
+        expectedRevision: 1,
+      }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    const moved = await repo.changeLibrary({
+      objectId: work.id,
+      to: "internal",
+      reason: "已发布",
+      actorSub: "user_test",
+      expectedRevision: 2,
+    });
+    expect(moved.library).toBe("internal");
+    expect(moved.revision).toBe(3);
+  });
+});
+
+describe("归档", () => {
+  it("归档与取消归档只改元数据，重复调用不涨 revision", async () => {
+    const work = await repo.create(workInput);
+
+    const archived = await repo.archive(work.id, "2026-11-11T07:00:00.000Z");
+    expect(archived.archivedAt).toBe("2026-11-11T07:00:00.000Z");
+    expect(archived.revision).toBe(2);
+
+    const again = await repo.archive(work.id, "2026-11-12T07:00:00.000Z");
+    expect(again.archivedAt).toBe("2026-11-11T07:00:00.000Z");
+    expect(again.revision).toBe(2);
+
+    // 默认列表不含已归档对象
+    expect(await repo.list({ type: "work" })).toHaveLength(0);
+    expect(await repo.list({ type: "work", includeArchived: true })).toHaveLength(1);
+
+    const restored = await repo.unarchive(work.id, "2026-11-11T08:00:00.000Z");
+    expect(restored.archivedAt).toBeNull();
+    expect(restored.revision).toBe(3);
+
+    const restoredAgain = await repo.unarchive(work.id);
+    expect(restoredAgain.revision).toBe(3);
   });
 });
 

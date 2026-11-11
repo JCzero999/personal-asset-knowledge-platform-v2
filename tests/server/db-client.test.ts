@@ -51,4 +51,44 @@ describe("openDatabase (file)", () => {
     expect(row).toEqual({ count: 0 });
     second.close();
   });
+
+  it("数据库兜底约束：外键、非空标识与取值域", () => {
+    const handle = openDatabase({ file: path.join(dir, "constraints.db") });
+    const at = "2026-11-11T00:00:00.000Z";
+
+    expect(() =>
+      handle.sqlite
+        .prepare(
+          `insert into library_events
+             (id, object_id, from_library, to_library, reason, actor_sub, created_at)
+           values ('evt_1', 'missing_object', 'external', 'internal', 'r', 'u', ?)`,
+        )
+        .run(at),
+    ).toThrow(/FOREIGN KEY constraint failed/i);
+
+    expect(() =>
+      handle.sqlite
+        .prepare(
+          `insert into sync_jobs
+             (id, owner_type, owner_id, content_ref_id, action, state, attempts,
+              available_at, created_at, updated_at)
+           values ('job_1', 'work', 'owner', 'missing_ref', 'upsert', 'pending', 0,
+                   ?, ?, ?)`,
+        )
+        .run(at, at, at),
+    ).toThrow(/FOREIGN KEY constraint failed/i);
+
+    expect(() =>
+      handle.sqlite
+        .prepare(
+          `insert into content_refs
+             (id, owner_type, owner_id, provider, dataset_id, document_id, content_key,
+              role, created_at, updated_at)
+           values ('ref_1', 'work', 'owner', 'ragflow', '', 'doc', 'key', 'primary', ?, ?)`,
+        )
+        .run(at, at),
+    ).toThrow(/CHECK constraint failed/i);
+
+    handle.close();
+  });
 });

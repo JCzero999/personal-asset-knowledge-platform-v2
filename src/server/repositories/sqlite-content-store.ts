@@ -96,47 +96,26 @@ export class SqliteContentStore implements ContentStore {
 
   async upsert(input: UpsertContentRefInput): Promise<ContentRef> {
     const now = input.now ?? nowIso();
-    const [existing] = await this.db
-      .select()
-      .from(contentRefs)
-      .where(
-        and(
-          eq(contentRefs.datasetId, input.datasetId),
-          eq(contentRefs.contentKey, input.contentKey),
-        ),
-      )
-      .limit(1);
 
-    if (existing) {
-      // document_id 会变：以 content_key 认回记录后更新指针与元数据。
-      const patch: Partial<NewContentRefRow> = {
-        ownerType: input.ownerType,
-        ownerId: input.ownerId,
-        documentId: input.documentId,
-        role: input.role ?? existing.role,
-        documentName: input.documentName ?? existing.documentName,
-        contentHash: input.contentHash ?? existing.contentHash,
-        mime: input.mime ?? existing.mime,
-        sizeBytes: input.sizeBytes ?? existing.sizeBytes,
-        parseStatus: input.parseStatus ?? existing.parseStatus,
-        parseError: input.parseError ?? existing.parseError,
-        syncState: input.syncState ?? existing.syncState,
-        lastSyncedAt: input.lastSyncedAt ?? existing.lastSyncedAt,
-        updatedAt: now,
-        deletedAt: null,
-      };
+    // 只有显式给出的字段才写：属性缺席表示保持原值，显式 null 表示清空
+    // （例如解析成功后清掉上一次的 parseError）。
+    const patch: Partial<NewContentRefRow> = {
+      ownerType: input.ownerType,
+      ownerId: input.ownerId,
+      documentId: input.documentId,
+      updatedAt: now,
+      deletedAt: null,
+    };
 
-      try {
-        const [row] = await this.db
-          .update(contentRefs)
-          .set(patch)
-          .where(eq(contentRefs.id, existing.id))
-          .returning();
-        return toContentRef(row);
-      } catch (error) {
-        return translate(error);
-      }
-    }
+    if (input.role !== undefined) patch.role = input.role;
+    if ("documentName" in input) patch.documentName = input.documentName ?? null;
+    if ("contentHash" in input) patch.contentHash = input.contentHash ?? null;
+    if ("mime" in input) patch.mime = input.mime ?? null;
+    if ("sizeBytes" in input) patch.sizeBytes = input.sizeBytes ?? null;
+    if (input.parseStatus !== undefined) patch.parseStatus = input.parseStatus;
+    if ("parseError" in input) patch.parseError = input.parseError ?? null;
+    if (input.syncState !== undefined) patch.syncState = input.syncState;
+    if ("lastSyncedAt" in input) patch.lastSyncedAt = input.lastSyncedAt ?? null;
 
     const row: NewContentRefRow = {
       id: input.id ?? ulid(),
@@ -161,8 +140,18 @@ export class SqliteContentStore implements ContentStore {
     };
 
     try {
-      const [created] = await this.db.insert(contentRefs).values(row).returning();
-      return toContentRef(created);
+      // 单条 INSERT ... ON CONFLICT DO UPDATE，避免「先查再写」两个进程同时插入。
+      // document_id 会变：以 content_key 认回记录后更新指针与元数据。
+      const [result] = await this.db
+        .insert(contentRefs)
+        .values(row)
+        .onConflictDoUpdate({
+          target: [contentRefs.datasetId, contentRefs.contentKey],
+          set: patch,
+        })
+        .returning();
+
+      return toContentRef(result);
     } catch (error) {
       return translate(error);
     }

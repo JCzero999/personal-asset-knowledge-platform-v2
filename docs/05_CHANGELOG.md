@@ -80,3 +80,11 @@
 - 新增 `claimJobs`：单条 `UPDATE ... WHERE id IN (SELECT ...)` 原子认领，置 `running`、`attempts + 1`；可选 `staleAfterMs` 回收租约过期的 `running` 任务
 - 新增 `markJobDone` 与 `markJobFailed`：失败未达上限回到 `pending` 并按指数退避（1 分钟起翻倍，上限 30 分钟）安排下次执行，达到 `maxAttempts`（默认 5）置 `failed`
 - 验证：typecheck、lint、7 个测试文件 61 项用例通过
+
+## 2026-11-11（P1：迁移前置校验、归档、引用完整性）
+
+- `changeLibrary` 支持 `expectedRevision` 乐观锁；已 `practiced` 的作品迁回外库改为在领域层抛 `EXTERNAL_LIBRARY_PRACTICED`（409），不再落到数据库 CHECK 的 422
+- 新增 `archive` / `unarchive`：只改 `archivedAt` 元数据，幂等（重复调用不涨 revision），默认列表过滤归档对象
+- `contentRefs.upsert` 改为单条 `INSERT ... ON CONFLICT DO UPDATE`，消除「先查再写」的竞态；字段改为「缺席保持原值、显式 null 才清空」，修掉 `??` 永远无法清空 `parseError` 等问题
+- 迁移 `drizzle/0003_content_refs_integrity.sql`：`library_events.object_id → objects.id`、`sync_jobs.content_ref_id → content_refs.id` 两条外键，`dataset_id` / `document_id` / `content_key` 非空长度约束
+- 验证：typecheck、lint、8 个测试文件 80 项用例通过
