@@ -5,14 +5,16 @@
 
 ## 当前状态
 
-- **所处阶段**：**Phase 5（主路径完成，待登录验收）**。Phase 0、1、2、4 已完成；Phase 1 剩「Logto 真实登录」一次人工验证；Phase 3（LightRAG）未开始。
-- **环境**：Docker 29.9.2、Docker Compose v5.6.1、WSL Ubuntu 已就绪（2026-11-11 实测）；Logto 1.46.0 与 RAGFlow v0.20.5 均已自托管部署并通过连通性 / API 实测。
-- **业务侧**：Next.js 16 App Router + TypeScript + SQLite/Drizzle 已落地；对象 CRUD、作品状态机、跨库迁移与审计、归档、工作台筛选与行内操作、内容检索页、对象详情页均已实现，共 19 条 HTTP 路由（16 条业务 / 系统 + 3 条 Logto 跳转，见 [06_API.md](06_API.md)）。
+- **整体进度：约 85%**。Phase 0、1、2、3、4 已完成主路径，Phase 5 剩登录验收与打磨；按阶段计 Phase 0–4 合计 5 个阶段中 4 个完全完成、1 个待人工登录，Phase 3 与 Phase 5 的主功能已落地。
+- **所处阶段**：**Phase 5（主路径与知识图谱完成，待登录验收）**。Phase 1 剩「Logto 真实登录」一次人工验证；Phase 3（LightRAG）主路径已完成，单租户限制见风险表。
+- **环境**：Docker 29.9.2、Docker Compose v5.6.1、WSL Ubuntu 已就绪（2026-11-11 实测）；Logto 1.46.0、RAGFlow v0.20.5 与 LightRAG 1.5.7 均已在本机运行并通过连通性 / API 实测。
+- **业务侧**：Next.js 16 App Router + TypeScript + SQLite/Drizzle 已落地；对象 CRUD、作品状态机、跨库迁移与审计、归档、工作台筛选与行内操作、内容检索页、对象详情页均已实现，共 24 条 HTTP 路由（21 条业务 / 系统 + 3 条 Logto 跳转，见 [06_API.md](06_API.md)）。
 - **内容侧**：内容上传、`meta_fields` 映射、outbox 投递、解析触发与轮询、引用列表、原文下载、检索均已实现；RAGFlow v0.20.5 上「上传 → 解析 → 检索 → 下载 → 归档后检索为 0」端到端跑通。
-- **前端**：`/search` 与 `/workspace/[id]` 在 `AUTH_MODE=mock` + 本机 RAGFlow 下用真实数据实测：提交检索词后得到结果并按相似度展示、摘要安全高亮、详情页读取解析状态、下载与 404 页面均正常。
+- **图谱侧**：LightRAG 1.5.7 本机部署；`/graph` 页支持实体列表、两层邻域 SVG、图增强问答与手动同步；5 条 `/api/graph/*` 路由已实现；真实数据下实体抽取、邻域查询与问答均跑通。
+- **前端**：`/search`、`/workspace/[id]` 与 `/graph` 在 `AUTH_MODE=mock` + 本机服务下用真实数据实测。
 - **未验证**：Logto 浏览器内完整登录与回调换码（需人工完成一次）；前端页面尚未在 Logto 真实身份下冒烟；同步 / 解析失败重试只有假网关单测。
-- **未实现**：LightRAG 知识图谱、RAGFlow 多轮问答会话。
-- **最新提交**：`3b8ddb4` 工作台筛选、`4e86ddf` 归档状态守卫、`26fcbe5` / `cd2dc50` 文档同步。
+- **未实现**：基于 RAGFlow 的多轮问答会话（需要 chat model API key）。
+- **最新提交**：`3b8ddb4` 工作台筛选、`4e86ddf` 归档状态守卫、`26fcbe5` / `cd2dc50` 文档同步；本轮 Phase 3 改动待提交。
 - **阻塞项**：无环境阻塞。唯一需人工参与的是完成一次 Logto 登录。
 
 ## 阶段总览
@@ -22,9 +24,9 @@
 | **Phase 0** | 文档体系 + 基础环境就绪 | **已完成**（2026-11-11） | docs 与 ADR 对齐；Logto、RAGFlow 能 Docker 启动并访问 |
 | **Phase 1** | Next.js 骨架 + Logto 认证 + 最小持久化 | **已完成**（Logto 真实登录待人工验证） | Next.js 应用可运行；`POST /api/objects` 落库、重启后数据仍在；mock 与 logto 两种身份模式可切换 |
 | **Phase 2** | RAGFlow 内容底座 | **已完成** | Dataset / Document、解析与检索可用；业务侧通过 `content_ref` 关联 |
-| **Phase 3** | LightRAG 知识图谱 | **未开始** | 构图与查询；共用 Embedding、独立存储 |
+| **Phase 3** | LightRAG 知识图谱 | **主路径完成**（单租户限制） | 构图与查询；共用 Embedding、独立存储 |
 | **Phase 4** | 核心业务（资产 + 工作流） | **已完成** | 资产 CRUD + 四阶段流转；内容映射进 RAGFlow；归档与迁移审计可用 |
-| **Phase 5** | 联调与打磨 | **主路径完成** | 登录 → 资产 / 工作流 → 检索主路径贯通；检索与详情前端已落地，剩登录验证与图谱 |
+| **Phase 5** | 联调与打磨 | **主路径完成** | 登录 → 资产 / 工作流 → 检索 / 图谱主路径贯通；剩登录验证与失败路径 |
 
 > **Phase 1 范围扩展（2026-11-11）**：完成标准由「骨架 + Logto 登录」扩展为「身份 + 最小持久化 CRUD」。依据是产品的 **DATA-01 / DATA-05 / DATA-08**，存储选型见 ADR-009。
 
@@ -59,6 +61,18 @@
 - [x] 真实 RAGFlow v0.20.5 端到端实测：上传 → 解析（9–12 秒，`chunk_count = 1`）→ 检索（相似度 0.38–0.48）→ 下载（逐字节一致）→ 归档后同一检索 0 条
 - [ ] 失败路径实测（解析 FAIL、Token 失效、RAGFlow 停机时的重试与退避）
 
+### Phase 3：LightRAG 知识图谱
+
+- [x] **ADR-010**：本机 Python 进程部署 LightRAG；LLM 用 Ollama `deepseek-r1:7b`；Embedding 复用 RAGFlow 的 `BAAI/bge-large-zh-v1.5`（经本地 OpenAI 兼容服务暴露）；图 / 向量存储独立于 RAGFlow
+- [x] 基础设施 `infra/lightrag/`：独立 venv、`.env` / `.env.example`、`start.ps1`、`embedding_server.py`（:9381）；数据与模型目录已 gitignore
+- [x] `LightragClient` 适配器：文本入库、文档分页、删除、标签、子图、`mix` 问答；API Key 走 `X-API-Key`，问答超时 180 秒
+- [x] `graph-service`：内容 → 分块原文 → 带元数据头的图谱文本；`pakp:obj:{id}:{hash}` 作为 `file_source`，内容哈希判重、旧版本清理、引用回映射业务对象
+- [x] 5 条接口：`GET /api/graph/labels`、`GET /api/graph`、`POST /api/graph/sync`、`GET /api/graph/status`、`POST /api/graph/query`
+- [x] `/graph` 页：实体筛选列表、两层邻域同心圆 SVG（点击切换中心）、实体描述、图问答与来源对象、同步按钮与抽取进度轮询
+- [x] 实测（2026-11-11，本机 CPU）：118 字测试文档抽取约 3.8 分钟完成，产出 9 个实体 / 3 条关系；`/graph` 页面 SSR 正常，点击实体切换邻域；`mix` 问答 93.8 秒返回中文答案
+- [ ] **多用户隔离**：LightRAG 图 / 问答路由绑定单实例默认 workspace，`LIGHTRAG-WORKSPACE` 头只覆盖部分接口；当前依赖「单用户本地部署」，多用户前必须为每个 `ownerSub` 拆分实例或改造路由
+- [ ] 抽取质量评估：7B 模型会把「#」等噪声当实体，关系描述偶有格式告警；换用更强模型或 14B 后需复测
+
 ### Phase 4：资产与工作流
 
 - [x] 对象 CRUD：新建、详情、编辑、软删除；列表关键字 / 类型 / 库别 / 状态 / 排序 / 分页
@@ -78,8 +92,8 @@
 
 ### 工程与文档
 
-- [x] 功能提交 `3b8ddb4` / `4e86ddf` 上 lint、typecheck、`next build` 均通过；`npm test` 复跑 17 个测试文件 / 205 项全部通过（2026-11-11）
-- [x] [06_API.md](06_API.md) 覆盖全部 19 条路由与未实现清单；[07_PLAYBOOK.md](07_PLAYBOOK.md) 记录开发流程与问题沉淀
+- [x] 功能提交 `3b8ddb4` / `4e86ddf` 上 lint、typecheck、`next build` 均通过；Phase 3 后复跑 19 个测试文件 / 216 项全部通过（2026-11-11）
+- [x] [06_API.md](06_API.md) 覆盖全部 24 条路由与未实现清单；[07_PLAYBOOK.md](07_PLAYBOOK.md) 记录开发流程与问题沉淀
 - [x] 每轮实现后同步 CHANGELOG 与阶段文档
 
 ## 下一步行动
@@ -87,11 +101,11 @@
 按优先级：
 
 1. **Phase 1 收尾（人工，约 5 分钟）**：浏览器打开 `http://localhost:3000`，用 Logto 账号完成一次登录；确认进入 `/workspace`，并在 [04_INTEGRATION.md](04_INTEGRATION.md) 记录 `ownerSub` 实测值。完成后 Phase 1 可标记为完全完成。
-2. **前端登录态冒烟（人工）**：完成 Logto 登录后，在真实身份下打开 `/search` 与 `/workspace/{id}`，确认只能看到自己的内容；此前页面只在 mock 身份下验证。
+2. **前端登录态冒烟（人工）**：完成 Logto 登录后，在真实身份下打开 `/search`、`/workspace/{id}` 与 `/graph`，确认只能看到自己的内容与图谱。
 3. **失败路径实测**：在真实 RAGFlow 上验证解析失败回写、outbox 重试退避、RAGFlow 不可用时接口的 500 语义。
-4. **Phase 3 LightRAG**：先补 ADR（部署方式、图 / 向量存储、Embedding 复用方式），再部署与构图验证。
-5. **多轮问答会话**：需要 chat model API key；当前 RAGFlow 只有本地 embedding，检索可用但生成不可用。
-6. **生产运行检查**：`next build` + `next start`、`MIGRATIONS_FOLDER` 指向仓库 `drizzle/`、单进程 worker 的部署约束。
+4. **多轮问答会话**：需要 chat model API key；当前 RAGFlow 只有本地 embedding，检索可用但生成不可用。
+5. **图谱多用户隔离**：当前 LightRAG 为单 workspace；开放多用户前，按 `ownerSub` 拆分 LightRAG 实例 / 工作目录，或等上游支持全路由 workspace 头。
+6. **生产运行检查**：`next build` + `next start`、`MIGRATIONS_FOLDER` 指向仓库 `drizzle/`、单进程 worker 的部署约束；LightRAG 与 embedding 服务的开机自启尚未配置。
 
 ## 各阶段关键约束（提醒）
 
@@ -111,5 +125,8 @@
 | RAGFlow 资源占用较高 | 本机 31.5 GB 内存、D 盘可用 494 GB 已满足；启动后关注实际占用 |
 | 失败重试只有单测覆盖 | 真实故障场景（停机、解析失败、Token 失效）待补测，文档不得写成已验证 |
 | 多实例部署重复投递 | `sync_jobs` 原子认领可避免重复处理，但 worker 为进程内定时器；部署前确认实例数与间隔 |
+| LightRAG 单 workspace，图谱不按用户隔离 | 当前按单用户本机部署使用；开放多用户前必须按 `ownerSub` 拆分实例 / 工作目录，不能把 `/api/graph/*` 当作已隔离接口 |
+| CPU 构图与问答较慢 | 118 字文档抽取约 3.8 分钟、`mix` 问答约 94 秒；同步接口只负责入队，前端轮询进度；长文档需更长等待或换 GPU / 云模型 |
+| 7B 模型抽取质量有限 | 会把「#」等噪声当实体、关系偶发格式告警；换模型后在真实语料上复评，不把当前图谱当作质量基线 |
 | 文档与实现脱节 | 遵守 maintain-docs；每次有意义工作后更新本文件与 CHANGELOG |
 | 服务未启动就编造集成细节 | 禁止；`04_INTEGRATION.md` 只写实测值 |

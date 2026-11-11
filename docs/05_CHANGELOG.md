@@ -186,3 +186,15 @@
 - 验证（2026-11-11，`AUTH_MODE=mock` + 本机 RAGFlow v0.20.5 + 临时数据库）：浏览器提交检索「内容复盘」得到 1 条结果（相似度 70%）并正确高亮；详情页显示「已解析」，通过页面文件选择上传附件成功（toast + 解析中 + 2 个文件），下载 650 B 与上传一致，404 页面正常展示
 - 四项检查：typecheck、lint、`next build` 通过；`npm test` 17 个测试文件 / 205 项通过
 - 未验证：前端页面尚未在 `AUTH_MODE=logto` 的真实身份下冒烟；不存在的对象页面因 `workspace/loading.tsx` 先流出 shell，HTTP 状态为 200（页面内容正确），记为已知行为
+
+## 2026-11-11（Phase 3：LightRAG 知识图谱）
+
+- **ADR-010**：LightRAG 以本机 Python 进程运行（`lightrag-hku[api]==1.5.7`，`:9621`）；LLM 用 Ollama `deepseek-r1:7b`；Embedding 复用 RAGFlow 的 `bge-large-zh-v1.5`，由本地 OpenAI 兼容服务暴露（`:9381`，1024 维、归一化）；图与向量存储独立放在 `infra/lightrag/data/`。`docs/03_DECISIONS.md` 增加 ADR-010 与决策索引
+- **基础设施**：新增 `infra/lightrag/`（`embedding_server.py`、`.env.example`、`start.ps1`）；`.env.example` 增加 `LIGHTRAG_BASE_URL` / `LIGHTRAG_API_KEY`，真实值只写 `.env.local`；`.gitignore` 排除 venv、模型、数据与本地 env
+- **适配器**：`src/server/adapters/lightrag/` 封装文本入库、文档分页、删除、标签、子图与 `mix` 问答；统一 `X-API-Key`，普通请求 30 秒、问答 180 秒超时，错误收敛为 `DomainError("INTERNAL")`
+- **服务层**：`src/server/services/graph-service.ts` 负责「对象 → RAGFlow 分块原文 → 带标题 / 类型 / 库别 / 分类 / 标签的图谱文本」；`file_source=pakp:obj:{id}:{sha256 前 12 位}` 作幂等键，同哈希跳过、旧版本先删后写；问答引用按 `pakp:obj:` 与归属过滤并映射回对象。单轮最多 50 个对象
+- **接口**：`GET /api/graph/labels`、`GET /api/graph?label&depth`、`POST /api/graph/sync`、`GET /api/graph/status`、`POST /api/graph/query`（body `{ q }`）；全部要求登录，错误走统一信封
+- **前端**：新增 `/graph` 知识图谱页与 `GraphExplorer`：实体筛选列表、两层邻域同心圆 SVG（点击圆点切换中心）、实体描述、图问答与来源对象、同步按钮与 15 秒抽取进度轮询；侧栏新增「知识图谱」，移除「即将开放」占位。纯函数 `graph-layout` / `graph-labels` 附单测；新增 22 项图谱样式与响应式规则
+- **实测（本机 CPU，2026-11-11）**：118 字测试文本约 226 秒完成抽取，得到 9 个实体 / 3 条关系；`/graph` 页面 SSR 返回实体与初始邻域，浏览器点击实体后标题与子图切换；`POST /api/graph/query` 约 93.8 秒返回中文答案（测试文档未带 `pakp:` 前缀，因此来源列表为空，符合过滤规则）；`/api/graph/sync` 在本机空库返回 `candidates: 0`
+- **限制**：LightRAG 图 / 问答路由绑定单实例默认 workspace，`LIGHTRAG-WORKSPACE` 未覆盖这些路由，当前只适合单用户本机部署；7B 模型会把 `#` 等噪声当实体；子图沿有向边展开，只有入边的实体显示为空
+- **工程**：`eslint.config.mjs` 增加 `**/.venv/**` 忽略（嵌套 venv 里打包的 WebUI 静态资源不再产生 573 条误报）。验证：typecheck、lint、`next build` 通过；19 个测试文件 / 216 项用例通过

@@ -6,7 +6,7 @@
 ## 1. 项目一句话
 以 RAGFlow 为统一内容存储与检索底座，在其上实现资产管理和四阶段工作流，结合 LightRAG 提供知识图谱能力，通过 Logto 提供登录注册的个人知识工作台。
 
-> **实现状态（ADR-006 / ADR-009）**：业务侧 Next.js 骨架已落地（App Router + TypeScript），**数据层与 HTTP 接口均已实现**：SQLite + Drizzle 持久化（见第 5 节）、`/api/objects` 系列的对象 CRUD、作品状态迁移、跨库迁移与归档、内容上传、内容引用列表、内容原文下载、内容检索 `GET /api/search`、解析触发与状态轮询 `POST /api/parse/run`、`/api/health` 健康检查，以及 `/workspace` 工作台。登录态来自 `AUTH_MODE`：`mock`（开发默认）使用固定本地身份，`logto` 走 Logto 真实登录（三条 `/api/logto/*` 路由）。**RAGFlow 已接入**：内容上传、`sync_jobs` outbox 投递（进程内 worker）、解析状态轮询、检索与下载均已实现，上传 → 解析 → 检索 → 下载 → 归档后检索为 0 的链路已在真实 RAGFlow v0.20.5 上端到端跑通。**尚未实现**：LightRAG 知识图谱接入、基于 RAGFlow 的问答会话（多轮上下文与生成）。接口契约见 [06_API.md](06_API.md)。当前 `src/` 是新建实现，不是旧系统代码。
+> **实现状态（ADR-006 / ADR-009 / ADR-010）**：业务侧 Next.js 骨架已落地（App Router + TypeScript），**数据层与 HTTP 接口均已实现**：SQLite + Drizzle 持久化（见第 5 节）、`/api/objects` 系列的对象 CRUD、作品状态迁移、跨库迁移与归档、内容上传、内容引用列表、内容原文下载、内容检索 `GET /api/search`、解析触发与状态轮询 `POST /api/parse/run`、`/api/health` 健康检查，以及 `/workspace`、`/search`、`/graph` 三个页面。登录态来自 `AUTH_MODE`：`mock`（开发默认）使用固定本地身份，`logto` 走 Logto 真实登录（三条 `/api/logto/*` 路由）。**RAGFlow 已接入**：内容上传、`sync_jobs` outbox 投递（进程内 worker）、解析状态轮询、检索与下载均已实现，上传 → 解析 → 检索 → 下载 → 归档后检索为 0 的链路已在真实 RAGFlow v0.20.5 上端到端跑通。**LightRAG 知识图谱已接入**：本机 Python 进程 + Ollama + 复用 RAGFlow 的 Embedding，`/api/graph/*` 五条接口与 `/graph` 页可用，实体抽取与 `mix` 问答已实测（见 5.7）。**尚未实现**：图谱多用户隔离（LightRAG 单 workspace）、图谱自动同步、基于 RAGFlow 的多轮问答会话（需要 chat model）。接口契约见 [06_API.md](06_API.md)。当前 `src/` 是新建实现，不是旧系统代码。
 
 ## 2. 逻辑架构（高层）
 
@@ -78,8 +78,9 @@ Knowledge Graph (LightRAG)
 | **server.db** | `src/server/db/` | 连接与表结构：`client.ts`（单例连接 + 迁移）、`schema.ts`（四张表）、`id.ts`（ULID） | 不写业务判断 |
 | **server.repositories** | `src/server/repositories/` | 端口的 SQLite 实现：`SqliteObjectRepository`、`SqliteContentStore`；负责把数据库约束错误翻译成领域错误 | 不调用 RAGFlow |
 | **server.http** | `src/server/http/` | 统一响应信封 `ok` / `created` / `empty` / `fail` / `fromError`，错误码→HTTP 状态映射 | 不写业务逻辑 |
-| **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009）：dataset 查询/创建、文档上传/改名/删除、`meta_fields` 整体更新、文档状态列表（解析进度）、触发解析、检索、下载 | 不做业务映射、重试或 outbox；归属、归档与库别过滤在服务层 |
-| **server.services** | `src/server/services/` | 用例编排：`object-service.ts`（请求解析、字段校验、归属校验）、`content-service.ts`（上传、替换、列表、下载）、`sync-service.ts`（outbox 投递）、`parse-service.ts`（解析状态轮询）、`search-service.ts`（检索参数校验、召回与归属/归档/库别过滤） | 不直接拼 SQL，不绕过适配器调用 RAGFlow |
+| **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009）：dataset 查询/创建、文档上传/改名/删除、`meta_fields` 整体更新、文档状态列表（解析进度）、触发解析、分块原文读取、检索、下载 | 不做业务映射、重试或 outbox；归属、归档与库别过滤在服务层 |
+| **server.adapters.lightrag** | `src/server/adapters/lightrag/` | LightRAG 的**唯一**外部入口（ADR-010）：文本入库、文档分页与删除、实体标签、邻域子图、`mix` 问答；API Key 走 `X-API-Key`，慢请求超时 180 秒 | 不做归属过滤或图文本构造，那些在服务层 |
+| **server.services** | `src/server/services/` | 用例编排：`object-service.ts`（请求解析、字段校验、归属校验）、`content-service.ts`（上传、替换、列表、下载）、`sync-service.ts`（outbox 投递）、`parse-service.ts`（解析状态轮询）、`search-service.ts`（检索参数校验、召回与归属/归档/库别过滤）、`graph-service.ts`（图谱文本、同步判重、邻域与问答引用回映射） | 不直接拼 SQL，不绕过适配器调用 RAGFlow / LightRAG |
 
 调用方向是单向的：`route handler → services → ports ← repositories → db`。`domain` 被所有上层引用，自己不知道谁在用它。route handler 的厚度上限为 15 行（ADR-009）。
 
@@ -139,6 +140,16 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **调度**：`POST /api/sync/run` 与 `POST /api/parse/run` 可分别手动跑一轮；`src/instrumentation.ts` 在配置了 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY` 时挂进程内定时 worker（默认 30 秒，`SYNC_WORKER_ENABLED=false` 可关闭），每轮先投递 outbox 再轮询解析。
 - **实测边界**：上传、迁移、删除、解析、检索、下载均已在真实 RAGFlow v0.20.5 上验证——上传后立即 `running`，约 9–12 秒 `succeeded`（`chunk_count = 1`）；检索相似度约 0.38–0.48，归档后同一检索返回 0 条；下载内容与上传文件逐字节一致。生产模式下 `instrumentation` 的实际挂载未单独验证；解析失败与投递重试路径仍只有假网关单测。
 
+### 5.7 知识图谱（ADR-010）
+
+- **部署边界**：LightRAG 1.5.7 作为本机 Python 进程运行（`127.0.0.1:9621`），LLM 是 Ollama `deepseek-r1:7b`（`11434`），Embedding 复用 RAGFlow 的 `BAAI/bge-large-zh-v1.5`，由 `infra/lightrag/embedding_server.py` 以 OpenAI 兼容接口暴露在 `127.0.0.1:9381/v1`。图（NetworkX graphml）与向量（NanoVectorDB）存储独立于 RAGFlow，只共用模型权重。
+- **构图**：`graph-service.buildGraphText` 把对象元数据（标题、类型、库别、状态、描述、分类、标签）与 RAGFlow 已解析主内容的**分块原文**拼成一段文本；只取 `role=primary`、`parseStatus=succeeded`、未删除的引用。没有可用正文的对象计入 `skipped`。
+- **身份与版本**：`file_source = pakp:obj:{objectId}:{sha256(text) 前 12 位}`。哈希相同视为未变；内容变化时先删除该对象的旧版本文档再写入新版本，避免同一对象在图中叠加多份。
+- **同步**：`POST /api/graph/sync` 手动触发，单轮最多 50 个对象；LightRAG 收到文本后异步抽取，状态经 `GET /api/graph/status` 查看（`pending` / `processing` / `processed` / `failed`）。
+- **查询**：`GET /api/graph` 读实体邻域（深度 1–3，节点上限 150）；`POST /api/graph/query` 用 `mix` 模式（图谱 + 向量）问答，答案引用按 `pakp:` 前缀解析回业务对象并校验归属，不是本系统写入的文档不返回。
+- **前端**：`/graph` 是服务端组件，首屏取标签与初始邻域；`GraphExplorer` 负责实体切换、SVG 同心圆布局、邻域详情、问答与同步状态轮询（只在 `pending` / `processing` 时每 15 秒刷新）。布局与标签排序是纯函数，单测覆盖。
+- **已知限制**：LightRAG 的图 / 问答路由绑定单实例默认 workspace，`LIGHTRAG-WORKSPACE` 头只覆盖部分接口，因此图谱是**单租户**；`/graphs` 只沿有向出边遍历，只有入边的实体返回空图；本机 CPU 上 118 字文档抽取约 226 秒、问答约 94 秒。
+
 ## 6. 主要数据流
 
 1. **用户登录** → Logto 完成认证，前端获得身份。
@@ -147,7 +158,7 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
    - 内容经 `POST /api/objects/{id}/content` 提交至 RAGFlow（单一 Dataset），并保存 `content_refs` 映射
    - worker 消费 `sync_jobs`，把库别、归档等元数据同步进 RAGFlow `meta_fields`；删除对象时删除对应文档
 3. **检索** → 前端调 `GET /api/search`；RAGFlow 负责语义召回，服务层按 `content_refs` 做归属、归档与库别过滤后再返回。问答会话（多轮上下文 + 生成）尚未实现。
-4. **知识图谱构建 / 查询** → LightRAG 基于内容（可从 RAGFlow 获取或同步）进行。
+4. **知识图谱构建 / 查询** → 手动 `POST /api/graph/sync` 把已解析主内容经 RAGFlow 分块原文送进 LightRAG；抽取完成后 `/graph` 读取实体邻域，或调 `POST /api/graph/query` 做图增强问答。
 5. **四阶段流转** → 仅更新业务侧状态；内容仍留在 RAGFlow，不随状态物理移动文件。
 
 ## 7. 与旧系统的关键差异
@@ -168,9 +179,9 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 
 ## 9. 待 Phase 中细化的内容（写入 04_INTEGRATION.md）
 - RAGFlow Dataset / Document 与业务 Asset/Work 的具体映射字段 —— **已定案并落地**：单一 Dataset（ADR-007），`content_refs` 保存映射，`meta_fields` 只镜像过滤字段（见 5.6 与 04_INTEGRATION.md）
-- 内容变更后如何触发 LightRAG 更新
+- 内容变更后如何触发 LightRAG 更新 —— **已落地（手动）**：`POST /api/graph/sync` 按内容哈希判重、删除旧版本后重建；自动同步与失败重试仍未实现
 - 业务元数据存储的最终选型（SQLite / 其他）—— **已定案**：SQLite + better-sqlite3 + Drizzle（ADR-009，实现见第 5 节）
-- Logto 与 Next.js 的具体集成方式（SDK、回调、会话）—— **已落地**：`@logto/next`，`/api/logto/sign-in`、`sign-in-callback`、`sign-out` 三条路由，会话由 `src/server/session.ts` 统一解析（见 06_API.md 第 6 节）
+- Logto 与 Next.js 的具体集成方式（SDK、回调、会话）—— **已落地**：`@logto/next`，`/api/logto/sign-in`、`sign-in-callback`、`sign-out` 三条路由，会话由 `src/server/session.ts` 统一解析（见 06_API.md 第 8 节）
 - 各服务的端口、环境变量、网络连通方式
 
 ## 10. 架构原则（必须遵守）

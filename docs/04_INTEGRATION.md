@@ -115,29 +115,52 @@
 
 ## LightRAG
 
-- 部署方式：待定
-- 与 RAGFlow 关系：共用 Embedding 模型，独立图存储与向量存储（ADR-001）
-- 当前状态：待 Phase 3；未部署、未连接、未验证
+- 部署方式：本机 Python 进程（ADR-010），不是 Docker；代码在 `infra/lightrag/`，venv 与数据目录已 gitignore
+- 与 RAGFlow 关系：共用 Embedding 模型（同一份 `bge-large-zh-v1.5` 权重），独立图存储与向量存储（ADR-001）
+- 当前状态：**已部署并实测**（2026-11-11）
 
 | 字段 | 实测值 |
 |---|---|
-| 版本 / 部署方式 | 待实测 |
-| 地址与端口 | 待实测 |
-| 图存储 / 向量存储位置 | 待实测 |
-| 构图与查询验证结果 | 待 Phase 3 验证 |
-| 内容更新同步方式 | 待 Phase 3 验证 |
+| 版本 / 部署方式 | `lightrag-hku[api]==1.5.7`，`lightrag-server` 本地进程；启动脚本 `infra/lightrag/start.ps1` |
+| 地址与端口 | API `http://127.0.0.1:9621`；OpenAPI 文档 `/docs`；WebUI 随服务提供 |
+| 鉴权 | `LIGHTRAG_API_KEY` → 请求头 `X-API-Key`；实测无 Key 为 **403**，带 Key 为 **200**。注意 `/health` 的 `auth_mode` 字段显示 `disabled`，与实际端点鉴权不一致，以实测状态码为准 |
+| LLM | Ollama `deepseek-r1:7b`（`http://127.0.0.1:11434`，`think=false`，`LLM_TIMEOUT=300`，`MAX_ASYNC=2`）；本机无 GPU，纯 CPU 推理 |
+| Embedding | 本地 FastAPI 兼容服务 `infra/lightrag/embedding_server.py`，`http://127.0.0.1:9381/v1`；模型 `BAAI/bge-large-zh-v1.5`（从 RAGFlow 容器缓存复制到 `infra/lightrag/models/`），1024 维，归一化 |
+| 图存储 / 向量存储位置 | 文件存储于 `infra/lightrag/data/rag_storage/`：NetworkX（`graph_chunk_entity_relation.graphml`）、NanoVectorDB（`vdb_*.json`）、JsonKV、JsonDocStatus；上传目录 `data/inputs/` |
+| 构图与查询验证结果 | 118 字测试文本抽取约 **226 秒**完成（status `processed`，1 chunk）；产出 9 个实体 / 3 条关系；`GET /graph/label/list` 返回 9 个标签；`GET /graphs?label=#2B6CB0&max_depth=2` 返回 2 节点 / 1 边；`POST /query {mode:"mix"}` 约 **93.8 秒**返回中文答案 |
+| 内容更新同步方式 | 业务侧 `POST /api/graph/sync` 按对象扫描主内容分块，`file_source=pakp:obj:{id}:{sha256 前 12 位}`；同哈希跳过，旧版本先删后写；LightRAG 后台异步抽取，进度用 `GET /api/graph/status` 查询 |
+
+### 已验证 API 调用（2026-11-11）
+
+| 方法 / 路径 | 请求要点 | 实测结果 |
+|---|---|---|
+| `GET /health` | 无鉴权 | `status=healthy`，返回版本、模型、存储与队列状态 |
+| `POST /documents/text` | `{ text, file_source }` | 接受后返回 track_id，进入后台抽取 |
+| `POST /documents/paginated` | `{ page, page_size }` | `page_size` **必须 ≥ 10**（小于 10 返回 422）；响应 `documents[]` 含 `file_path`、`status`、`error_msg` |
+| `DELETE /documents/delete_document` | `{ doc_ids, delete_file, delete_llm_cache }` | 删除图文档与抽取缓存 |
+| `GET /graph/label/list` | — | 返回实体名数组（按字典序；可能含抽取噪声，如 `#`） |
+| `GET /graphs` | `label` / `max_depth` / `max_nodes` | 返回 `{ nodes[], edges[], is_truncated }`；`properties` 内含 `entity_type` / `description` |
+| `POST /query` | `{ query, mode:"mix", include_references:true }` | 返回 `response` 与 `references[]`（`reference_id`、`file_path`），引用路径即写入时的 `file_source` |
+
+### 已知行为与限制
+
+- **子图按有向边展开**：实测 `#2B6CB0 → 品牌蓝` 存在边时，查 `#2B6CB0` 能返回两者，查 `品牌蓝` 返回空；UI 以入边实体为中心时会显示「没有邻居」。
+- **单 workspace**：图与问答路由在服务端绑定默认 `rag` 实例，`LIGHTRAG-WORKSPACE` 头只在部分接口（如 `/health`）生效，无法给图谱 / 问答做按用户隔离。当前定位为**单用户本机部署**；开放多用户前必须拆分实例或工作目录。
+- **引用过滤**：业务层只把 `pakp:obj:` 前缀且属于当前用户的引用展示为来源对象；未带前缀的图谱文档（如手工冒烟文档）不会出现在来源列表，但仍可能影响答案文本。
+- **速度**：CPU 下 118 字文本约 3.8 分钟完成抽取、问答约 94 秒；文档越长越慢。`POST /api/graph/sync` 只负责入库，抽取在 LightRAG 后台继续，页面按 15 秒轮询进度。
+- **抽取质量**：`deepseek-r1:7b` 会把 `#` 当成实体，关系描述偶发格式告警；当前结果可用于连通性与交互验收，不作为质量基线。
 
 ## Embedding
 
 - 决策：RAGFlow 与 LightRAG 共用 Embedding 模型，不共用向量库（ADR-001）
-- 当前状态：RAGFlow 侧使用镜像内置默认模型（租户默认 `BAAI/bge-large-zh-v1.5@BAAI`，解析与检索已实测可用）；LightRAG 侧尚未部署，共用配置待 Phase 3 实测
+- 当前状态：**共用同一份权重已实测**——RAGFlow 使用镜像内置 `BAAI/bge-large-zh-v1.5@BAAI`；LightRAG 通过本地 OpenAI 兼容服务加载同一模型目录（1024 维、归一化）
 
 | 字段 | 实测值 |
 |---|---|
-| 提供方 / 模型 | RAGFlow 内置默认：`BAAI/bge-large-zh-v1.5@BAAI`（实测）；LightRAG 侧待实测 |
-| 服务地址 | RAGFlow 内置，无独立服务地址；LightRAG 侧待实测 |
-| 维度与配置 | 待实测（应用侧未直接读取维度） |
-| 两套系统验证结果 | RAGFlow 已用于解析与检索；LightRAG 待 Phase 3 验证 |
+| 提供方 / 模型 | `BAAI/bge-large-zh-v1.5`（RAGFlow 内置 + LightRAG 本地服务共用同一份权重） |
+| 服务地址 | RAGFlow 内置，无独立地址；LightRAG 使用 `http://127.0.0.1:9381/v1`（OpenAI 兼容，模型名 `bge-large-zh-v1.5`） |
+| 维度与配置 | 1024 维；`normalize_embeddings=true`；`EMBEDDING_DIM=1024` |
+| 两套系统验证结果 | RAGFlow 解析与检索已实测；LightRAG 文档向量化与检索已实测（中文 / 英文样例均返回 1024 维归一化向量） |
 
 ## 设计草案（非已验证集成）
 

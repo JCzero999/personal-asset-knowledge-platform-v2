@@ -1,8 +1,8 @@
 # HTTP API 参考
 
 > **适用对象**：调用本服务接口的前端 / 脚本开发者，以及需要核对接口契约的后端开发者。
-> **文档范围**：只记录 `src/app/api/` 下**当前已实现**的路由。未实现的能力统一列在第 9 节，避免把规划当成契约。
-> **核对依据**（2026-11-11，HEAD `b860530`）：`src/app/api/**/route.ts`、`src/server/http/respond.ts`、`src/server/services/{object,content,sync,parse,search}-service.ts`、`src/server/sync-worker-runtime.ts`、`src/server/adapters/ragflow/client.ts`、`src/server/session.ts`、`src/domain/{errors,objects,workflow,content-ref}.ts`、`src/server/repositories/{sqlite-object-repository,sqlite-content-store}.ts`。代码与本文不一致时以代码为准，并回头修本文。
+> **文档范围**：只记录 `src/app/api/` 下**当前已实现**的路由。未实现的能力统一列在第 10 节，避免把规划当成契约。
+> **核对依据**（2026-11-11）：`src/app/api/**/route.ts`、`src/server/http/respond.ts`、`src/server/services/{object,content,sync,parse,search,graph}-service.ts`、`src/server/sync-worker-runtime.ts`、`src/server/adapters/ragflow/client.ts`、`src/server/adapters/lightrag/client.ts`、`src/server/session.ts`、`src/domain/{errors,objects,workflow,content-ref}.ts`、`src/server/repositories/{sqlite-object-repository,sqlite-content-store}.ts`。代码与本文不一致时以代码为准，并回头修本文。
 
 ---
 
@@ -17,7 +17,7 @@
 | 路由运行时 | 全部为 `runtime = "nodejs"`、`dynamic = "force-dynamic"`，响应不做静态缓存 |
 | 启动 | `npm run dev`（Next.js 16） |
 
-除三条 Logto 登录路由（返回重定向，见第 7 节）外，所有接口返回 JSON；例外有两处：内容上传收 `multipart/form-data` 请求体（见 4.10），内容下载成功时返回二进制文件流而非 JSON（见 4.12）。
+除三条 Logto 登录路由（返回重定向，见第 8 节）外，所有接口返回 JSON；例外有两处：内容上传收 `multipart/form-data` 请求体（见 4.10），内容下载成功时返回二进制文件流而非 JSON（见 4.12）。
 
 ### 1.2 数据格式
 
@@ -171,11 +171,16 @@
 | GET | `/api/search` | 内容检索（RAGFlow 召回 + 归属过滤） | 200 |
 | POST | `/api/sync/run` | 手动触发一轮 outbox 投递 | 200 |
 | POST | `/api/parse/run` | 手动推进一轮解析状态轮询 | 200 |
+| GET | `/api/graph/labels` | 图谱实体标签列表 | 200 |
+| GET | `/api/graph` | 实体邻域子图 | 200 |
+| POST | `/api/graph/sync` | 把对象内容同步进 LightRAG（最多 50 个） | 200 |
+| GET | `/api/graph/status` | 本系统图文档的抽取状态 | 200 |
+| POST | `/api/graph/query` | 图增强问答（`mix`，可能约 90 秒） | 200 |
 | GET | `/api/logto/sign-in` | 跳转 Logto 登录（浏览器） | 307 |
 | GET | `/api/logto/sign-in-callback` | 登录回调（浏览器） | 307 |
 | GET | `/api/logto/sign-out` | 退出并清会话（浏览器） | 307 |
 
-合计 19 条路由：16 条业务 / 系统接口 + 3 条 Logto 跳转。`/api/objects*`、`/api/search`、`/api/sync/run`、`/api/parse/run` 需要会话；`/api/health` 不需要。
+合计 24 条路由：21 条业务 / 系统接口 + 3 条 Logto 跳转。除 `/api/health` 外都需要会话；`/api/graph/*` 在 LightRAG 不可用时返回 500。
 
 ---
 
@@ -864,7 +869,159 @@ curl -s -D headers.txt -o downloaded.bin \
 
 ---
 
-## 7. Logto 登录路由（浏览器跳转，非 JSON 接口）
+## 7. 知识图谱
+
+图谱接口把业务对象的主内容同步进 LightRAG，并提供实体、邻域与图增强问答。所有接口都要求登录；LightRAG 不可用时返回 `500 INTERNAL`。
+
+> **单租户限制**：LightRAG 的图 / 问答路由绑定默认 workspace，不按 `ownerSub` 隔离实体与答案正文。当前仅适用于单用户本机部署；`POST /api/graph/query` 的来源对象会按归属过滤，但答案文本仍可能包含其他用户写入的内容。开放多用户前必须先做实例级隔离。
+
+### 7.1 `GET /api/graph/labels`
+
+返回图谱中的全部实体标签，供实体列表使用。
+
+**请求**：无参数。
+
+**响应**：`200`
+
+```json
+{ "labels": ["#2B6CB0", "前端设计团队", "品牌蓝"] }
+```
+
+排序由 LightRAG 决定（字典序），可能包含抽取噪声（如单独的 `#`）；前端只在展示时把含文字 / 数字的实体排在前面，不删除数据。
+
+**主要错误**：401 未登录；500 LightRAG 请求失败或响应格式异常。
+
+---
+
+### 7.2 `GET /api/graph`
+
+读取一个实体的邻域子图。
+
+**查询参数**：
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `label` | 是 | 实体名，1–100 字符；空或超长返回 400 |
+| `depth` | 否 | 1–3 的整数，默认 2；非法值返回 400 |
+
+**响应**：`200`
+
+```json
+{
+  "nodes": [
+    { "id": "#2B6CB0", "type": "UNKNOWN", "description": "用于统一产品界面配色的深色系主色调。" },
+    { "id": "品牌蓝", "type": "UNKNOWN", "description": "用于统一产品界面配色的深色系主色调。" }
+  ],
+  "edges": [
+    { "source": "#2B6CB0", "target": "品牌蓝", "description": "用于统一产品界面配色的深色系主色调。" }
+  ]
+}
+```
+
+- `type` 取 LightRAG 的 `entity_type`，缺省为 `UNKNOWN`；`description` 缺失时为空字符串。
+- 节点上限固定 150；子图沿**有向边**展开，只有入边的实体会返回空图。
+
+**主要错误**：400 参数非法；401 未登录；500 LightRAG 失败。
+
+---
+
+### 7.3 `POST /api/graph/sync`
+
+把当前用户的对象内容同步进 LightRAG。**只负责入库**，实体抽取在 LightRAG 后台异步进行，进度看 7.4。
+
+**请求体**：无（忽略）。
+
+**执行规则**：
+
+- 最多检查 **50** 个未归档、未删除的对象（`listObjects` 默认顺序）。
+- 只取 `role=primary`、`parseStatus=succeeded`、未软删除的内容引用；按 `pageSize=100` 拉取 RAGFlow 分块，拼成图谱文本（标题、类型、库别、状态、描述、分类、标签 + 正文）。
+- `file_source` 为 `pakp:obj:{objectId}:{sha256 前 12 位}`；同一对象已有相同哈希的文档 → 计入 `unchanged`，不重复抽取。
+- 内容变化时先删除该对象的旧版本文档，再写入新版本。
+- 没有解析成功主内容的对象进 `skipped`，不算失败。
+
+**响应**：`200`
+
+```json
+{
+  "candidates": 12,
+  "submitted": 3,
+  "unchanged": 8,
+  "skipped": [{ "objectId": "01...", "title": "示例", "reason": "还没有解析成功的主内容" }],
+  "removed": 1,
+  "errors": []
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `candidates` | 本轮参与检查的对象数（≤ 50） |
+| `submitted` | 已送进 LightRAG、等待抽取的对象数 |
+| `unchanged` | 内容哈希未变、跳过的对象数 |
+| `skipped` | 无可构图内容的对象及原因 |
+| `removed` | 清理掉的旧版本图文档数 |
+| `errors` | 单个对象处理失败明细（`objectId`、`title`、`message`），不影响其他对象 |
+
+**主要错误**：401 未登录；500 无法构造 LightRAG / RAGFlow 客户端。
+
+---
+
+### 7.4 `GET /api/graph/status`
+
+汇总 LightRAG 中**本系统写入**的图文档状态（`file_path` 以 `pakp:obj:` 开头）。
+
+**响应**：`200`
+
+```json
+{
+  "total": 3,
+  "byStatus": { "processed": 2, "processing": 1 },
+  "objects": [{ "objectId": "01...", "status": "processing", "error": null }],
+  "failed": []
+}
+```
+
+- `byStatus` 的键来自 LightRAG（实测有 `pending` / `processing` / `processed` / `failed`）。
+- 同一对象存在多个版本时逐个列出，不做去重。
+- 手工放入 LightRAG、未带 `pakp:` 前缀的文档不会计入。
+
+**主要错误**：401 未登录；500 LightRAG 失败。
+
+---
+
+### 7.5 `POST /api/graph/query`
+
+图增强问答：同时使用实体关系与内容片段，返回答案与来源业务对象。
+
+**请求体**：
+
+```json
+{ "q": "品牌蓝是什么？它的对比度要求是多少？" }
+```
+
+- `q` 必填，1–200 字符；缺失或非字符串返回 400。
+- 查询模式固定 `mix`（图谱 + 向量）。
+
+**响应**：`200`
+
+```json
+{
+  "question": "品牌蓝是什么？",
+  "response": "品牌蓝是……",
+  "references": [
+    { "objectId": "01...", "title": "设计系统色彩规范", "type": "asset", "library": "internal" }
+  ]
+}
+```
+
+- `response` 为纯文本（可能含 Markdown 标题），前端按 `white-space: pre-wrap` 渲染。
+- `references` 只包含 `pakp:obj:` 前缀且属于当前用户的对象；同一对象去重。没有可映射引用时为空数组。
+- **可能很慢**：本机 CPU 实测约 94 秒，适配器超时 180 秒。调用方应设置 ≥ 180 秒的超时，不要在页面同步阻塞之外的地方重试。
+
+**主要错误**：400 `q` 非法；401 未登录；500 LightRAG 请求失败或超时。
+
+---
+
+## 8. Logto 登录路由（浏览器跳转，非 JSON 接口）
 
 三条路由供页面跳转使用，**不要**在脚本里当 JSON API 调用。
 
@@ -886,7 +1043,7 @@ curl -s -D headers.txt -o downloaded.bin \
 
 ---
 
-## 8. curl 示例（`AUTH_MODE=mock`，本地直接可用）
+## 9. curl 示例（`AUTH_MODE=mock`，本地直接可用）
 
 开发环境默认就是 `AUTH_MODE=mock`，无需登录、无需 Cookie。
 
@@ -974,15 +1131,31 @@ curl -s -G "$BASE/api/search" \
 
 # 18. 软删除（预期 204，无响应体）
 curl -s -i -X DELETE $BASE/api/objects/<id>
+
+# 19. 图谱实体列表与某个实体的两层邻域
+curl -s $BASE/api/graph/labels
+curl -s -G "$BASE/api/graph" \
+  --data-urlencode "label=品牌蓝" -d "depth=2"
+
+# 20. 同步对象内容进 LightRAG（返回后仍在后台抽取，在 LightRAG 里耗时数分钟）
+curl -s -X POST $BASE/api/graph/sync
+curl -s $BASE/api/graph/status
+
+# 21. 图增强问答（可能约 90 秒，curl 不要设太短的超时）
+curl -s --max-time 180 -X POST $BASE/api/graph/query \
+  -H "Content-Type: application/json" \
+  --data-binary @question.json
 ```
 
-`<id>` 替换为上一步返回的对象 `id`，`<refId>` 替换为内容引用列表里的 `id`；示例里的 `revision` 需要按实际返回值调整。
+`<id>` 替换为上一步返回的对象 `id`，`<refId>` 替换为内容引用列表里的 `id`；示例里的 `revision` 需要按实际返回值调整。中文问题请写进 `question.json`（内容形如 `{"q":"品牌蓝是什么？"}`）再用 `--data-binary @question.json` 提交，Windows 下不要把中文直接内联在 `-d` 里。
 
 内容上传、解析轮询、内容下载与检索都依赖真实 RAGFlow：`.env.local` 里要有 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY`，缺任一项这些接口返回 500（对象增删改查与 `/api/health` 不受影响）。检索在 dataset 尚未创建时返回空结果而不是错误。
 
+图谱接口依赖本机 LightRAG：`.env.local` 里要有 `LIGHTRAG_BASE_URL`（默认 `http://127.0.0.1:9621`）与 `LIGHTRAG_API_KEY`；LightRAG 未启动或密钥不对时返回 500。图谱内容来自 RAGFlow 已解析的主内容，两者都可用才有意义。
+
 ---
 
-## 9. 尚未实现（不要按这些能力设计调用方）
+## 10. 尚未实现（不要按这些能力设计调用方）
 
 以下能力**当前代码中不存在**，本文不作契约承诺：
 
@@ -990,7 +1163,9 @@ curl -s -i -X DELETE $BASE/api/objects/<id>
 |------|------|
 | 内容删除 / 附件解绑 | 未实现。没有删除某条 `content_ref`、列出对象全部附件或解绑单个附件的接口；删除只能走对象级 `DELETE` + worker（整对象全部文档） |
 | RAGFlow 问答会话 | 未实现。检索接口只返回召回片段，不组装上下文、不调用 chat model，也没有多轮会话 |
-| LightRAG 知识图谱 | 未实现。没有实体/关系抽取、图查询或相关接口 |
+| 图谱多用户隔离 | 未实现。LightRAG 图 / 问答路由绑定单实例默认 workspace，`/api/graph/*` 只适用于单用户本机部署（见第 7 节顶部说明） |
+| 图谱自动同步 | 未实现。没有定时同步或对象变更后自动入图；只能手动 `POST /api/graph/sync`，且单轮最多 50 个对象 |
+| 图谱实体 / 关系编辑 | 未实现。实体与关系只来自 LightRAG 抽取，不能改名、合并或手工补边 |
 | 列表总数 / 游标 | 未实现。`GET /api/objects` 只返回数组，没有 `total`、页码或游标 |
 | 多用户权限 / 角色 / 共享 | 未实现。只有按 `ownerSub` 的单用户归属过滤，没有角色或协作概念。注意 `/api/sync/run`、`/api/parse/run` 与后台 worker 不按调用者过滤（见 6.2、6.3） |
 | OpenAPI / Swagger 描述文件 | 未实现。本文是唯一接口说明 |
@@ -1000,7 +1175,7 @@ curl -s -i -X DELETE $BASE/api/objects/<id>
 
 ---
 
-## 10. 变更记录
+## 11. 变更记录
 
 | 日期 | 变更 |
 |------|------|
@@ -1008,4 +1183,5 @@ curl -s -i -X DELETE $BASE/api/objects/<id>
 | 2026-11-11（HEAD `49e26de`） | 补入四个新能力：`GET /api/objects/{id}`（对象详情）、`GET /api/objects/{id}/library`（迁移审计读取）、`POST /api/objects/{id}/content`（multipart 内容上传与 RAGFlow 映射）、`GET /api/objects` 的 `q` / `category` / `tag` / `status` / `sort` / `limit` / `offset`。端点总览更新为 14 条；未实现清单删去已实现的条目 |
 | 2026-11-11（HEAD `1ea0b86`） | 补入 outbox 消费端：新增 `POST /api/sync/run` 与后台 worker 行为（启动条件、间隔、认领上限、失败退避），端点总数 15 条；更新 PATCH / DELETE / 跨库迁移里「只入队不投递」的旧表述；未实现清单移除「同步 worker 未实现」，保留解析轮询、检索、下载与 OpenAPI 等当时仍缺失的能力。同日已在真实 RAGFlow 上端到端验证投递：迁移库别后 meta 回读为 `library=external`、删除对象后文档从数据集消失；失败重试仍为假网关单测 |
 | 2026-11-11（HEAD `a7aa5f3`） | 列表 `archived` 参数扩展为 `true` / `false` / `only`，非法取值改为 400（此前非 `true` 的值被静默忽略） |
-| 2026-11-11（HEAD `b860530`） | 补入四条内容链路接口：`POST /api/parse/run`（手动解析轮询，单轮 50 条）、`GET /api/objects/{id}/content`（内容引用列表）、`GET /api/objects/{id}/content/{refId}`（原文下载，二进制流）、`GET /api/search`（内容检索，含归属 / 归档 / 库别过滤）；端点总数 19 条。上传章节改为「上传即触发解析」，第 9 节移除已实现的解析轮询、检索、下载与内容列表。实测（RAGFlow v0.20.5）：上传即 `running`，9–12 秒后 `succeeded`、`chunk_count=1`；检索相似度 0.38–0.48；下载与上传文件逐字节一致；归档后同一检索 0 条 |
+| 2026-11-11（HEAD `b860530`） | 补入四条内容链路接口：`POST /api/parse/run`（手动解析轮询，单轮 50 条）、`GET /api/objects/{id}/content`（内容引用列表）、`GET /api/objects/{id}/content/{refId}`（原文下载，二进制流）、`GET /api/search`（内容检索，含归属 / 归档 / 库别过滤）；端点总数 19 条。上传章节改为「上传即触发解析」，第 10 节移除已实现的解析轮询、检索、下载与内容列表。实测（RAGFlow v0.20.5）：上传即 `running`，9–12 秒后 `succeeded`、`chunk_count=1`；检索相似度 0.38–0.48；下载与上传文件逐字节一致；归档后同一检索 0 条 |
+| 2026-11-11（Phase 3） | 新增第 7 节「知识图谱」五条接口：`GET /api/graph/labels`、`GET /api/graph`、`POST /api/graph/sync`、`GET /api/graph/status`、`POST /api/graph/query`；端点总数 24 条。标注单 workspace 限制、50 对象同步上限、`pakp:obj:` 来源前缀、问答 180 秒超时。未实现清单移除「LightRAG 知识图谱」，新增图谱多用户隔离、自动同步、实体编辑三条。实测（LightRAG 1.5.7，本机 CPU）：118 字文档抽取约 3.8 分钟、9 实体 / 3 关系；`mix` 问答 93.8 秒 |

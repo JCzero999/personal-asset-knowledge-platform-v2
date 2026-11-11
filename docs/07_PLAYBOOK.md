@@ -2,7 +2,7 @@
 
 > **读者**：接手本项目的开发者 / AI、需要评估进度的协作者。
 > **写法**：只记录仓库里能核实的事实（提交、文件、测试、实测端口）。无法核实的标「未验证」，不写规划口吻的完成状态。
-> **快照时间**：2026-11-11 15:14（Asia/Shanghai），HEAD `a7aa5f3`，分支 `master`，共 20 个提交；测试基线 10 个文件 127 项。Coder 与 Designer 仍在连续提交，本快照只对上述提交负责。
+> **快照时间**：2026-11-11 18:58（Asia/Shanghai），HEAD `2e7f70a`，分支 `master`；Phase 3（LightRAG）改动仍在工作区、尚未提交。测试基线 **19 个文件 216 项**（typecheck / lint / test / build 均在本轮 Phase 3 结束时复跑通过）。
 > **与其他文档的关系**：阶段定义以 [02_PHASES.md](02_PHASES.md) 为准，决策以 [03_DECISIONS.md](03_DECISIONS.md) 为准，接口以 [06_API.md](06_API.md) 为准。本文件不重复契约，只讲「怎么做的、踩过什么、怎么验证」。
 
 ---
@@ -27,12 +27,12 @@ Phase 1 = **身份 + 最小持久化 CRUD**。这是 2026-11-11 扩展后的口�
 |------|------|--------------------|
 | Phase 0 | 文档体系 + 基础环境 | Logto、RAGFlow 均已部署并连通实测；环境部分可视为完成 |
 | Phase 1 | 身份 + 最小持久化 CRUD | 代码完成；**浏览器内完整登录未人工验证**（见第 7 节） |
-| Phase 2 | RAGFlow 内容底座 | 上传 / 替换 / meta 镜像已打通并端到端实测（`49e26de`）；outbox 投递端已实现并端到端实测迁移与删除（`1ea0b86`）；解析、分块、检索仍未接线 |
-| Phase 3 | LightRAG 知识图谱 | 未开始 |
-| Phase 4 | 核心业务（资产 + 工作流） | 元数据、工作流、内容上传与同步投递均已实现；前端行内操作随 `82d8d54` 提交 |
-| Phase 5 | 联调与打磨 | 未开始 |
+| Phase 2 | RAGFlow 内容底座 | 上传 / 替换 / meta 已打通；outbox 投递、解析轮询、检索、下载均已实现并端到端实测 |
+| Phase 3 | LightRAG 知识图谱 | 主路径完成：本机部署、适配器、`graph-service`、5 条接口与 `/graph` 页；单 workspace 限制待解决 |
+| Phase 4 | 核心业务（资产 + 工作流） | 元数据、工作流、内容上传、同步投递与检索前端均已实现 |
+| Phase 5 | 联调与打磨 | 主路径完成；剩 Logto 真实登录验收与失败路径实测 |
 
-> **注意文档不一致**：[02_PHASES.md](02_PHASES.md) 的「当前状态 / 已完成」仍停留在「Logto / RAGFlow 未部署、未验证」，与本轮实测（`04_INTEGRATION.md` 记录两者均已部署）冲突。本手册不改该文件，同步它属于文档维护待办（第 7 节）。
+> **文档同步现状**：`02_PHASES.md` 已按本轮实测更新（2026-11-11），与 `04_INTEGRATION.md` 一致；`01_ARCHITECTURE.md` 的 Phase 3 实现状态待同步。
 
 ---
 
@@ -52,11 +52,11 @@ route handler  →  services  →  ports  ←  repositories  →  db
 | ports | `src/server/ports/` | 仓储与会话接口 | 不做权限、不发外部请求 |
 | repositories | `src/server/repositories/` | SQLite 实现；把驱动错误翻译成领域错误 | 不调 RAGFlow |
 | db | `src/server/db/` | 连接单例、表结构、迁移、ULID | 不写业务判断 |
-| services | `src/server/services/` | 用例编排：`object-service.ts` 负责请求体 / 查询参数解析、字段校验、`ownerSub` 归属校验；`content-service.ts` 编排内容上传（解析 multipart → 调 RAGFlow → 落 refs + 入队） | 不直接拼 SQL；不绕开 adapters 发外部请求 |
+| services | `src/server/services/` | 用例编排：`object-service.ts` 负责请求体 / 查询参数解析、字段校验、`ownerSub` 归属校验；`content-service.ts` 编排内容上传（解析 multipart → 调 RAGFlow → 落 refs + 入队）；`search-service.ts` 负责检索过滤；`graph-service.ts` 负责图谱文本构造、`pakp:obj:` 来源标识、判重与引用回映射 | 不直接拼 SQL；不绕开 adapters 发外部请求 |
 | http | `src/server/http/` | 统一响应信封、错误码 → HTTP 状态 | 不写业务逻辑 |
-| adapters | `src/server/adapters/` | RAGFlow 与 Logto 的**唯一**外部入口 | 不被 domain 依赖 |
+| adapters | `src/server/adapters/` | RAGFlow、LightRAG 与 Logto 的**唯一**外部入口 | 不被 domain 依赖 |
 
-硬约束（ADR-009）：route handler **不超过 15 行**；所有 RAGFlow 调用只经 `server/adapters/ragflow`。
+硬约束（ADR-009）：route handler **不超过 15 行**；所有 RAGFlow 调用只经 `server/adapters/ragflow`，所有 LightRAG 调用只经 `server/adapters/lightrag`。
 
 ### 2.2 六条业务约定
 
@@ -99,6 +99,14 @@ route handler  →  services  →  ports  ←  repositories  →  db
 - **替换顺序（`49e26de` 之后）**：临时名上传新文档 → `PUT` 写 meta → 落 `content_refs` + 入队 → 删旧文档 → 改回原名。上传或写 meta 失败时删掉新文档、旧内容保持不变，不存在「先删后传」的丢内容窗口。
 - RAGFlow 的上传接口**不接受** `meta_fields`，要上传后单独 `PUT`；该 `PUT` 是整体替换，必须每次传完整字段集。
 
+### 2.6 图谱契约（ADR-010）
+
+- LightRAG 1.5.7 跑在本机 Python 进程（`127.0.0.1:9621`），LLM 用 Ollama `deepseek-r1:7b`，Embedding 复用 RAGFlow 的 `BAAI/bge-large-zh-v1.5`（本地 OpenAI 兼容服务 `127.0.0.1:9381`）；图与向量存储独立于 RAGFlow。
+- 图谱文本 = 元数据头（标题、类型、库别、状态、描述、分类、标签）+ RAGFlow 分块原文；只取 `role=primary`、`parseStatus=succeeded`、未删除的引用。
+- 来源标识 `file_source = pakp:obj:{objectId}:{sha256(text).slice(0,12)}`：哈希判重、内容变更时先删旧版本再写新版本；问答引用只认 `pakp:` 前缀并回查归属。
+- 同步是**手动**的（`POST /api/graph/sync`，单轮最多 50 个对象）；入库后抽取在 LightRAG 后台异步进行，前端轮询 `/api/graph/status`。
+- 已知限制：LightRAG 图 / 问答路由绑定默认 workspace，`LIGHTRAG-WORKSPACE` 头只覆盖部分接口（如 `/health`），因此当前是**单租户**；子图沿**有向边**展开，只有入边的实体返回空图。
+
 ---
 
 ## 3. 实际开发顺序（按 `git log`）
@@ -130,19 +138,29 @@ route handler  →  services  →  ports  ←  repositories  →  db
 | 18 | `82d8d54` | 15:08 | 工作台对象行内操作：状态推进、跨库迁移、编辑、归档、删除；抽出 `src/lib/api-error.ts` / `object-labels.ts` | 9 文件 117 项（纯前端，用例数不变） |
 | 19 | `1ea0b86` | 15:10 | outbox 消费端：`sync-service` 投递、`POST /api/sync/run`、`instrumentation` 挂进程内 worker | 10 文件 125 项 |
 | 20 | `a7aa5f3` | 15:11 | 列表支持只看已归档（`archived=only`），非法取值改为 400 | 10 文件 127 项 |
+| 21 | `decfabc` | 15:16 | 补齐 API 参考与工程手册，并同步架构文档到当前实现 | — |
+| 22 | `b1bde9d` | 15:27 | 接入 RAGFlow 解析触发与状态轮询 | — |
+| 23 | `44c3b8d` | 15:29 | 新增对象内容下载接口 | — |
+| 24 | `1258e15` | 15:33 | 新增内容检索接口 | — |
+| 25 | `b860530` | 15:34 | 统一仓储层 SQLite 约束错误翻译 | — |
+| 26 | `3b8ddb4` | 15:42 | 工作台列表筛选与归档视图 | — |
+| 27 | `4e86ddf` | 15:42 | 拒绝推进已归档作品的状态 | — |
+| 28 | `26fcbe5` | 15:42 | 文档同步：解析轮询、下载与检索 | — |
+| 29 | `cd2dc50` | 15:42 | 文档：归档状态守卫与工作台筛选 | — |
+| 30 | `3a51888` | 18:17 | 内容检索页、对象详情页与内容文件界面 | —（提交时未单独记录；本轮基线 19 文件 216 项） |
+| 31 | `2e7f70a` | 18:18 | 文档：检索与详情前端落地，补实测与问题沉淀 | 同上 |
 
-**本快照的实测结果（2026-11-11 15:13，工作区）**：`npm test` 10 个文件 127 项全部通过（本轮复跑确认）。typecheck / lint 在 `49e26de`、`1ea0b86`、`a7aa5f3` 提交时记录通过，本次未复跑。
+**本快照的实测结果（2026-11-11 18:58，工作区）**：`npm run typecheck`、`npm run lint`、`npm test`（19 个文件 216 项）与 `npm run build` 全部通过；Phase 3 的 UI 与接口另用生产构建 + mock 身份做了 HTTP / 浏览器冒烟。
 
 ### 3.1 工作区未提交内容
 
-15:14 时工作区如下。注意：Coder 与 Designer 仍在连续提交 / 改文件，本节只代表该时刻。
+18:58 时工作区如下，均为 Phase 3（LightRAG 知识图谱）：
 
-- 已修改（文档）：`docs/01_ARCHITECTURE.md` —— 本次文档工作补写的「5.5 HTTP 接口层」与实现状态段落。其中「内容上传与同步投递尚未实现」一句在 `49e26de` / `1ea0b86` 之后已过时，属待修（见 7.2）。
-- 未跟踪（本轮文档）：`docs/06_API.md`、`docs/07_PLAYBOOK.md`
-- 未跟踪（工具生成）：`AGENTS.md` —— `next dev` 自动写入的 Next.js 版本提示，删掉也会再生，提交与否都不影响运行
-- 未跟踪（前端在改）：截至快照有 `src/lib/workspace-filters.ts`、`src/components/object-filters.tsx` —— 归档视图的筛选实现，尚未随任何提交进入仓库
+- 已修改：`.env.example`、`.gitignore`（忽略 `infra/lightrag` 的 venv / 模型 / 数据 / `.env`）、`docs/02~06`、`eslint.config.mjs`（忽略嵌套 `.venv`）、`src/app/globals.css`、`src/components/app-sidebar.tsx`、`src/server/adapters/ragflow/{client,index}.ts`（新增分块原文读取）
+- 新增：`infra/lightrag/`（部署与启动脚本，敏感文件已忽略）、`src/server/adapters/lightrag/`、`src/server/services/graph-service.ts`、`src/app/api/graph/`（5 条路由）、`src/app/graph/`、`src/components/graph-explorer.tsx`、`src/lib/graph-{layout,labels}.ts`、`tests/lib/graph-{layout,labels}.test.ts`
+- 本地运行生成、未纳入版本控制：`infra/lightrag/.venv`、`models`、`data`、`.env`；根目录 `data/dev.db`
 
-已提交的业务代码覆盖上表 1~20 行；此前列的「前端未提交」已随 `82d8d54` 提交，但前端此后又有新文件在写。
+提交前以 `git status` 为准；Phase 3 计划按「基础设施 + 适配器 / 服务 + 接口 / 前端 / 文档」拆成四个提交。
 
 ---
 
@@ -169,6 +187,17 @@ route handler  →  services  →  ports  ←  repositories  →  db
 | 17 | 下载接口响应头是 `filename*=UTF-8''.txt`，中文文件名整段丢失 | RAGFlow 回传的文件名已被它过滤掉非 ASCII 字符，只剩扩展名；路由优先用了 `file.filename` | 下载名优先取本地 `ref.documentName`，同时输出 `filename="download.txt"` 兜底与 `filename*=UTF-8''<原名>`；服务端实测响应头已还原中文名 | 外部系统回传的展示字段不可信；下载名以本地记录为准，并给不支持 `filename*` 的客户端留 ASCII 兜底 |
 | 18 | `sync-service` 的 8 项用例在真实时间越过固定 `NOW` 后全部失败（`claimed: 0`） | 入队写的是系统时钟，认领用的是测试里的固定 `NOW`；真实时间超过 `NOW` 后任务被视为「尚未到期」 | 每个用例前 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)`，用例后恢复真实计时器 | 涉及「到期时间」的测试必须同时固定系统时钟与业务时间基准，避免随时间失效 |
 | 19 | 访问不存在的对象，页面正确显示「找不到这条内容」，但 HTTP 状态是 200 | `src/app/workspace/loading.tsx` 让页面先流出 shell，响应头已发出后 `notFound()` 无法再改状态码 | 未改结构：页面在浏览器里展示正确；仅记录为已知行为（带 streaming 的 App Router 路由普遍如此） | 需要严格 404 状态码的公开页面，不要在该路由段放 `loading.tsx`，或在更早的边界判定存在性 |
+| 20 | `npm run lint` 一次报出 573 个错误，全部指向 `infra/lightrag/.venv/.../webui/assets/*.js` | `globalIgnores` 只写了根目录 `.venv/**`，没有匹配嵌套的 `infra/lightrag/.venv` | 在 `eslint.config.mjs` 的 `globalIgnores` 加入 `**/.venv/**` | 引入带 venv 的本地服务时，先确认 lint / tsc 的忽略规则覆盖嵌套目录，再跑全量检查 |
+| 21 | `/graph` 页在 `useEffect` 里调用 `loadGraph(selected)` 触发 `react-hooks/set-state-in-effect`，lint 失败 | 挂载时同步 setState；而且首屏数据本来可以在服务端拿到 | 删除挂载 effect：首屏邻域由服务端组件查询后作为 `initialSubgraph` 传入，切换实体只在点击事件里加载 | 初始数据优先服务端取；客户端 effect 只用于订阅、轮询等真正的副作用 |
+| 22 | `visibleEdges` 返回类型丢失了 `description`，TS 报 `TS2339` | 函数参数与返回值被写成不含业务字段的最小形状 | 改成泛型 `<T extends { source: string; target: string }>`，原样返回入参元素 | 纯函数只约束它真正读取的字段，其余字段用泛型透传 |
+| 23 | `POST /documents/paginated` 用小 `page_size` 时返回参数错误 | LightRAG 要求 `page_size ≥ 10` | 适配器统一用 50 / 100 / 200 的分页大小 | 外部 API 的边界值写进适配器常量与集成文档，不散落在调用点 |
+| 24 | 在 Windows 终端用 `curl -d '{"q":"中文问题"}'` 提交，服务端收到乱码或 JSON 解析失败 | Git Bash / cmd 的编码与引号转义叠加，中文内联 JSON 不可靠 | 把请求体写进文件，用 `curl --data-binary @question.json` | 含非 ASCII 的请求体一律走文件，不内联到命令行 |
+| 25 | 运行 LightRAG / 脚本时 Python 抛 `UnicodeEncodeError: 'gbk' codec can't encode ...` | Windows 控制台默认 GBK，日志里的中文 / 符号无法编码 | 设置 `PYTHONUTF8=1` 与 `PYTHONIOENCODING=utf-8` 后再启动 | 本机 Python 服务统一 UTF-8 环境变量；启动脚本里写死 |
+| 26 | 直接执行 `python` 打开的是 Windows 应用商店的占位程序，或装错解释器 | Windows 的 `python` 可能是 Microsoft Store 别名，不是真实解释器 | 使用 `infra/lightrag/.venv/Scripts/python.exe` 绝对路径，或 `py -3` | 本地服务脚本显式指向 venv 解释器，不依赖 PATH 里的 `python` |
+| 27 | 关键实体（如「品牌蓝」）在 `/graph` 里点开是空图，但 LightRAG 数据里明明有 `#2B6CB0 → 品牌蓝` | `/graphs` 只沿**出边**遍历；该实体只有入边 | 不修改 LightRAG；在集成文档标注「有向子图」，前端提示可从来源实体进入 | 对外部图接口的遍历方向做最小实测（取一条已知边，从两端分别查），再设计交互 |
+| 28 | 图谱问答返回了答案，但 `references` 为空 | 测试文档的 `file_path` 是不带 `pakp:obj:` 前缀的 `smoke-design-tokens.txt`，被归属过滤器丢弃 | 不改过滤规则：只有本系统写入的文档才映射回业务对象；用真实对象同步的数据复测 | 来源标识在写入时就带上，读取侧只认自己的前缀；测试数据也要走同一入口 |
+| 29 | 生产模式 `next start` 打开页面返回 307，看起来像路由坏了 | `.env.local` 是 `AUTH_MODE=logto`，未登录访问受保护页会跳转登录 | 冒烟时用进程环境变量覆盖 `AUTH_MODE=mock` 启动；不要改 `.env.local` 以免影响登录联调 | 区分「配置导致的预期跳转」与「路由错误」；先看响应头 `Location` |
+| 30 | 调 `/api/graph/sync` 返回 `candidates: 0`，以为同步逻辑失效 | 生产模式启动时 `DATABASE_PATH` 未设置，用的是空的 `data/app.db`；开发数据在 `data/dev.db` | 确认服务连的库与预期一致后再判断；这不是代码缺陷 | 冒烟前核对 `DATABASE_PATH`；把「候选为 0」与「同步失败」分开表述 |
 
 **通用预防**（比单条修复更重要）：
 
@@ -189,7 +218,7 @@ npm test            # node node_modules/vitest/vitest.mjs run
 npm run build       # 改动涉及构建配置或路由时执行
 ```
 
-通过标准：typecheck / lint 无输出、测试全绿。当前基线是 **10 个测试文件 127 项**（`a7aa5f3`，2026-11-11 15:13 复跑确认）。
+通过标准：typecheck / lint 无输出、测试全绿。当前基线是 **19 个测试文件 216 项**（Phase 3 结束时 2026-11-11 复跑确认）；`next build` 同期通过。
 
 ### 5.2 本地起服务与健康检查
 
@@ -236,9 +265,20 @@ curl -s $BASE/api/objects/<id>/library
 
 # 手动催一轮 outbox 投递（返回 claimed / done / failed；需要真实 RAGFlow 配置）
 curl -s -X POST $BASE/api/sync/run
+
+# 图谱：同步 → 查抽取状态 → 实体列表 → 邻域（需要本机 LightRAG）
+curl -s -X POST $BASE/api/graph/sync
+curl -s $BASE/api/graph/status
+curl -s $BASE/api/graph/labels
+curl -s -G "$BASE/api/graph" --data-urlencode "label=品牌蓝" -d "depth=2"
+
+# 图问答：请求体写文件，避免中文内联（可能约 90 秒）
+printf '{"q":"品牌蓝是什么？"}' > question.json
+curl -s --max-time 180 -X POST $BASE/api/graph/query \
+  -H 'Content-Type: application/json' --data-binary @question.json
 ```
 
-完整端点、字段与错误码见 [06_API.md](06_API.md) 第 4、7 节。
+完整端点、字段与错误码见 [06_API.md](06_API.md) 第 4、5、7 节。
 
 已按此流程记录过的实测（来自 `05_CHANGELOG.md`，非本次复跑）：状态迁移 200、跳级 409、过期 revision 409、资产迁移 400、未知 id 404；编辑 200、用 PATCH 改库别 400、跨库迁移 200、缺 reason 400、归档 200、取消归档 200、删除 204；对象详情 200、审计 200、未知 id 404；内容上传 201（落 1 条 `content_refs` + 1 条 `pending` upsert，真实 RAGFlow）。
 
@@ -257,9 +297,16 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3001/api/status
 
 # RAGFlow：返回版本字符串
 curl -s http://localhost:9380/v1/system/version
+
+# LightRAG：带 X-API-Key 返回 200，不带返回 403
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "X-API-Key: $LIGHTRAG_API_KEY" http://127.0.0.1:9621/health
+
+# Embedding 服务：返回模型列表
+curl -s http://127.0.0.1:9381/v1/models
 ```
 
-端口与版本以 [04_INTEGRATION.md](04_INTEGRATION.md) 的实测表为准（Logto 3001 / 控制台 3002；RAGFlow API 9380 / Web 18080）。
+端口与版本以 [04_INTEGRATION.md](04_INTEGRATION.md) 的实测表为准（Logto 3001 / 控制台 3002；RAGFlow API 9380 / Web 18080；LightRAG 9621；本地 embedding 9381；Ollama 11434）。
 
 ---
 
@@ -292,22 +339,19 @@ curl -s http://localhost:9380/v1/system/version
 |----|------|--------|------|
 | Logto 浏览器内完整登录 | Phase 1 验收 AUTH-02 / 04 / 06 / 07 无法确认；`ownerSub` 未与真实 Logto 用户对齐 | 用户本人登录一次 | `GET /api/logto/sign-in` 已验证 307 且回调地址被 Logto 接受；换码与进 `/workspace` **未验证**。步骤见 `04_INTEGRATION.md`「待人工完成」 |
 | 审查机器人 provider 401 | 后续提交没有独立复审，P1 之后的回归风险靠自测兜底 | 恢复审查通道 | 本轮仍不可用；不影响已提交代码运行 |
-| RAGFlow 解析 / 检索 | `content_refs.parse_status`、chunk 数与检索链路无法接线 | 需要 chat model / embedding 外部 API key | 上传、替换、列表、删除已实测；`POST /api/v1/datasets/{id}/chunks` **未调用** |
+| LightRAG 单 workspace | `/api/graph/*` 的实体与答案正文不按用户隔离 | 多用户前改造部署 | 图 / 问答路由绑定默认 workspace，`LIGHTRAG-WORKSPACE` 头只覆盖部分接口；当前只适用于单用户本机部署 |
 
 ### 7.2 待验证 / 未完成
 
 - **outbox 失败重试未经真实环境验证**：`sync-service` 的 404 视为达成目标、失败退避只有假网关单测；真实 RAGFlow 下已验证迁移后 meta 回读与删除后文档消失，但未构造真实 500/断网来观察退避。
 - **worker 的启动条件容易误判**：`instrumentation` 只在同时配置 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY` 且 `SYNC_WORKER_ENABLED` 不为 `false` 时挂定时器；因此「队列一直 pending」先查配置，而不是查 worker 逻辑。
-- **解析状态不流转**：`content_refs.parse_status` 上传后恒为 `pending`，不回写 `succeeded` / `failed`，也没有 `chunk_count`。
-- **内容只写不读**：没有下载、正文读取、内容引用查询、内容删除或附件管理接口（详见 `06_API.md` 第 8 节）。
-- **新建对象不入 outbox**：`create()` 只写 `objects`，不写 `sync_jobs`；编辑、归档、迁移、删除、内容上传会入队。新建本身没有内容可同步，暂不视为缺陷，但新建后立刻改元数据只会产生一条 upsert。
-- **生产构建**：`05_CHANGELOG.md` 记录 `b6e719b`、`5cbbcad` 时生产构建通过；`5b19bfe` 之后（含 `07652b7` ~ `1ea0b86`）**未复跑** `npm run build`。`instrumentation.ts` 与进程内定时器是 Next 的生产特性，构建与 `next start` 下是否如期挂载也没验证过。
-- **`02_PHASES.md` 状态过时**：仍写 Logto / RAGFlow 未部署，需按 `04_INTEGRATION.md` 的实测结果更新。
-- **`01_ARCHITECTURE.md` 未提交改动含过时句**：3.1 里那段写着「内容上传与同步投递尚未实现」，在 `49e26de` 之后前半句已不成立；随该文件提交时一并改。
+- **图谱同步是手动的**：没有定时同步，也没有对象变更后自动入图；单轮最多 50 个对象。长期运行需要补自动同步与失败重试。
+- **图谱抽取质量未评估**：7B 模型会把「#」等符号当实体、关系描述偶有格式告警；换更强模型后需在真实语料上复评，当前图谱不作为质量基线。
+- **CPU 很慢**：118 字文档抽取约 3.8 分钟、`mix` 问答约 94 秒；长文档的等待时间未测，生产使用需评估 GPU 或云模型。
+- **真实 Logto 下的前端冒烟未做**：`/search`、`/workspace/{id}`、`/graph` 均在 `AUTH_MODE=mock` 下实测。
+- **生产构建已复跑**：Phase 3 结束时 `next build` 与 `next start`（mock 身份）通过；`MIGRATIONS_FOLDER` 指向仓库 `drizzle/` 的部署方式仍需在目标环境确认。
+- **LightRAG / embedding 服务开机自启未配置**：当前靠手动或 `infra/lightrag/start.ps1` 启动。
 - **验收标准与实现的端点名不一致**：产品验收标准使用 `/api/assets`、`/api/works`、`/api/auth/callback`、`/api/auth/sign-out`；实现是 `/api/objects` 与 `/api/logto/*`。验收前必须统一口径，否则「按标准测」会全部对不上。
-- **P2 清单**：任务简报提到「剩余 P2 见 changelog」，但 `05_CHANGELOG.md` 中没有 P2 标记或列表，无法据此核对。可核实的未完成项即本节与 `01_ARCHITECTURE.md` 列出的内容。
-- **LightRAG**：未部署，Phase 3 前无内容。
-- **工作区未提交改动**：见 3.1，提交前不计入交付。
 
 ---
 
@@ -335,6 +379,17 @@ curl -s http://localhost:9380/v1/system/version
 | `82d8d54` | 工作台对象行内操作：状态推进、跨库迁移、编辑、归档与删除 |
 | `1ea0b86` | 补齐 outbox 消费端：把元数据变更投递到 RAGFlow |
 | `a7aa5f3` | 列表支持只看已归档（`archived=only`） |
+| `decfabc` | 补齐 API 参考与工程手册，同步架构文档 |
+| `b1bde9d` | 接入 RAGFlow 解析触发与状态轮询 |
+| `44c3b8d` | 新增对象内容下载接口 |
+| `1258e15` | 新增内容检索接口 |
+| `b860530` | 统一仓储层 SQLite 约束错误翻译 |
+| `3b8ddb4` | 工作台列表筛选与归档视图 |
+| `4e86ddf` | 拒绝推进已归档作品的状态 |
+| `26fcbe5` | 文档同步：解析轮询、下载与检索 |
+| `cd2dc50` | 文档：归档状态守卫与工作台筛选 |
+| `3a51888` | 内容检索页、对象详情页与内容文件界面 |
+| `2e7f70a` | 文档：检索与详情前端落地 |
 
 ## 附录 B：常用命令
 
@@ -346,6 +401,17 @@ npm run typecheck  # tsc --noEmit
 npm run lint       # eslint .
 npm test           # vitest run
 ```
+
+LightRAG 链路（embedding + lightrag-server）在本机 Windows 上启动：
+
+```powershell
+cd infra\lightrag
+.\start.ps1
+# embedding: http://127.0.0.1:9381/health
+# lightrag:  http://127.0.0.1:9621/health
+```
+
+脚本用 venv 解释器的绝对路径，避免命中 Windows 的 `python` 占位程序；`.env`、`.venv`、`models`、`data` 均不入库。
 
 数据库文件默认 `data/app.db`，用 `DATABASE_PATH` 覆盖；迁移目录默认 `cwd/drizzle`，用 `MIGRATIONS_FOLDER` 覆盖；连接固定开 WAL、外键、`busy_timeout=5000`。
 
