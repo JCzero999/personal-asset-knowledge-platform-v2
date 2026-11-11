@@ -1,10 +1,12 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
 
-import { ValidationError } from "../../src/domain/errors";
+import { NotFoundError, ValidationError } from "../../src/domain/errors";
 import { openDatabase, type DatabaseHandle } from "../../src/server/db/client";
 import {
+  changeObjectStatus,
   createObject,
   listObjects,
+  parseChangeStatusBody,
   parseCreateObjectBody,
   parseListObjectsQuery,
 } from "../../src/server/services/object-service";
@@ -123,6 +125,44 @@ describe("createObject / listObjects", () => {
       expect(work.status).toBe("draft");
       expect(work.format).toBe("course");
     }
+  });
+});
+
+describe("parseChangeStatusBody", () => {
+  it("接受合法目标状态与正整数版本号", () => {
+    expect(parseChangeStatusBody({ to: "finished" })).toEqual({ to: "finished" });
+    expect(parseChangeStatusBody({ to: "published", expectedRevision: 2 })).toEqual({
+      to: "published",
+      expectedRevision: 2,
+    });
+  });
+
+  it("拒绝未知状态与非正整数版本号", () => {
+    expect(() => parseChangeStatusBody({ to: "archive" })).toThrow(ValidationError);
+    expect(() => parseChangeStatusBody({ to: "finished", expectedRevision: 0 })).toThrow(
+      ValidationError,
+    );
+    expect(() => parseChangeStatusBody({ to: "finished", expectedRevision: "2" })).toThrow(
+      ValidationError,
+    );
+  });
+});
+
+describe("changeObjectStatus", () => {
+  it("按身份推进状态；他人的对象视为不存在", async () => {
+    const work = await createObject(handle.db, "u1", {
+      type: "work",
+      title: "一门课",
+      library: "internal",
+      format: "course",
+    });
+
+    const finished = await changeObjectStatus(handle.db, "u1", work.id, { to: "finished" });
+    expect(finished).toMatchObject({ type: "work", status: "finished", revision: 2 });
+
+    await expect(
+      changeObjectStatus(handle.db, "u2", work.id, { to: "published" }),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 

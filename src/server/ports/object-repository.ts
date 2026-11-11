@@ -32,7 +32,7 @@ export interface CreateObjectInput {
   ownerSub: string;
   // ---- 仅 work ----
   format?: WorkFormat;
-  status?: WorkStatus;
+  // 新建作品一律从 draft 开始，状态只能经 changeStatus 迁移。
   sourceNote?: string | null;
   /** 由实现注入统一时钟；主要在测试中使用。 */
   now?: string;
@@ -86,6 +86,17 @@ export interface ChangeLibraryInput {
   now?: string;
 }
 
+export interface ChangeStatusInput {
+  objectId: string;
+  to: WorkStatus;
+  /**
+   * 乐观锁：与库中 revision 不一致时抛 ConflictError。
+   * 省略则以本次读取到的 revision 作为条件，仍能挡住读取之后的并发写入。
+   */
+  expectedRevision?: number;
+  now?: string;
+}
+
 export interface ObjectRepository {
   create(input: CreateObjectInput): Promise<BusinessObject>;
 
@@ -94,6 +105,12 @@ export interface ObjectRepository {
   list(query?: ListObjectsQuery): Promise<BusinessObject[]>;
 
   update(id: string, input: UpdateObjectInput): Promise<BusinessObject>;
+
+  /**
+   * 作品状态迁移：按 `src/domain/workflow.ts` 的显式迁移表校验，非法迁移抛
+   * INVALID_TRANSITION / EXTERNAL_LIBRARY_PRACTICED；资产没有状态，直接拒绝。
+   */
+  changeStatus(input: ChangeStatusInput): Promise<BusinessObject>;
 
   /** 软删除；不物理删除行，便于审计与对账。 */
   softDelete(id: string, at?: string): Promise<void>;

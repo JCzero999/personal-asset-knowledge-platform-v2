@@ -9,6 +9,7 @@ import {
   type WorkStatus,
 } from "../../domain/objects";
 import { ConflictError, DomainError, NotFoundError, ValidationError } from "../../domain/errors";
+import { assertTransition } from "../../domain/workflow";
 import type { AppDatabase } from "../db/client";
 import { ulid } from "../db/id";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../db/schema";
 import type {
   ChangeLibraryInput,
+  ChangeStatusInput,
   CreateObjectInput,
   LibraryChangeEvent,
   ListObjectsQuery,
@@ -123,20 +125,14 @@ export class SqliteObjectRepository implements ObjectRepository {
     const categories = [...(input.categories ?? [])];
     const isWork = input.type === "work";
 
-    if (!isWork && (input.status ?? input.format ?? input.sourceNote) != null) {
-      throw new ValidationError("资产不允许携带 status / format / sourceNote", {
+    if (!isWork && (input.format ?? input.sourceNote) != null) {
+      throw new ValidationError("资产不允许携带 format / sourceNote", {
         type: input.type,
       });
     }
 
-    if (isWork) {
-      if (!isWorkFormat(input.format)) {
-        throw new ValidationError("作品必须提供合法的 format", { format: input.format });
-      }
-
-      if (input.status !== undefined && !isWorkStatus(input.status)) {
-        throw new ValidationError("非法的作品状态", { status: input.status });
-      }
+    if (isWork && !isWorkFormat(input.format)) {
+      throw new ValidationError("作品必须提供合法的 format", { format: input.format });
     }
 
     const row: NewObjectRow = {
@@ -159,7 +155,7 @@ export class SqliteObjectRepository implements ObjectRepository {
       updatedAt: now,
       deletedAt: null,
       format: isWork ? (input.format as WorkFormat) : null,
-      status: isWork ? (input.status ?? "draft") : null,
+      status: isWork ? "draft" : null,
       sourceNote: isWork ? (input.sourceNote ?? null) : null,
     };
 
@@ -273,6 +269,66 @@ export class SqliteObjectRepository implements ObjectRepository {
         throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
           id,
           expectedRevision: input.expectedRevision,
+        });
+      }
+
+      return toObject(updated);
+    } catch (error) {
+      return translateSqliteError(error);
+    }
+  }
+
+  async changeStatus(input: ChangeStatusInput): Promise<BusinessObject> {
+    const now = input.now ?? nowIso();
+
+    if (!isWorkStatus(input.to)) {
+      throw new ValidationError("非法的作品状态", { status: input.to });
+    }
+
+    const current = await this.findById(input.objectId);
+
+    if (!current) {
+      throw new NotFoundError("对象不存在或已删除", { id: input.objectId });
+    }
+
+    if (current.type !== "work") {
+      throw new ValidationError("资产没有作品状态", { id: input.objectId });
+    }
+
+    // 状态机在这里是唯一的写入口：非法迁移与「外库直接 practiced」都先于 SQL 被拒绝。
+    assertTransition(current.status, input.to, { library: current.library });
+
+    const expectedRevision = input.expectedRevision ?? current.revision;
+
+    if (expectedRevision !== current.revision) {
+      throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+        id: input.objectId,
+        expectedRevision,
+        actualRevision: current.revision,
+      });
+    }
+
+    try {
+      const [updated] = await this.db
+        .update(objects)
+        .set({
+          status: input.to,
+          updatedAt: now,
+          revision: current.revision + 1,
+        })
+        .where(
+          and(
+            eq(objects.id, input.objectId),
+            eq(objects.revision, expectedRevision),
+            isNull(objects.deletedAt),
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+          id: input.objectId,
+          expectedRevision,
         });
       }
 

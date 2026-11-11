@@ -1,9 +1,10 @@
-import { ValidationError } from "../../domain/errors";
+import { NotFoundError, ValidationError } from "../../domain/errors";
 import {
   isLibrary,
   isObjectType,
   libraries,
   workFormatValues,
+  workStatuses,
   objectOrigins,
   priorities,
   type BusinessObject,
@@ -13,6 +14,7 @@ import {
   type ObjectType,
   type Priority,
   type WorkFormat,
+  type WorkStatus,
 } from "../../domain/objects";
 import type { AppDatabase } from "../db/client";
 import type { CreateObjectInput, ListObjectsQuery } from "../ports/object-repository";
@@ -155,7 +157,7 @@ export function parseCreateObjectBody(body: unknown, ownerSub: string): CreateOb
 
   const format: WorkFormat = readEnum<WorkFormat>(record.format, "format", workFormatValues);
 
-  if (record.status !== undefined && record.status !== null && record.status !== "draft") {
+  if (record.status !== undefined && record.status !== null) {
     throw new ValidationError("新建作品固定从 draft 开始，状态迁移请用专用接口", {
       field: "status",
     });
@@ -164,7 +166,6 @@ export function parseCreateObjectBody(body: unknown, ownerSub: string): CreateOb
   return {
     ...base,
     format,
-    status: "draft",
     sourceNote: readString(record.sourceNote, "sourceNote", MAX_DESCRIPTION),
   };
 }
@@ -176,6 +177,48 @@ export async function createObject(
 ): Promise<BusinessObject> {
   const params = parseCreateObjectBody(body, ownerSub);
   return new SqliteObjectRepository(db).create(params);
+}
+
+export interface ChangeStatusParams {
+  to: WorkStatus;
+  expectedRevision?: number;
+}
+
+/** 状态迁移请求体：只接受目标状态与可选的乐观锁版本号。 */
+export function parseChangeStatusBody(body: unknown): ChangeStatusParams {
+  const record = asRecord(body);
+  const to = readEnum<WorkStatus>(record.to, "to", workStatuses);
+  const expected = record.expectedRevision;
+
+  if (expected === undefined || expected === null) {
+    return { to };
+  }
+
+  if (typeof expected !== "number" || !Number.isInteger(expected) || expected < 1) {
+    throw new ValidationError("expectedRevision 必须是正整数", { field: "expectedRevision" });
+  }
+
+  return { to, expectedRevision: expected };
+}
+
+/**
+ * 迁移作品状态。单用户阶段也按 ownerSub 过滤：别人的对象一律当作不存在，
+ * 避免通过 id 探测他人数据。
+ */
+export async function changeObjectStatus(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+  body: unknown,
+): Promise<BusinessObject> {
+  const repo = new SqliteObjectRepository(db);
+  const current = await repo.findById(objectId);
+
+  if (!current || current.ownerSub !== ownerSub) {
+    throw new NotFoundError("对象不存在或已删除", { id: objectId });
+  }
+
+  return repo.changeStatus({ objectId, ...parseChangeStatusBody(body) });
 }
 
 /** 列表筛选参数只接受已知取值，非法值直接报错，不做静默忽略。 */

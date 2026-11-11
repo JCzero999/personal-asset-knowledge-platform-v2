@@ -80,19 +80,7 @@ describe("objects CRUD", () => {
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
-  it("资产携带 status 时在应用层直接拒绝", async () => {
-    await expect(
-      repo.create({
-        type: "asset",
-        title: "带状态的资产",
-        library: "internal",
-        ownerSub: "user_test",
-        status: "draft",
-      }),
-    ).rejects.toBeInstanceOf(ValidationError);
-  });
-
-  it("数据库 CHECK 同样拒绝：绕过应用校验直接写 status 到 asset", () => {
+  it("数据库 CHECK 捕获：绕过应用校验直接写 status 到 asset", () => {
     expect(() =>
       handle.sqlite
         .prepare(
@@ -107,14 +95,19 @@ describe("objects CRUD", () => {
     ).toThrow(/CHECK constraint failed/i);
   });
 
-  it("数据库 CHECK 拒绝外库 practiced 作品", async () => {
-    await expect(
-      repo.create({
-        ...workInput,
-        library: "external",
-        status: "practiced",
-      }),
-    ).rejects.toMatchObject({ code: "CONSTRAINT_VIOLATION" });
+  it("数据库 CHECK 拒绝外库 practiced 作品（绕过状态机直写）", () => {
+    expect(() =>
+      handle.sqlite
+        .prepare(
+          `insert into objects
+             (id, type, title, library, source, origin, categories, tags, priority,
+              owner_sub, revision, created_at, updated_at, format, status)
+           values ('01HZZZZZZZZZZZZZZZZZZZZZZZ', 'work', 'x', 'external',
+                   'handwritten', 'self', '[]', '[]', 'medium', 'u', 1,
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'course', 'practiced')`,
+        )
+        .run(),
+    ).toThrow(/CHECK constraint failed/i);
   });
 
   it("查询与软删除", async () => {
@@ -164,6 +157,61 @@ describe("objects CRUD", () => {
     await expect(
       repo.update(asset.id, { format: "article", expectedRevision: asset.revision }),
     ).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe("作品状态迁移", () => {
+  it("沿迁移表逐级推进并递增 revision", async () => {
+    const work = await repo.create({ ...workInput, library: "internal" });
+
+    const finished = await repo.changeStatus({ objectId: work.id, to: "finished" });
+    expect(finished).toMatchObject({ type: "work", status: "finished", revision: 2 });
+
+    const published = await repo.changeStatus({ objectId: work.id, to: "published" });
+    expect(published).toMatchObject({ status: "published", revision: 3 });
+
+    const practiced = await repo.changeStatus({ objectId: work.id, to: "practiced" });
+    expect(practiced).toMatchObject({ status: "practiced", revision: 4 });
+  });
+
+  it("跳过中间状态被拒绝", async () => {
+    const work = await repo.create({ ...workInput, library: "internal" });
+
+    await expect(
+      repo.changeStatus({ objectId: work.id, to: "published" }),
+    ).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
+  });
+
+  it("外库作品不能直接 practiced", async () => {
+    const work = await repo.create(workInput); // library: external
+    await repo.changeStatus({ objectId: work.id, to: "finished" });
+    await repo.changeStatus({ objectId: work.id, to: "published" });
+
+    await expect(
+      repo.changeStatus({ objectId: work.id, to: "practiced" }),
+    ).rejects.toMatchObject({ code: "EXTERNAL_LIBRARY_PRACTICED" });
+  });
+
+  it("资产没有状态可迁移", async () => {
+    const asset = await repo.create({
+      type: "asset",
+      title: "资产",
+      library: "internal",
+      ownerSub: "user_test",
+    });
+
+    await expect(
+      repo.changeStatus({ objectId: asset.id, to: "finished" }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("过期 revision 触发冲突", async () => {
+    const work = await repo.create({ ...workInput, library: "internal" });
+    await repo.changeStatus({ objectId: work.id, to: "finished" });
+
+    await expect(
+      repo.changeStatus({ objectId: work.id, to: "published", expectedRevision: 1 }),
+    ).rejects.toBeInstanceOf(ConflictError);
   });
 });
 
