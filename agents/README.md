@@ -17,9 +17,6 @@ agents/
 │   ├── __init__.py
 │   └── agents.yaml      # 三个 Agent 的角色配置（goal/backstory/allow_delegation）
 ├── backups/             # docs 写入前的自动备份目录（文件名带时间戳）
-├── config/
-│   ├── __init__.py
-│   └── agents.yaml      # 三个 Agent 的角色配置（goal/backstory/allow_delegation）
 └── README.md            # 本文件
 ```
 
@@ -153,21 +150,6 @@ python agents/main.py
 | `pip` 提示 `SSLEOFError` / 无法连接 `files.pythonhosted.org` | 网络或代理导致 SSL 连接中断 | 检查代理/防火墙，或使用国内镜像：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt` |
 | PowerShell 报错“禁止运行脚本” | 执行策略限制 | `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` |
 | `python` 仍指向 3.14 | PATH 中 miniconda3 的 Python 排在前面 | 使用完整路径调用 3.12 的 python，或先调整 PATH 顺序 |
-
-
-## 如何运行
-
-在项目根目录执行：
-
-```powershell
-python agents/main.py
-```
-
-程序会：
-1. 加载 `.env` 中的环境变量；
-2. 启动 CrewAI Crew（分层流程，Project Manager 担任 Manager 指派任务）；
-3. 依次执行「分析当前项目状态」→「制定下一步可执行任务清单」；
-4. 打印最终结果。
 
 ## 当前支持哪些能力
 

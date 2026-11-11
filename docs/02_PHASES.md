@@ -1,13 +1,13 @@
 # 分阶段计划与当前进度
 
 > 每次完成重要工作后，由 AI 根据 `docs/prompts/maintain-docs.md` 更新本文件。  
-> 方向锚点：00_SCOPE.md + 03_DECISIONS.md（含 ADR-005、ADR-006）。
+> 方向锚点：00_SCOPE.md + 03_DECISIONS.md（含 ADR-005 ~ ADR-009）。
 
 ## 当前状态
 
 - **所处阶段**：Phase 0（环境已就绪，待启动并验证服务）；Phase 1 骨架已提前完成
 - **状态表述**：文档与多 Agent 已就绪；已按 **greenfield / ADR-006** 从零创建 Next.js + TypeScript 骨架、Mock UI、health 与元数据 DRAFT。**Docker / WSL 阻塞已解除**（2026-11-11 实测：Docker 29.9.2、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版）。Phase 0 只剩拉起并验证 **Logto** 与 **RAGFlow**；两者目前**均未部署、未验证**，真实 Logto / RAGFlow 仍未连接
-- **最新关键决策**：ADR-005（RAGFlow 内容底座）+ ADR-006（从零新建业务代码）
+- **最新关键决策**：ADR-005（RAGFlow 内容底座）+ ADR-006（从零新建业务代码）+ ADR-007~009（2026-11-11 固化：内容映射契约、内外库字段拆分、业务元数据存储与分层）
 - **阻塞项**：无环境阻塞。待办仅为 Logto / RAGFlow 的部署与实测，不需要用户侧操作
 
 ## 阶段总览
@@ -15,11 +15,13 @@
 | 阶段 | 目标 | 状态 | 完成标准 |
 |------|------|------|----------|
 | **Phase 0** | 文档体系 + 基础环境就绪 | 进行中（环境已就绪，待启动并验证服务） | docs 与 ADR 对齐；Logto、RAGFlow 能 Docker 启动并访问 |
-| **Phase 1** | Next.js 骨架 + Logto 认证 | 进行中（骨架已完成） | **新建** Next.js 应用；登录/注册可用；能获取用户身份 |
+| **Phase 1** | Next.js 骨架 + Logto 认证 + 最小持久化 | 进行中（骨架已完成） | **新建** Next.js 应用；登录可用、能获取用户身份；`POST /api/assets` 已落库；重启后数据仍在 |
 | **Phase 2** | RAGFlow 内容底座 | 未开始（映射 DRAFT 已写） | Dataset/Document、解析与检索；业务侧有 content_ref |
 | **Phase 3** | LightRAG 知识图谱 | 未开始 | 构图与查询；共用 Embedding、独立存储 |
 | **Phase 4** | 核心业务（资产 + 工作流） | 未开始（状态机 DRAFT 已写） | **新写**资产 CRUD + 四阶段流转；内容映射进 RAGFlow |
 | **Phase 5** | 联调与打磨 | 未开始 | 登录 → 资产/工作流 → 检索 → 图谱 主路径通 |
+
+> **Phase 1 范围扩展（2026-11-11）**：完成标准由「骨架 + Logto 登录」扩展为「身份 + 最小持久化 CRUD」。依据是产品的 **DATA-01 / DATA-05 / DATA-08**，存储选型见 ADR-009。原「Phase 1 只做骨架」的口径**作废**。
 
 ## 已完成
 

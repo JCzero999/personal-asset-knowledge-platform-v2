@@ -109,6 +109,92 @@
 
 ---
 
+## ADR-007：内容映射契约与 Dataset 粒度
+
+- **状态**：已采纳
+- **日期**：2026-11-11
+- **决策**：
+  - RAGFlow 侧只使用 **单一 Dataset**
+  - 内容映射放在**独立的 `content_refs` 表**，**不用** JSON 字段内嵌
+- **关键结论**：
+  - 业务 id（ULID）是**唯一身份**；`document_id` 只是**可变指针**
+  - RAGFlow 正文更新是「删除 + 重传」，`document_id` 会变，因此不能把它当身份使用
+  - 自建 `content_key` 写入 RAGFlow 的 `meta_fields`，作为**幂等键**认回文档
+  - `meta_fields` 只镜像**过滤要用**的字段：`content_key`、`owner_type`、`owner_id`、`library`、`archived`、`format`、`source`
+  - 镜像方向**单向**：业务库 → RAGFlow，**永不反向**
+  - **不镜像 `status`**（状态只留在业务层，见 ADR-008）
+  - 失败处理**不靠分布式事务回滚**，以 `content_refs` 作 **outbox** + 定时**对账**
+- **原因**：
+  - 分两个 Dataset 会让「迁移到内库」退化为「搬文档 + 换 `document_id`」，违反 `01_ARCHITECTURE.md` 的「状态变化只改业务元数据，内容位置稳定」
+  - 单一 Dataset + 业务层过滤字段，才能让库别与状态的变更不触碰内容位置
+- **后果**：
+  - 所有跨库 / 归档的筛选必须依赖 `meta_fields` 的镜像字段与业务库，而非分库
+  - 需要实现 outbox 写入 + 对账任务；短暂不一致可被对账修正
+  - `content_refs` 需记录当前 `document_id`、`content_key` 与同步状态
+- **影响范围**：01_ARCHITECTURE、04_INTEGRATION、Phase 2、Phase 4
+- **变更**：如要推翻本决策，必须新增 ADR，并同步 `00_SCOPE.md` 与 `01_ARCHITECTURE.md`
+
+---
+
+## ADR-008：内库 / 外库的定义与字段拆分
+
+- **状态**：已采纳
+- **日期**：2026-11-11
+- **决策**：
+  - **外库 = 输入与待验证区**；**内库 = 已验证与可复用区**
+  - 判定标准是「我现在敢不敢直接拿它去用或教别人」，**不是内容来源**
+  - 拆成三个**正交**字段：
+    - `library`：`internal` / `external`（**单值互斥**）
+    - `source`：人写 / AI 提炼
+    - `origin`：自己 / 导入
+  - 资产**不设 `status`**，生命周期就是 `library` + `archived`，用数据库 **CHECK 约束**钉死
+  - 外库作品**不得直接** `practiced`
+  - 同一内容**不能同时属于两库**；需要两处使用就走「转资产」，并产生**两个对象**
+- **原因**：
+  - 旧项目里 `library=inner` 与 `status=draft` 并存的矛盾组合，说明一个字段塞了两件事
+  - 来源（谁写的、从哪来）与验证程度是不同维度，混在一个字段里必然出现非法状态
+- **后果**：
+  - 前端与 API 需要分别暴露 `library` / `source` / `origin`，不能再用单一「类型」字段
+  - 「转资产」是一次显式复制，两个对象此后各自演化
+  - 数据库层必须校验 `library` 取值与 `archived` 组合，非法组合在写入时即失败
+- **影响范围**：00_SCOPE、01_ARCHITECTURE、Phase 4、`content_refs` 映射字段
+- **变更**：如要推翻本决策，必须新增 ADR，并同步 `00_SCOPE.md` 与 `01_ARCHITECTURE.md`
+
+---
+
+## ADR-009：业务元数据存储选型与分层结构
+
+- **状态**：已采纳
+- **日期**：2026-11-11
+- **决策**：
+  - 业务元数据使用 **SQLite + better-sqlite3 + Drizzle ORM**，**Phase 1 就落地**
+  - **不用** Postgres，**不用** JSON 文件
+  - 目录分层：
+    - `domain`：纯类型与规则
+    - `server.ports`：接口定义
+    - `server.adapters.ragflow`：**唯一**外部入口
+    - `server.repositories`
+    - `server.db`
+    - `server.services`
+    - `server.http`
+  - route handler **不超过 15 行**
+- **原因**：
+  - 单用户、单实例场景下 SQLite 足够，且无需额外服务进程
+  - 分层把 RAGFlow 收敛到唯一适配器，业务逻辑不直接依赖外部服务
+  - route handler 保持极薄，便于测试与替换
+- **后果**：
+  - Phase 1 的完成标准包含「最小持久化 CRUD」（见 `02_PHASES.md`）
+  - 所有出入 RAGFlow 的调用只能经过 `server.adapters.ragflow`
+  - 换库有明确触发条件，不因个人偏好提前迁移
+- **换库触发条件**（三者任一成立才换 Postgres）：
+  1. 出现多用户隔离
+  2. 多实例部署
+  3. 需要把向量放进业务库
+- **影响范围**：01_ARCHITECTURE、02_PHASES、Phase 1、Phase 2、Phase 4
+- **变更**：如要推翻本决策，必须新增 ADR，并同步 `00_SCOPE.md` 与 `01_ARCHITECTURE.md`
+
+---
+
 ## 决策索引（快速查看）
 
 | 编号 | 标题 | 状态 | 核心结论 |
@@ -119,6 +205,9 @@
 | ADR-004 | 文档维护方式 | 已采纳 | 固定结构 + AI 动态更新 |
 | ADR-005 | 统一内容存储策略 | 已采纳 | RAGFlow 为内容唯一底座 |
 | ADR-006 | 代码库形态 | 已采纳 | greenfield，业务代码从零新建 |
+| ADR-007 | 内容映射契约与 Dataset 粒度 | 已采纳 | 单一 Dataset；`content_refs` 表；`content_key` 作幂等键；outbox + 对账 |
+| ADR-008 | 内库 / 外库定义与字段拆分 | 已采纳 | 按「敢不敢直接用」判定；`library` / `source` / `origin` 三正交字段；资产无 `status` |
+| ADR-009 | 业务元数据存储与分层 | 已采纳 | SQLite + better-sqlite3 + Drizzle；分层到唯一 RAGFlow 适配器 |
 
 ---
 
