@@ -26,6 +26,8 @@
   --ok-bg: #e9f3ec;    --ok-fg: #35704f;
   --warn-bg: #f7f1e6;  --warn-fg: #7a5d2b;
   --info-bg: #eef1f6;  --info-fg: #4f6480;
+  /* 仅用于删除等不可逆操作，白字 6.5:1 */
+  --danger-fg: #a13d30; --danger-hover: #8a3227;
 
   /* ===== 兼容旧变量名（现有规则继续可用，逐步替换） ===== */
   --ink: var(--text-1);
@@ -721,6 +723,16 @@ button:disabled {
   color: var(--text-1);
 }
 
+.btn-danger {
+  background: var(--danger-fg);
+  box-shadow: 0 6px 16px rgba(161, 61, 48, 0.16);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+}
+
 .icon-button {
   align-items: center;
   background: transparent;
@@ -978,6 +990,7 @@ button:disabled {
 .object-row {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-3);
   padding: 12px var(--sp-6);
 }
@@ -1037,6 +1050,178 @@ button:disabled {
   flex: 0 0 auto;
   font-size: var(--fs-12);
   font-variant-numeric: tabular-nums;
+}
+
+/* ===== 对象操作 ===== */
+.object-side {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.object-step {
+  align-items: center;
+  background: var(--green-050);
+  border: 1px solid var(--green-100);
+  border-radius: var(--r-pill);
+  color: var(--green-700);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  white-space: nowrap;
+}
+
+.object-step:hover:not(:disabled) {
+  background: var(--green-100);
+  border-color: var(--green-300);
+  color: var(--green-800);
+}
+
+.object-step:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.object-more {
+  height: 28px;
+  width: 28px;
+}
+
+.object-more[aria-expanded="true"] {
+  background: var(--green-100);
+  color: var(--green-700);
+}
+
+.object-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex: 0 0 100%;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.object-panel-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.object-panel-label {
+  color: var(--text-3);
+  flex: 0 0 28px;
+  font-size: var(--fs-12);
+}
+
+.object-panel-group {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.object-panel-value {
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-semibold);
+}
+
+.object-panel-note {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+}
+
+.object-panel-foot {
+  border-top: 1px dashed var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  padding-top: 10px;
+}
+
+.chip-button {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--fs-12);
+  height: 30px;
+  padding: 0 12px;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  white-space: nowrap;
+}
+
+.chip-button:hover:not(:disabled) {
+  border-color: var(--green-300);
+  color: var(--text-1);
+}
+
+.chip-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.chip-primary {
+  background: var(--green-050);
+  border-color: var(--green-300);
+  color: var(--green-700);
+  font-weight: var(--fw-semibold);
+}
+
+.chip-primary:hover:not(:disabled) {
+  background: var(--green-100);
+  color: var(--green-800);
+}
+
+.text-button {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--fs-12);
+  gap: 5px;
+  padding: 2px 0;
+  transition: color 140ms ease;
+}
+
+.text-button:hover:not(:disabled) {
+  color: var(--text-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.text-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.text-danger {
+  color: var(--danger-fg);
+}
+
+.text-danger:hover:not(:disabled) {
+  color: var(--danger-hover);
+}
+
+.object-panel .form-alert {
+  padding: 9px var(--sp-3);
 }
 
 /* ===== 空状态 ===== */
@@ -1158,6 +1343,10 @@ button:disabled {
   animation: dialog-in 160ms ease-out;
 }
 
+.dialog-sm {
+  width: min(420px, calc(100vw - 32px));
+}
+
 @keyframes dialog-in {
   from {
     opacity: 0;
@@ -1267,7 +1456,8 @@ button:disabled {
   outline: none;
 }
 
-.text-input[aria-invalid="true"] {
+.text-input[aria-invalid="true"],
+.textarea[aria-invalid="true"] {
   background: var(--warn-bg);
   border-color: var(--warn-fg);
 }
@@ -1276,6 +1466,19 @@ button:disabled {
   line-height: 1.6;
   min-height: 82px;
   resize: vertical;
+}
+
+.dialog-text {
+  color: var(--text-2);
+  font-size: var(--fs-13);
+  line-height: var(--lh-body);
+  margin: 0;
+}
+
+.edit-grid {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .type-grid,
@@ -1649,6 +1852,12 @@ button:disabled {
   .panel-heading { padding: 14px var(--sp-4) var(--sp-2); }
   .object-row { padding: 11px var(--sp-4); }
   .object-date { font-size: var(--fs-11); }
+  .object-step { height: 26px; padding: 0 9px; }
+  .object-more { height: 26px; width: 26px; }
+  .object-panel { padding: 10px 12px; }
+  .object-panel-label { flex-basis: 26px; }
+  .object-panel-foot { gap: var(--sp-3); }
+  .edit-grid { grid-template-columns: 1fr; }
   .panel-footnote { padding: 10px var(--sp-4); }
   .composition-body { padding: 4px var(--sp-4) var(--sp-4); }
   .empty-state { padding: 32px var(--sp-4) var(--sp-8); }

@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState, useTransition, type FormEvent } fro
 import { useRouter } from "next/navigation";
 
 import { workFormats, type WorkFormat } from "@/domain/objects";
+import { apiErrorField, humanizeMessage, type ApiErrorBody } from "@/lib/api-error";
 import { Icon } from "./icon";
 
 type ObjectType = "asset" | "work";
@@ -15,41 +16,6 @@ interface CreateObjectButtonProps {
   variant?: ButtonVariant;
   withIcon?: boolean;
   className?: string;
-}
-
-interface ApiErrorBody {
-  error?: {
-    code?: string;
-    message?: string;
-    details?: { field?: string };
-  };
-}
-
-/** 服务端 message 用英文字段名开头，展示前换成用户能看懂的字段名。 */
-const fieldLabels: Record<string, string> = {
-  type: "类型",
-  title: "标题",
-  description: "说明",
-  library: "归属",
-  format: "作品形态",
-  status: "状态",
-  categories: "分类",
-  tags: "标签",
-  priority: "优先级",
-  sourceNote: "来源说明",
-};
-
-function humanizeMessage(message: string, field?: string): string {
-  if (!field) return message;
-
-  const label = fieldLabels[field];
-  if (!label) return message;
-
-  if (message.startsWith(`${field} `)) {
-    return `${label}${message.slice(field.length)}`;
-  }
-
-  return message;
 }
 
 export function CreateObjectButton({
@@ -144,10 +110,11 @@ export function CreateObjectButton({
         | null;
 
       if (!response.ok) {
-        const apiError = (data as ApiErrorBody | null)?.error;
-        const badField = apiError?.details?.field ?? null;
+        const badField = apiErrorField(data);
         setField(badField);
-        setError(humanizeMessage(apiError?.message ?? "保存失败，请稍后再试。", badField ?? undefined));
+        setError(
+          humanizeMessage(data?.error?.message ?? "保存失败，请稍后再试。", badField),
+        );
         return;
       }
 

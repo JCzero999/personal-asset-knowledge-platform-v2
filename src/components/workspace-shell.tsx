@@ -3,9 +3,11 @@ import {
   type BusinessObject,
   type WorkStatus,
 } from "@/domain/objects";
+import { libraryLabels, statusLabels } from "@/lib/object-labels";
 import type { Session } from "@/server/ports/session";
 import { CreateObjectButton } from "./create-object-dialog";
 import { Icon, type IconName } from "./icon";
+import { ObjectActions } from "./object-actions";
 
 const navigation: Array<{ label: string; icon: IconName; href: string; active?: boolean }> = [
   { label: "工作台", icon: "grid", href: "/workspace", active: true },
@@ -26,18 +28,6 @@ const stages: Array<{
 ];
 
 const formatLabels = new Map(workFormats.map((item) => [item.value, item.label]));
-
-const statusLabels: Record<WorkStatus, string> = {
-  draft: "草稿",
-  finished: "已完成",
-  published: "已发布",
-  practiced: "已实践",
-};
-
-const libraryLabels = {
-  internal: "内库",
-  external: "外库",
-} as const;
 
 function greeting(hour: number): string {
   if (hour < 5) return "夜深了";
@@ -275,11 +265,15 @@ export function WorkspaceShell({
                       </span>
                       <div className="object-main">
                         <strong>{object.title}</strong>
-                        <small>{meta}</small>
+                        <small>
+                          {meta}
+                          {object.archivedAt ? " · 已归档" : ""}
+                        </small>
                       </div>
                       <span className="object-date" title={object.updatedAt.slice(0, 10)}>
                         {formatUpdatedAt(object.updatedAt, now)}
                       </span>
+                      <ObjectActions object={object} />
                     </li>
                   );
                 })}
