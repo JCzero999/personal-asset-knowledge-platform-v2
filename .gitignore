@@ -30,3 +30,6 @@ Thumbs.db
 
 # Agent-generated backups contain documentation history
 # Keep agents/backups tracked intentionally for auditability.
+
+# local business database (SQLite)
+/data/

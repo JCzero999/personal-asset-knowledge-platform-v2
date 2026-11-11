@@ -1,0 +1,254 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+import { DomainError, ConflictError, ValidationError } from "../../src/domain/errors";
+import { openDatabase, type DatabaseHandle } from "../../src/server/db/client";
+import { SqliteObjectRepository } from "../../src/server/repositories/sqlite-object-repository";
+import type { CreateObjectInput } from "../../src/server/ports/object-repository";
+
+/**
+ * 仓储测试：每个用例一个全新的内存库，迁移路径与运行时一致（走 drizzle/）。
+ */
+
+const workInput: CreateObjectInput = {
+  type: "work",
+  title: "如何做一门课",
+  library: "external",
+  ownerSub: "user_test",
+  format: "course",
+  categories: ["课程", "方法论"],
+  tags: ["教学"],
+  priority: "high",
+};
+
+let handle: DatabaseHandle;
+let repo: SqliteObjectRepository;
+
+beforeAll(() => {
+  // 迁移文件路径相对仓库根目录；vitest 默认在根目录运行。
+  handle = openDatabase({ file: ":memory:" });
+});
+
+afterAll(() => {
+  handle.close();
+});
+
+beforeEach(() => {
+  // 每个用例前清空数据，保留表结构。
+  handle.sqlite.exec(`
+    DELETE FROM content_refs;
+    DELETE FROM sync_jobs;
+    DELETE FROM library_events;
+    DELETE FROM objects;
+  `);
+  repo = new SqliteObjectRepository(handle.db);
+});
+
+describe("objects CRUD", () => {
+  it("创建作品：默认 draft、revision=1、主分类取 categories[0]", async () => {
+    const work = await repo.create(workInput);
+
+    expect(work.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    expect(work.type).toBe("work");
+    expect(work.status).toBe("draft");
+    expect(work.format).toBe("course");
+    expect(work.primaryCategory).toBe("课程");
+    expect(work.revision).toBe(1);
+    expect(work.createdAt).toBe(work.updatedAt);
+  });
+
+  it("创建资产：status/format/sourceNote 恒为 null", async () => {
+    const asset = await repo.create({
+      type: "asset",
+      title: "分布式事务笔记",
+      library: "internal",
+      ownerSub: "user_test",
+      categories: ["数据库"],
+    });
+
+    expect(asset).toMatchObject({
+      type: "asset",
+      status: null,
+      format: null,
+      sourceNote: null,
+      primaryCategory: "数据库",
+    });
+  });
+
+  it("作品缺少 format 时拒绝写入", async () => {
+    await expect(
+      repo.create({ ...workInput, format: undefined }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("资产携带 status 时在应用层直接拒绝", async () => {
+    await expect(
+      repo.create({
+        type: "asset",
+        title: "带状态的资产",
+        library: "internal",
+        ownerSub: "user_test",
+        status: "draft",
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("数据库 CHECK 同样拒绝：绕过应用校验直接写 status 到 asset", () => {
+    expect(() =>
+      handle.sqlite
+        .prepare(
+          `insert into objects
+             (id, type, title, library, source, origin, categories, tags, priority,
+              owner_sub, revision, created_at, updated_at, status)
+           values ('01HZZZZZZZZZZZZZZZZZZZZZZZ', 'asset', 'x', 'internal',
+                   'handwritten', 'self', '[]', '[]', 'medium', 'u', 1,
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'draft')`,
+        )
+        .run(),
+    ).toThrow(/CHECK constraint failed/i);
+  });
+
+  it("数据库 CHECK 拒绝外库 practiced 作品", async () => {
+    await expect(
+      repo.create({
+        ...workInput,
+        library: "external",
+        status: "practiced",
+      }),
+    ).rejects.toMatchObject({ code: "CONSTRAINT_VIOLATION" });
+  });
+
+  it("查询与软删除", async () => {
+    const work = await repo.create(workInput);
+    const asset = await repo.create({
+      type: "asset",
+      title: "资产",
+      library: "internal",
+      ownerSub: "user_test",
+    });
+
+    expect(await repo.list({ type: "work" })).toHaveLength(1);
+    expect(await repo.list({ library: "internal" })).toEqual([
+      expect.objectContaining({ id: asset.id }),
+    ]);
+
+    await repo.softDelete(work.id);
+    expect(await repo.findById(work.id)).toBeNull();
+    expect(await repo.list({ type: "work" })).toHaveLength(0);
+    expect(await repo.list({ type: "work", includeDeleted: true })).toHaveLength(1);
+  });
+
+  it("更新走乐观锁：修订号不一致时报冲突", async () => {
+    const work = await repo.create(workInput);
+
+    const updated = await repo.update(work.id, {
+      title: "新标题",
+      expectedRevision: work.revision,
+    });
+
+    expect(updated.title).toBe("新标题");
+    expect(updated.revision).toBe(2);
+
+    await expect(
+      repo.update(work.id, { title: "旧修订写回", expectedRevision: 1 }),
+    ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("更新资产时携带 format 会被拒绝", async () => {
+    const asset = await repo.create({
+      type: "asset",
+      title: "资产",
+      library: "internal",
+      ownerSub: "user_test",
+    });
+
+    await expect(
+      repo.update(asset.id, { format: "article", expectedRevision: asset.revision }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+describe("library 迁移与审计", () => {
+  it("迁移写入 library_events 并推进 revision", async () => {
+    const work = await repo.create(workInput);
+
+    const moved = await repo.changeLibrary({
+      objectId: work.id,
+      to: "internal",
+      reason: "已发布并复盘",
+      actorSub: "user_test",
+    });
+
+    expect(moved.library).toBe("internal");
+    expect(moved.libraryChangedAt).not.toBeNull();
+    expect(moved.revision).toBe(2);
+
+    const events = await repo.listLibraryEvents(work.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      fromLibrary: "external",
+      toLibrary: "internal",
+      reason: "已发布并复盘",
+      actorSub: "user_test",
+    });
+  });
+
+  it("同一库别迁移被拒绝", async () => {
+    const work = await repo.create(workInput);
+
+    await expect(
+      repo.changeLibrary({
+        objectId: work.id,
+        to: "external",
+        reason: "重复",
+        actorSub: "user_test",
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("必填迁移理由", async () => {
+    const work = await repo.create(workInput);
+
+    await expect(
+      repo.changeLibrary({
+        objectId: work.id,
+        to: "internal",
+        reason: "   ",
+        actorSub: "user_test",
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("把 practiced 作品迁回外库会被数据库 CHECK 拒绝", async () => {
+    const work = await repo.create({ ...workInput, library: "internal" });
+    // 通过 SQL 直接把状态推进到 practiced，绕开本用例不关心的状态机前置条件
+    handle.sqlite
+      .prepare("update objects set status = 'practiced' where id = ?")
+      .run(work.id);
+
+    await expect(
+      repo.changeLibrary({
+        objectId: work.id,
+        to: "external",
+        reason: "放回外库",
+        actorSub: "user_test",
+      }),
+    ).rejects.toMatchObject({ code: "CONSTRAINT_VIOLATION" });
+  });
+});
+
+describe("仓储错误语义", () => {
+  it("找不到对象时抛 NotFoundError", async () => {
+    await expect(repo.softDelete("01HZZZZZZZZZZZZZZZZZZZZZZZ")).rejects.toBeInstanceOf(
+      DomainError,
+    );
+  });
+
+  it("重复 ULID 主键返回冲突而不是驱动异常", async () => {
+    const work = await repo.create({ ...workInput, id: "01HZZZZZZZZZZZZZZZZZZZZZZZ" });
+
+    expect(work.id).toBe("01HZZZZZZZZZZZZZZZZZZZZZZZ");
+    await expect(
+      repo.create({ ...workInput, id: "01HZZZZZZZZZZZZZZZZZZZZZZZ" }),
+    ).rejects.toBeInstanceOf(ConflictError);
+  });
+});

@@ -1,0 +1,64 @@
+# Logto 自托管单实例部署（ADR-003）
+# 用法：cd infra/logto && cp .env.example .env（填写密码）&& docker compose up -d
+#
+# 端口说明（Logto 1.46 的默认值，镜像只 EXPOSE 3001，但进程同时监听 3002）：
+#   3001 → OIDC / API 端点（ENDPOINT）
+#   3002 → 管理控制台（ADMIN_ENDPOINT，控制台路径为 /console）
+
+name: logto
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    container_name: logto-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - logto-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - logto
+
+  logto:
+    image: svhd/logto:${LOGTO_VERSION}
+    container_name: logto
+    restart: unless-stopped
+    # 官方镜像默认只执行 npm start；启动时会校验数据库已 seed 且开启 RLS，
+    # 所以首次启动前必须先跑 db seed（--swe 表示已存在配置表时跳过，可重复执行）。
+    entrypoint: ["sh", "-c", "npm run cli db seed -- --swe && npm start"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TRUST_PROXY_HEADER: 1
+      DB_URL: ${DB_URL}
+      ENDPOINT: ${LOGTO_ENDPOINT}
+      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT}
+    ports:
+      - "${LOGTO_PORT}:3001"
+      - "${LOGTO_ADMIN_PORT}:3002"
+    healthcheck:
+      # 镜像内没有 curl，用 node 自带的 fetch 探测状态接口（正常返回 204）
+      test:
+        - CMD-SHELL
+        - 'node -e "fetch(''http://127.0.0.1:3001/api/status'').then((r) => process.exit(r.status < 400 ? 0 : 1)).catch(() => process.exit(1))"'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    networks:
+      - logto
+
+volumes:
+  logto-postgres-data:
+
+networks:
+  logto:
+    driver: bridge
