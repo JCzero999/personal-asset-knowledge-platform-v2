@@ -12,6 +12,8 @@ export {
   type RagflowDocumentPage,
   type RagflowDownload,
   type RagflowChunk,
+  type RagflowChunkPage,
+  type RagflowDocumentChunk,
   type RagflowRetrievalResult,
   type RetrievalInput,
 } from "./client";

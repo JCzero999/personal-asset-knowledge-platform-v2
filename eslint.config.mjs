@@ -8,6 +8,7 @@ export default defineConfig([
   globalIgnores([
     ".next/**",
     ".venv/**",
+    "**/.venv/**",
     "agents/**",
     "out/**",
     "build/**",

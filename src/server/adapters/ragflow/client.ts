@@ -126,6 +126,17 @@ export interface RagflowRetrievalResult {
   total: number;
 }
 
+/** 解析后的分块原文（与检索命中不同，没有相似度）。 */
+export interface RagflowDocumentChunk {
+  id: string;
+  content: string;
+}
+
+export interface RagflowChunkPage {
+  chunks: RagflowDocumentChunk[];
+  total: number;
+}
+
 /** RAGFlow 所有接口的统一响应信封。 */
 interface RagflowEnvelope<T> {
   code: number;
@@ -174,6 +185,11 @@ interface RawChunk {
 
 interface RawRetrieval {
   chunks?: RawChunk[];
+  total?: number;
+}
+
+interface RawDocumentChunks {
+  chunks?: Array<{ id?: string; content?: string }>;
   total?: number;
 }
 
@@ -342,6 +358,44 @@ export class RagflowClient {
     return {
       documents: data.docs.map((raw) => toDocument(raw, datasetId)),
       total: data.total ?? data.docs.length,
+    };
+  }
+
+  /**
+   * 列出某个文档已解析出的分块原文：
+   * `GET /api/v1/datasets/{dataset_id}/documents/{document_id}/chunks`，
+   * 响应 `data` 为 `{ chunks, doc, total }`。用于把内容送进 LightRAG 构图。
+   */
+  async listChunks(
+    datasetId: string,
+    documentId: string,
+    query: { page?: number; pageSize?: number } = {},
+  ): Promise<RagflowChunkPage> {
+    if (!datasetId) {
+      throw new ValidationError("datasetId 不能为空");
+    }
+    if (!documentId) {
+      throw new ValidationError("documentId 不能为空");
+    }
+
+    const params = new URLSearchParams({
+      page: String(query.page ?? 1),
+      page_size: String(query.pageSize ?? 100),
+    });
+    const data = await this.request<RawDocumentChunks>(
+      "GET",
+      `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents/${encodeURIComponent(documentId)}/chunks?${params.toString()}`,
+    );
+
+    if (!data || !Array.isArray(data.chunks)) {
+      throw unexpectedShape("GET /api/v1/datasets/{id}/documents/{docId}/chunks", data);
+    }
+
+    return {
+      chunks: data.chunks
+        .map((chunk) => ({ id: chunk.id ?? "", content: chunk.content ?? "" }))
+        .filter((chunk) => chunk.content.trim().length > 0),
+      total: data.total ?? data.chunks.length,
     };
   }
 

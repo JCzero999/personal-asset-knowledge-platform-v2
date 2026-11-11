@@ -33,3 +33,9 @@ Thumbs.db
 
 # local business database (SQLite)
 /data/
+
+# LightRAG 本地运行环境（模型与图数据不入库）
+/infra/lightrag/.venv/
+/infra/lightrag/models/
+/infra/lightrag/data/
+/infra/lightrag/.env

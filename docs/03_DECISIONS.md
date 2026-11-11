@@ -195,6 +195,27 @@
 
 ---
 
+## ADR-010：LightRAG 部署与模型接入方式
+
+- **状态**：已采纳
+- **日期**：2026-11-11
+- **决策**：
+  - LightRAG 以 **本机 Python 进程**自托管（`lightrag-hku[api]` 1.5.7，官方 `lightrag-server`），不额外起 Docker 栈；环境与数据隔离在 `infra/lightrag/`，不进入仓库。
+  - **LLM**：Ollama 本地 `deepseek-r1:7b`（实体 / 关系抽取与摘要），不需要外部 API key。
+  - **Embedding**：与 RAGFlow 共用同一份 `BAAI/bge-large-zh-v1.5` 模型文件（从 RAGFlow 镜像缓存取得），通过一个本地 OpenAI 兼容 embedding 服务（`infra/lightrag/embedding_server.py`，默认 `127.0.0.1:9381`）暴露给 LightRAG，满足 ADR-001「共用 Embedding、不共用向量库」。
+  - **存储**：LightRAG 默认文件存储（NetworkX 图 + NanoVectorDB 向量 + JSON KV），落在 `infra/lightrag/data/`，与业务 SQLite 完全分离。
+- **原因**：
+  - `lightrag-server` 不支持本地 sentence-transformers 绑定，只认 OpenAI 兼容接口；加一层极薄的 embedding 服务比魔改 LightRAG 更可控，且模型文件真正共用一份。
+  - 本机无 GPU，Ollama 7B 是唯一无需外网的可用 LLM；14B 留作质量不够时的备选。
+  - 文件存储在单用户、单实例场景足够，符合 ADR-009 的同一取舍。
+- **后果**：
+  - 图谱链路依赖三个本机进程：Ollama、embedding 服务、LightRAG 服务端；任一未启动时图谱功能不可用，业务主链路不受影响。
+  - 7B 模型在 CPU 上构图较慢，大批量导入需要排队或改用更小分块；该限制写入 02_PHASES 与 07_PLAYBOOK。
+  - 业务侧只通过 `server.adapters.lightrag` 访问，与 RAGFlow 适配器并列，不共享客户端。
+- **影响范围**：01_ARCHITECTURE、02_PHASES、04_INTEGRATION、Phase 3
+
+---
+
 ## 决策索引（快速查看）
 
 | 编号 | 标题 | 状态 | 核心结论 |
@@ -208,6 +229,7 @@
 | ADR-007 | 内容映射契约与 Dataset 粒度 | 已采纳 | 单一 Dataset；`content_refs` 表；`content_key` 作幂等键；outbox + 对账 |
 | ADR-008 | 内库 / 外库定义与字段拆分 | 已采纳 | 按「敢不敢直接用」判定；`library` / `source` / `origin` 三正交字段；资产无 `status` |
 | ADR-009 | 业务元数据存储与分层 | 已采纳 | SQLite + better-sqlite3 + Drizzle；分层到唯一 RAGFlow 适配器 |
+| ADR-010 | LightRAG 部署与模型接入 | 已采纳 | 本机 Python 进程；Ollama deepseek-r1:7b；共用 bge-large-zh-v1.5 经本地 OpenAI 兼容 embedding 服务；文件存储 |
 
 ---
 
