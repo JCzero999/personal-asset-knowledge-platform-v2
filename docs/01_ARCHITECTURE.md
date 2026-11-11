@@ -6,7 +6,7 @@
 ## 1. 项目一句话
 以 RAGFlow 为统一内容存储与检索底座，在其上实现资产管理和四阶段工作流，结合 LightRAG 提供知识图谱能力，通过 Logto 提供登录注册的个人知识工作台。
 
-> **实现状态（ADR-006 / ADR-009）**：业务侧 Next.js 骨架已落地（App Router + TypeScript），**数据层与 HTTP 接口均已实现**：SQLite + Drizzle 持久化（见第 5 节）、`/api/objects` 系列的对象 CRUD、作品状态迁移、跨库迁移与归档、内容上传、`/api/health` 健康检查，以及 `/workspace` 工作台。登录态来自 `AUTH_MODE`：`mock`（开发默认）使用固定本地身份，`logto` 走 Logto 真实登录（三条 `/api/logto/*` 路由）。**RAGFlow 已接入**：内容上传与 `sync_jobs` outbox 投递（进程内 worker）均已实现并经真实服务端到端验证；**LightRAG 仍未接入**，解析状态轮询、检索问答与内容下载未实现。接口契约见 [06_API.md](06_API.md)。当前 `src/` 是新建实现，不是旧系统代码。
+> **实现状态（ADR-006 / ADR-009）**：业务侧 Next.js 骨架已落地（App Router + TypeScript），**数据层与 HTTP 接口均已实现**：SQLite + Drizzle 持久化（见第 5 节）、`/api/objects` 系列的对象 CRUD、作品状态迁移、跨库迁移与归档、内容上传、内容引用列表、内容原文下载、内容检索 `GET /api/search`、解析触发与状态轮询 `POST /api/parse/run`、`/api/health` 健康检查，以及 `/workspace` 工作台。登录态来自 `AUTH_MODE`：`mock`（开发默认）使用固定本地身份，`logto` 走 Logto 真实登录（三条 `/api/logto/*` 路由）。**RAGFlow 已接入**：内容上传、`sync_jobs` outbox 投递（进程内 worker）、解析状态轮询、检索与下载均已实现，上传 → 解析 → 检索 → 下载 → 归档后检索为 0 的链路已在真实 RAGFlow v0.20.5 上端到端跑通。**尚未实现**：LightRAG 知识图谱接入、基于 RAGFlow 的问答会话（多轮上下文与生成）。接口契约见 [06_API.md](06_API.md)。当前 `src/` 是新建实现，不是旧系统代码。
 
 ## 2. 逻辑架构（高层）
 
@@ -78,8 +78,8 @@ Knowledge Graph (LightRAG)
 | **server.db** | `src/server/db/` | 连接与表结构：`client.ts`（单例连接 + 迁移）、`schema.ts`（四张表）、`id.ts`（ULID） | 不写业务判断 |
 | **server.repositories** | `src/server/repositories/` | 端口的 SQLite 实现：`SqliteObjectRepository`、`SqliteContentStore`；负责把数据库约束错误翻译成领域错误 | 不调用 RAGFlow |
 | **server.http** | `src/server/http/` | 统一响应信封 `ok` / `created` / `empty` / `fail` / `fromError`，错误码→HTTP 状态映射 | 不写业务逻辑 |
-| **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009）：dataset 查询/创建、文档上传/改名/删除、`meta_fields` 整体更新 | 不做业务映射、重试或 outbox |
-| **server.services** | `src/server/services/` | 用例编排：`object-service.ts`（请求解析、字段校验、归属校验）、`content-service.ts`（上传与替换）、`sync-service.ts`（outbox 投递） | 不直接拼 SQL，不绕过适配器调用 RAGFlow |
+| **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009）：dataset 查询/创建、文档上传/改名/删除、`meta_fields` 整体更新、文档状态列表（解析进度）、触发解析、检索、下载 | 不做业务映射、重试或 outbox；归属、归档与库别过滤在服务层 |
+| **server.services** | `src/server/services/` | 用例编排：`object-service.ts`（请求解析、字段校验、归属校验）、`content-service.ts`（上传、替换、列表、下载）、`sync-service.ts`（outbox 投递）、`parse-service.ts`（解析状态轮询）、`search-service.ts`（检索参数校验、召回与归属/归档/库别过滤） | 不直接拼 SQL，不绕过适配器调用 RAGFlow |
 
 调用方向是单向的：`route handler → services → ports ← repositories → db`。`domain` 被所有上层引用，自己不知道谁在用它。route handler 的厚度上限为 15 行（ADR-009）。
 
@@ -97,7 +97,7 @@ Knowledge Graph (LightRAG)
 | **`objects`** | 资产与作品的业务主表，两者**同表**、由 `type`（`asset` / `work`）区分 | 作品才有 `format`、`status`、`source_note`，资产三列恒为 `NULL`；`library` / `source` / `origin` 三个正交字段按 ADR-008 拆分；`primary_category` 由写入时的 `categories[0]` 派生；软删除走 `deleted_at`，不物理删行；`revision` 作乐观锁；索引为 `(type, status)`、`library`、`updated_at` |
 | **`content_refs`** | 业务对象与 RAGFlow 文档之间的映射，独立成表而非 JSON 字段（ADR-007） | `provider` 固定为 `ragflow`（单一内容底座）；`document_id` 是**可变指针**，`content_key` 才是幂等键；`role` 为 `primary` / `attachment`，用部分唯一索引保证**每个对象最多一个有效主引用**；`parse_status` 与 `sync_state` 分别跟踪解析进度和同步对账 |
 | **`library_events`** | 跨库迁移的审计流水 | 记录 `from_library` / `to_library` / `reason` / `actor_sub`；`reason` 必填，因为「内库 = 已验证」是承诺，必须可追溯；与对象更新**同事务**写入，不出现「库别已变但没有记录」 |
-| **`sync_jobs`** | 内容同步的 outbox | 内容变更即入队（`action` 为 `upsert` / `delete`），`state` 走 `pending → running → done / failed`，带 `attempts`、`last_error` 与可延迟的 `available_at`；索引 `(state, available_at)` 供后续 worker 取任务。**本轮只负责可靠落队，不实现投递**，消费由 Phase 3 的 LightRAG worker 承担 |
+| **`sync_jobs`** | 内容同步的 outbox | 内容变更即入队（`action` 为 `upsert` / `delete`），`state` 走 `pending → running → done / failed`，带 `attempts`、`last_error` 与可延迟的 `available_at`；索引 `(state, available_at)` 供 worker 取任务。落队与投递同属本期：`sync-service` 消费、进程内 worker 定时推进 |
 
 ### 5.3 两条 CHECK 约束（数据库兜底）
 
@@ -113,7 +113,7 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 
 - 第一条对应 `src/domain/objects.ts` 里 `AssetObject.status: null` 的类型约束，以及仓储在写入前对「资产携带 status / format / sourceNote」的拒绝。
 - 第二条对应 `src/domain/workflow.ts` 的 `canTransition` / `assertTransition`：状态只能 `draft → finished → published → practiced` 逐级前进，不允许跳级或回退，且 `practiced` 在 `library = 'external'` 时被拒绝。
-- 约束被触发时，仓储把驱动的 `CHECK constraint failed` 翻译成 `CONSTRAINT_VIOLATION`（HTTP 422），唯一约束冲突翻译成 `CONFLICT`（HTTP 409），上层不必感知 SQLite 报错文本。
+- 约束被触发时，仓储统一经 `sqlite-errors.ts` 把驱动报错翻译成领域错误：`CHECK constraint failed` 与 `NOT NULL constraint failed` → `CONSTRAINT_VIOLATION`（HTTP 422），`UNIQUE constraint failed` 与 `FOREIGN KEY constraint failed` → `CONFLICT`（HTTP 409）。上层不必感知 SQLite 报错文本；前三种的 `details.constraint` 带出被拒绝的约束名（外键冲突不带）。
 
 ### 5.4 一致性要点
 
@@ -128,12 +128,16 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - 身份统一由 `src/server/session.ts` 解析：`AUTH_MODE=mock` 是固定本地身份，`logto` 读 Logto 会话，其他取值视为无身份（接口 401，页面跳回首页）。
 - 端点清单、请求字段、错误码映射与 curl 示例见 [06_API.md](06_API.md)。该文档只写代码中真实存在的路由；未实现能力单独列出。
 
-### 5.6 内容上传与 outbox 投递
+### 5.6 内容上传、解析与检索
 
-- **上传**：`content-service.uploadObjectContent` 先校验归属与 multipart，再写 RAGFlow（单一 Dataset，按 `RAGFLOW_DATASET_ID` 或名称解析），最后落 `content_refs` 并入队 `sync_jobs`。替换主内容采用「临时名上传 → 写 meta → 落库 → 删旧文档 → 改回原名」，新上传失败时旧内容保持可用。
+- **上传**：`content-service.uploadObjectContent` 先校验归属与 multipart，再写 RAGFlow（单一 Dataset，按 `RAGFLOW_DATASET_ID` 或名称解析），落 `content_refs` 并入队 `sync_jobs`。替换主内容采用「临时名上传 → 写 meta → 落库 → 删旧文档 → 改回原名」，新上传失败时旧内容保持可用。
+- **解析触发**：落库后立即调用 RAGFlow `POST /api/v1/datasets/{id}/chunks`（body `{ document_ids }`），引用置 `running`。触发失败不影响上传结果，引用停在 `pending`，由轮询按 `UNSTART` 补触发。
+- **解析轮询**：`parse-service.pollParsingOnce` 每轮取最多 50 条 `pending` / `running` 引用，按 dataset 调用 `GET /documents?page=&page_size=`，把 `UNSTART / RUNNING / SCHEDULE / DONE / FAIL / CANCEL` 映射为应用侧 `parseStatus`；`FAIL` / `CANCEL` 的 `parseError` 取 `progress_msg` 最后一行，文档已不存在则直接标 `failed`。单条或单个 dataset 失败只进 `errors`，不影响整轮。
 - **投递**：`sync-service.runSyncOnce` 原子认领到期任务；`upsert` 按 `content_key` 认回文档并整体重写 `meta_fields`，`delete` 删除文档并软删本地引用；文档已不存在视为达到目标状态，其它失败按指数退避重试，达上限置 `failed`。
-- **触发**：`POST /api/sync/run` 可手动跑一轮；`src/instrumentation.ts` 在配置了 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY` 时挂进程内定时 worker（默认 30 秒，`SYNC_WORKER_ENABLED=false` 可关闭）。
-- **实测边界**：上传/迁移/删除三段已在真实 RAGFlow v0.20.5 上端到端验证（meta 读回与文档删除均核对）；生产模式下 `instrumentation` 的实际挂载未单独验证；解析状态仍恒为 `pending`（未接轮询）。
+- **下载**：`content-service.downloadObjectContent` 先校验对象归属与 `refId` 归属，再透传 RAGFlow `GET /documents/{id}` 的文件流；该路径是文件流而不是 JSON 详情接口，不能当元数据查询用。
+- **检索**：`search-service.searchContent` 让 RAGFlow 召回（默认阈值 0.2，多取 `limit × 3`、上限 50），再按 `document_id` 认回 `content_refs`，过滤掉不属于当前用户与已归档的对象，按 `library` 二次筛选。**业务过滤不能下沉到 RAGFlow**，否则会越过归属隔离。
+- **调度**：`POST /api/sync/run` 与 `POST /api/parse/run` 可分别手动跑一轮；`src/instrumentation.ts` 在配置了 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY` 时挂进程内定时 worker（默认 30 秒，`SYNC_WORKER_ENABLED=false` 可关闭），每轮先投递 outbox 再轮询解析。
+- **实测边界**：上传、迁移、删除、解析、检索、下载均已在真实 RAGFlow v0.20.5 上验证——上传后立即 `running`，约 9–12 秒 `succeeded`（`chunk_count = 1`）；检索相似度约 0.38–0.48，归档后同一检索返回 0 条；下载内容与上传文件逐字节一致。生产模式下 `instrumentation` 的实际挂载未单独验证；解析失败与投递重试路径仍只有假网关单测。
 
 ## 6. 主要数据流
 
@@ -142,7 +146,7 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
    - 业务侧写入元数据 + 状态，并在同一事务里入队 `sync_jobs`
    - 内容经 `POST /api/objects/{id}/content` 提交至 RAGFlow（单一 Dataset），并保存 `content_refs` 映射
    - worker 消费 `sync_jobs`，把库别、归档等元数据同步进 RAGFlow `meta_fields`；删除对象时删除对应文档
-3. **检索 / 问答** → 直接请求 RAGFlow。
+3. **检索** → 前端调 `GET /api/search`；RAGFlow 负责语义召回，服务层按 `content_refs` 做归属、归档与库别过滤后再返回。问答会话（多轮上下文 + 生成）尚未实现。
 4. **知识图谱构建 / 查询** → LightRAG 基于内容（可从 RAGFlow 获取或同步）进行。
 5. **四阶段流转** → 仅更新业务侧状态；内容仍留在 RAGFlow，不随状态物理移动文件。
 

@@ -158,3 +158,11 @@
 - 真实 RAGFlow v0.20.5 端到端验证投递：上传 → 迁移到外库 → `POST /api/sync/run`（claimed 2 / done 2）→ 文档 meta 回读 `library=external`、`archived=false`、无 `status` → 删除对象 → `POST /api/sync/run`（claimed 1 / done 1）→ 数据集文档数回到 0
 - 文档同步到当前 HEAD：`docs/06_API.md`、`docs/07_PLAYBOOK.md` 覆盖 15 条路由与 20 个提交；`docs/01_ARCHITECTURE.md` 修正「内容上传与同步投递尚未实现」等过时表述，新增 5.6 内容上传与 outbox 投递小节。上文「文档：API 参考与工程手册」条目中「outbox 投递只在假网关单测下验证」「01 待修」两点以本节实测结果为准
 - 验证：typecheck、lint、`npm run build` 通过；10 个测试文件 127 项用例通过（新增 outbox 投递 8 项、归档视图 2 项）
+
+## 2026-11-11（内容链路：解析轮询、下载、检索）
+
+- `b1bde9d` 解析触发与状态轮询：上传后立即调用 RAGFlow `POST /api/v1/datasets/{id}/chunks` 并把引用置为 `running`，触发失败不影响上传、引用停在 `pending`；`parse-service.pollParsingOnce` 每轮取最多 50 条 `pending` / `running` 引用，按 `UNSTART / RUNNING / SCHEDULE / DONE / FAIL / CANCEL` 回写状态（`parseError` 取 `progress_msg` 最后一行），配套 `POST /api/parse/run` 与 `GET /api/objects/{id}/content` 引用列表。实测（RAGFlow v0.20.5）：上传即 `running`，约 9–12 秒后 `succeeded`，`chunk_count = 1`
+- `44c3b8d` 内容下载接口：`GET /api/objects/{id}/content/{refId}` 先校验对象与引用归属，再透传 RAGFlow 文件流（`Content-Type` 实测 `application/octet-stream`，`Content-Disposition` 用 `filename*=UTF-8''` 编码文件名，有长度时带 `Content-Length`）；实测下载内容与上传文件逐字节一致。顺带确认 `GET /documents/{id}` 是文件流而非 JSON 详情接口
+- `1258e15` 内容检索接口：`GET /api/search` 以 `q`（1–200 字符）必填，`limit` 默认 10（1–50）、`threshold` 默认 0.2（0–1）、`library` 可选；命中先按 `document_id` 认回 `content_refs` 再校验对象归属，已归档对象不返回、指定库别时只返回该库，`total` 为过滤后条数。实测同一文档检索相似度约 0.38–0.48，归档后同一检索返回 0 条
+- `b860530` 仓储 SQLite 错误翻译统一：抽出 `sqlite-errors.ts`，`CHECK` 与 `NOT NULL` 约束失败统一翻成 `CONSTRAINT_VIOLATION`（422），`UNIQUE` 与 `FOREIGN KEY` 失败统一翻成 `CONFLICT`（409），`details.constraint` 带出约束名（外键冲突除外）；调用方不再依赖 SQLite 英文报错文本
+- 文档同步到 `b860530`：`docs/06_API.md` 从 15 条路由扩到 19 条（新增 4.11 引用列表、4.12 原文下载、5.1 内容检索、6.3 解析轮询），上传章节改为「上传即触发解析」，未实现清单收敛为问答会话、LightRAG、内容删除/附件解绑、列表总数等；`docs/01_ARCHITECTURE.md` 更新实现状态、分层职责表、`sync_jobs` 说明与 5.6 小节

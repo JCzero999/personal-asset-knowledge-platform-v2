@@ -1,8 +1,8 @@
 # HTTP API 参考
 
 > **适用对象**：调用本服务接口的前端 / 脚本开发者，以及需要核对接口契约的后端开发者。
-> **文档范围**：只记录 `src/app/api/` 下**当前已实现**的路由。未实现的能力统一列在第 8 节，避免把规划当成契约。
-> **核对依据**（2026-11-11，HEAD `a7aa5f3`）：`src/app/api/**/route.ts`、`src/server/http/respond.ts`、`src/server/services/{object,content,sync}-service.ts`、`src/server/sync-worker-runtime.ts`、`src/server/adapters/ragflow/client.ts`、`src/server/session.ts`、`src/domain/{errors,objects,workflow,content-ref}.ts`、`src/server/repositories/{sqlite-object-repository,sqlite-content-store}.ts`。代码与本文不一致时以代码为准，并回头修本文。
+> **文档范围**：只记录 `src/app/api/` 下**当前已实现**的路由。未实现的能力统一列在第 9 节，避免把规划当成契约。
+> **核对依据**（2026-11-11，HEAD `b860530`）：`src/app/api/**/route.ts`、`src/server/http/respond.ts`、`src/server/services/{object,content,sync,parse,search}-service.ts`、`src/server/sync-worker-runtime.ts`、`src/server/adapters/ragflow/client.ts`、`src/server/session.ts`、`src/domain/{errors,objects,workflow,content-ref}.ts`、`src/server/repositories/{sqlite-object-repository,sqlite-content-store}.ts`。代码与本文不一致时以代码为准，并回头修本文。
 
 ---
 
@@ -17,7 +17,7 @@
 | 路由运行时 | 全部为 `runtime = "nodejs"`、`dynamic = "force-dynamic"`，响应不做静态缓存 |
 | 启动 | `npm run dev`（Next.js 16） |
 
-除三条 Logto 登录路由（返回重定向，见第 6 节）外，所有接口返回 JSON；唯一的请求体例外是内容上传 `POST /api/objects/{id}/content`，它收 `multipart/form-data`（见 4.10）。
+除三条 Logto 登录路由（返回重定向，见第 7 节）外，所有接口返回 JSON；例外有两处：内容上传收 `multipart/form-data` 请求体（见 4.10），内容下载成功时返回二进制文件流而非 JSON（见 4.12）。
 
 ### 1.2 数据格式
 
@@ -39,7 +39,7 @@
 要点：
 
 - **开发时无需登录即可调接口**：`AUTH_MODE=mock`（开发默认）下，所有 `/api/objects*` 请求都按 `mock-local-user` 执行。
-- **归属隔离**：所有对象读写都按当前会话的 `sub` 过滤。访问不属于自己的对象时返回 `404 NOT_FOUND`（与「不存在」不区分，避免用 id 探测他人数据）。该规则对详情、编辑、删除、状态迁移、跨库迁移、归档、迁移审计与内容上传**全部生效**。
+- **归属隔离**：所有对象读写都按当前会话的 `sub` 过滤。访问不属于自己的对象时返回 `404 NOT_FOUND`（与「不存在」不区分，避免用 id 探测他人数据）。该规则对详情、编辑、删除、状态迁移、跨库迁移、归档、迁移审计、内容上传、内容列表、内容下载与内容检索**全部生效**。
 - **未登录**：业务接口返回 `401`，响应体 `message` 为「请先登录」。页面侧由 `requireSession()` 重定向到 `/`。
 - **配置缺失不降级**：`AUTH_MODE=logto` 但 `LOGTO_*` 环境变量不全时，会话解析直接抛错，请求以 500 失败——不会静默当成「未登录」，避免把配置问题藏起来。
 
@@ -72,7 +72,7 @@
 | `CONSTRAINT_VIOLATION` | 422 | 数据库 CHECK 约束拒绝写入（服务层漏校验时的最后防线） |
 | `INTERNAL` | 500 | 未预期异常；RAGFlow 配置缺失、响应非 JSON、返回 5xx 或结构不符；日志记录原始错误，响应不暴露内部信息 |
 
-异常统一由 `fromError()` 收敛，未识别的异常一律转为 `INTERNAL`。
+异常统一由 `fromError()` 收敛，未识别的异常一律转为 `INTERNAL`。两个不走信封的例外：`GET /api/health`（保持原有形状）与内容下载（成功是文件流，未登录是纯文本 401，见 4.12）。
 
 ### 1.5 请求体校验通则
 
@@ -147,7 +147,7 @@
 
 资产对象则固定 `format` / `status` / `sourceNote` 为 `null`。
 
-> 对象结构里**没有**内容字段。正文存在 RAGFlow，业务侧用 `content_refs` 记录映射；目前没有任何接口把内容读回来（见第 8 节）。
+> 对象结构里**没有**内容字段。正文存在 RAGFlow，业务侧用 `content_refs` 记录映射；内容引用、原文下载与内容检索走独立接口（4.11、4.12、5.1），不塞进对象结构。
 
 ---
 
@@ -166,12 +166,16 @@
 | GET | `/api/objects/{id}/library` | 查询该对象的跨库迁移记录 | 200 |
 | POST | `/api/objects/{id}/archive` | 归档 / 取消归档 | 200 |
 | POST | `/api/objects/{id}/content` | 上传 / 替换内容（multipart） | 201 |
+| GET | `/api/objects/{id}/content` | 列出对象的内容引用 | 200 |
+| GET | `/api/objects/{id}/content/{refId}` | 下载内容原文（二进制流） | 200 |
+| GET | `/api/search` | 内容检索（RAGFlow 召回 + 归属过滤） | 200 |
 | POST | `/api/sync/run` | 手动触发一轮 outbox 投递 | 200 |
+| POST | `/api/parse/run` | 手动推进一轮解析状态轮询 | 200 |
 | GET | `/api/logto/sign-in` | 跳转 Logto 登录（浏览器） | 307 |
 | GET | `/api/logto/sign-in-callback` | 登录回调（浏览器） | 307 |
 | GET | `/api/logto/sign-out` | 退出并清会话（浏览器） | 307 |
 
-合计 15 条路由：12 条业务 / 系统接口 + 3 条 Logto 跳转。`/api/objects*` 与 `/api/sync/run` 需要会话；`/api/health` 不需要。
+合计 19 条路由：16 条业务 / 系统接口 + 3 条 Logto 跳转。`/api/objects*`、`/api/search`、`/api/sync/run`、`/api/parse/run` 需要会话；`/api/health` 不需要。
 
 ---
 
@@ -456,7 +460,7 @@ draft ──► finished ──► published ──► practiced
 
 ### 4.10 `POST /api/objects/{id}/content`
 
-上传对象内容：把文件写进 RAGFlow，并在本地落一条 `content_refs` + 一条 `sync_jobs(upsert)`。这是当前唯一会触达 RAGFlow 的业务接口。
+上传对象内容：把文件写进 RAGFlow，落一条 `content_refs` + 一条 `sync_jobs(upsert)`，并立即触发一次解析。内容列表、原文下载与检索见 4.11、4.12、5.1。
 
 **请求**：`Content-Type: multipart/form-data`
 
@@ -478,7 +482,9 @@ draft ──► finished ──► published ──► practiced
   - 旧文档删除失败：只记警告，本次上传仍算成功（留下一个待对账的重复文档）；
   - 改名失败：文档保留临时名，内容不受影响。
 - **`meta_fields` 必须整体替换**：RAGFlow 的上传接口**不接受** meta，只能上传后 `PUT` 更新；该 `PUT` 是整体覆盖而非合并，因此每次都传完整字段集。
-- **不触发解析**：上传后不调用 chunk 接口，`parseStatus` 恒为 `pending`（第 8 节）。`syncState` 写入时是 `pending`；上传成功后入队的那条 `upsert` 被 worker 投递成功时变为 `synced` 并写 `lastSyncedAt`。若 RAGFlow 侧该文档已不存在，worker 把引用标为 `sync_failed` 且不重试——重新上传正文会生成新的 `document_id`，状态随之回到 `synced`。
+- **解析触发**：本地落库并入队后，立即调用 RAGFlow `POST /api/v1/datasets/{dataset_id}/chunks`（body `{ document_ids: [documentId] }`），成功后把引用置为 `running`，响应里的 `parseStatus` 即 `running`。触发失败**不影响上传**——异常只记日志，接口仍返回 201，引用停在 `pending`，由解析轮询在下一轮按 `UNSTART` 补触发（见 5.3）。
+- **解析进度不由上传接口保证**：上传只负责触发。`running → succeeded / failed` 由后台 worker 每轮轮询 RAGFlow 文档状态回写（默认 30 秒，行为见 5.3）。本机实测（RAGFlow v0.20.5）：上传后立即为 `running`，约 9–12 秒变为 `succeeded`，`chunk_count = 1`。
+- **`syncState` 与解析状态相互独立**：`syncState` 写入时是 `pending`；上传成功后入队的那条 `upsert` 被 worker 投递成功时变为 `synced` 并写 `lastSyncedAt`。若 RAGFlow 侧该文档已不存在，worker 把引用标为 `sync_failed` 且不重试——重新上传正文会生成新的 `document_id`，状态随之回到 `synced`。
 - 上传**不改**对象 `revision`、`updatedAt` 或任何业务元数据。
 
 **响应**：`201`，内容引用（`ContentRef`）：
@@ -497,8 +503,8 @@ draft ──► finished ──► published ──► practiced
 | `contentHash` | string \| null | 文件内容的 SHA-256（hex） |
 | `mime` | string \| null | 客户端声明的 MIME；未声明为 `null` |
 | `sizeBytes` | number \| null | 字节数 |
-| `parseStatus` | `pending` \| `running` \| `succeeded` \| `failed` | 上传后恒为 `pending`（未接线解析） |
-| `parseError` | string \| null | 解析错误；当前恒为 `null` |
+| `parseStatus` | `pending` \| `running` \| `succeeded` \| `failed` | 上传触发解析成功后为 `running`；触发失败则为 `pending`，之后由轮询推进 |
+| `parseError` | string \| null | 解析失败原因；`failed` 时取 RAGFlow `progress_msg` 最后一行（最多 1000 字符），其余情况为 `null` |
 | `syncState` | `pending` \| `synced` \| `sync_failed` \| `deleted` | 刚上传时为 `pending`；worker 投递成功后 `synced`，文档已被删则 `sync_failed`，删除任务完成后 `deleted` |
 | `lastSyncedAt` | string \| null | 最近一次成功同步时间；从未同步为 `null` |
 | `createdAt` / `updatedAt` | string | UTC ISO-8601 |
@@ -518,7 +524,7 @@ draft ──► finished ──► published ──► practiced
   "contentHash": "3f786850e387550fdab836ed7e6dc881de23001b…",
   "mime": "text/plain",
   "sizeBytes": 42,
-  "parseStatus": "pending",
+  "parseStatus": "running",
   "parseError": null,
   "syncState": "pending",
   "lastSyncedAt": null,
@@ -538,13 +544,191 @@ draft ──► finished ──► published ──► practiced
 | 409 `CONFLICT` | RAGFlow 返回 409 |
 | 500 `INTERNAL` | 缺 `RAGFLOW_BASE_URL` / `RAGFLOW_API_KEY`；RAGFlow 返回 5xx 或非 JSON；上传响应里没有 `document_id`；其他未预期异常 |
 
-**已知限制**：没有删除内容 / 列出内容的接口；同名文档在 RAGFlow 上的行为不确定（第二次上传会返回新 id，但列表里可能出现 `(1)` 后缀），因此替换流程一律走「临时名 + 改名」，调用方不要依赖 RAGFlow 侧的文件名去认文档。
+**已知限制**：没有删除单条内容 / 解绑附件的接口（删除仍走对象级 `DELETE` + worker）；同名文档在 RAGFlow 上的行为不确定（第二次上传会返回新 id，但列表里可能出现 `(1)` 后缀），因此替换流程一律走「临时名 + 改名」，调用方不要依赖 RAGFlow 侧的文件名去认文档。
 
 ---
 
-## 5. 系统接口
+### 4.11 `GET /api/objects/{id}/content`
 
-### 5.1 `GET /api/health`
+列出该对象的内容引用（含解析与同步状态），按 `createdAt` 正序。已软删除的引用不返回。对象本身不存在 / 已删除 / 不属于当前用户 → `404`，与详情接口口径一致。
+
+**路径参数**：`id` —— 对象 ULID。
+
+**响应**：`200`，`ContentRef` 数组，**没有外层包装**（不是 `{ items: [...] }`）。
+
+字段与 4.10 的响应表完全一致，常用字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 内容引用 ULID，下载时作为 `refId` |
+| `role` | `primary` \| `attachment` | 内容角色；每个对象至多一个有效主引用 |
+| `documentId` | string | RAGFlow 文档 id，**可变指针**，不要当身份 |
+| `documentName` | string \| null | 写入 RAGFlow 的文件名 |
+| `parseStatus` | `pending` \| `running` \| `succeeded` \| `failed` | 解析进度 |
+| `parseError` | string \| null | 解析失败原因 |
+| `syncState` | `pending` \| `synced` \| `sync_failed` \| `deleted` | outbox 对账状态 |
+| `sizeBytes` | number \| null | 文件字节数 |
+| `createdAt` | string | UTC ISO-8601 |
+
+完整字段（`ownerType`、`provider`、`datasetId`、`contentKey`、`contentHash`、`mime`、`lastSyncedAt`、`updatedAt`、`deletedAt`）以 `src/domain/content-ref.ts` 的 `ContentRef` 为准。
+
+```json
+[
+  {
+    "id": "01JBREF0000000000000000000",
+    "ownerType": "work",
+    "ownerId": "01JBDEMO000000000000000000",
+    "provider": "ragflow",
+    "datasetId": "cdca6016dd9d11f1820ba6aa99b57ab2",
+    "documentId": "9f3c1e7a2b4d4c8e",
+    "contentKey": "obj:01JBDEMO000000000000000000:primary",
+    "role": "primary",
+    "documentName": "note.txt",
+    "contentHash": "3f786850e387550fdab836ed7e6dc881de23001b…",
+    "mime": "text/plain",
+    "sizeBytes": 42,
+    "parseStatus": "succeeded",
+    "parseError": null,
+    "syncState": "synced",
+    "lastSyncedAt": "2026-11-11T07:20:05.000Z",
+    "createdAt": "2026-11-11T07:20:00.000Z",
+    "updatedAt": "2026-11-11T07:20:05.000Z",
+    "deletedAt": null
+  }
+]
+```
+
+没有内容时返回 `[]`，不是 404。
+
+**主要错误**：`401`、`404`（对象不存在 / 已删除 / 不属于当前用户）。
+
+---
+
+### 4.12 `GET /api/objects/{id}/content/{refId}`
+
+下载内容原文：服务端从 RAGFlow 取文件流并透传，不落本地磁盘、不做转码。
+
+**路径参数**：
+
+| 参数 | 说明 |
+|------|------|
+| `id` | 对象 ULID |
+| `refId` | 内容引用 ULID，取自 4.11 列表 |
+
+**成功响应**：`200`，二进制文件流，不是 JSON。
+
+| 响应头 | 值 |
+|--------|----|
+| `Content-Type` | 透传 RAGFlow 的响应头；本机实测为 `application/octet-stream`，不保证与实际文件类型一致 |
+| `Content-Disposition` | `attachment; filename*=UTF-8''<URL 编码文件名>`；文件名优先取 RAGFlow 响应里的名字，其次 `documentName`，都没有时用 `content` |
+| `Content-Length` | 仅当 RAGFlow 返回了有效长度时携带 |
+| `Cache-Control` | `private, no-store` |
+
+> 这条链路对应 RAGFlow 的 `GET /api/v1/datasets/{dataset_id}/documents/{document_id}`——它返回文件流，**不是** JSON 详情接口。要文档元数据（解析状态、chunk 数）请走列表接口 `GET /documents?page=&page_size=`，不要拿这个路径当详情用。
+
+```bash
+curl -s -D headers.txt -o downloaded.bin \
+  "$BASE/api/objects/<id>/content/<refId>"
+```
+
+实测（RAGFlow v0.20.5，本机）：下载得到的字节与上传文件逐字节一致；响应头里是 `application/octet-stream`，因此不要用它判断文件类型，按 `documentName` 的扩展名或本地记录的 `mime` 判断。
+
+**失败响应**：
+
+| 状态 / 错误码 | 响应体 | 场景 |
+|---------------|--------|------|
+| 401 | **纯文本**「请先登录」 | 未登录。该 401 是本接口唯一不走 JSON 信封的响应 |
+| 404 `NOT_FOUND` | JSON 信封 | 对象不存在 / 已删除 / 不属于当前用户；`refId` 不存在、已软删除或不属于该对象 |
+| 500 `INTERNAL` | JSON 信封 | 缺 `RAGFLOW_BASE_URL` / `RAGFLOW_API_KEY`；RAGFlow 5xx、超时或网络错误 |
+
+> `refId` 的归属会在取文件前校验，拿别的对象的 `refId` 拼到自己的对象下只会得到 404。
+
+---
+
+## 5. 内容检索
+
+### 5.1 `GET /api/search`
+
+在 RAGFlow 里做语义检索，返回当前用户**未归档**对象的内容片段。RAGFlow 负责召回，业务库负责归属、归档与库别过滤——不能把 RAGFlow 的原始结果直接当接口响应。
+
+**查询参数**：
+
+| 参数 | 必填 | 取值 | 说明 |
+|------|------|------|------|
+| `q` | **是** | trim 后 1–200 字符 | 检索词；缺失、空白或超长 → 400 |
+| `limit` | 否 | 1–50 的整数，**默认 10** | 返回条数上限；0、51、小数、非数字 → 400 |
+| `library` | 否 | `internal` \| `external` | 只返回该库的对象；其他值 → 400（`details.allowed` 给出合法取值） |
+| `threshold` | 否 | 0–1 的小数，**默认 0.2** | 相似度阈值，低于它的片段不返回；越界或非数字 → 400 |
+
+**执行规则**：
+
+- Dataset 解析与上传一致：`RAGFLOW_DATASET_ID` 优先，否则按 `RAGFLOW_DATASET_NAME`（默认 `pakp-content`）查找。**找不到 dataset 时返回空结果**（`hits: []`、`total: 0`），不是错误——说明还没有任何内容。
+- 先按 `limit * 3`（上限 50）多召回一些，再过滤，抵消归属与归档造成的损耗。
+- 每个命中的 `document_id` 在 `content_refs` 里认回引用；认不回的片段直接丢弃。
+- 引用对应的对象必须属于当前用户，且**已归档对象不返回**（`archivedAt !== null` 一律过滤）。
+- 传了 `library` 时只保留该库的对象。
+- `total` 是**过滤后**的条数，等于 `hits.length`；不是召回总数，也不是分页总数。
+
+**响应**：`200`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `question` | string | 回显 trim 后的查询词 |
+| `hits[].chunkId` | string | RAGFlow chunk id |
+| `hits[].content` | string | 片段正文 |
+| `hits[].highlight` | string \| null | RAGFlow 返回的高亮片段；没有则为 `null` |
+| `hits[].similarity` | number | 相似度，0–1 |
+| `hits[].documentId` | string | RAGFlow 文档 id |
+| `hits[].documentName` | string \| null | RAGFlow chunk 里的文档名（`document_keyword`）；为空则 `null` |
+| `hits[].refId` | string | 内容引用 ULID，可用于 4.12 下载原文 |
+| `hits[].role` | `primary` \| `attachment` | 命中内容在该对象里的角色 |
+| `hits[].object.id` / `type` / `title` / `library` / `status` / `format` | — | 所属对象的关键字段；资产的 `status` / `format` 为 `null` |
+| `total` | number | 过滤后的命中条数 |
+
+```json
+{
+  "question": "知识管理",
+  "hits": [
+    {
+      "chunkId": "a1b2c3d4e5f6",
+      "content": "个人知识管理的关键是把碎片整理成可复用的资产……",
+      "highlight": "个人<em>知识管理</em>的关键是把碎片整理成可复用的资产……",
+      "similarity": 0.42,
+      "documentId": "9f3c1e7a2b4d4c8e",
+      "documentName": "note.txt",
+      "refId": "01JBREF0000000000000000000",
+      "role": "primary",
+      "object": {
+        "id": "01JBDEMO000000000000000000",
+        "type": "work",
+        "title": "第一篇长文",
+        "library": "internal",
+        "status": "draft",
+        "format": "article"
+      }
+    }
+  ],
+  "total": 1
+}
+```
+
+实测（RAGFlow v0.20.5，本机，单文档单 chunk）：命中的相似度约 0.38–0.48；对象归档后再查同一关键词返回 0 条。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | `q` 缺失 / 空白 / 超 200 字符；`limit` 非 1–50 整数；`library` 非法；`threshold` 不在 0–1 |
+| 401 `UNAUTHORIZED` | 未登录 |
+| 500 `INTERNAL` | 缺 `RAGFLOW_BASE_URL` / `RAGFLOW_API_KEY`；RAGFlow 5xx、超时或响应结构不符 |
+
+> 空查询 `?q=` 是 400，不是「返回全部」。这与列表接口「空串等同未传」的约定不同，因为检索没有「不筛选」的语义。
+
+---
+
+## 6. 系统接口
+
+### 6.1 `GET /api/health`
 
 健康检查，无需登录，**不使用**统一错误信封（保持原有形状，便于探活脚本）。
 
@@ -560,7 +744,7 @@ draft ──► finished ──► published ──► practiced
 
 该接口不检查数据库与外部依赖（RAGFlow / Logto）可达性，只表示 Next.js 进程可响应。
 
-### 5.2 `POST /api/sync/run`
+### 6.2 `POST /api/sync/run`
 
 手动触发**一轮** outbox 投递：认领已到期的 `sync_jobs` 并调用 RAGFlow。后台 worker 跑的是同一段逻辑（`runSyncOnce`），这个端点用于排障、脚本化或想立刻生效时手动催一次。
 
@@ -615,13 +799,72 @@ draft ──► finished ──► published ──► practiced
 |----|------|
 | 启动方式 | `src/instrumentation.ts` 在 Node 运行时调用 `startSyncWorker()` |
 | 启动条件 | 必须同时配置 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY`；`SYNC_WORKER_ENABLED=false` 显式关闭 |
-| 间隔 | `SYNC_WORKER_INTERVAL_MS`，默认 30000 ms；小于 5000 按默认值处理 |
-| 单轮上限 | 20 条，与手动端点一致 |
+| 间隔 | `SYNC_WORKER_INTERVAL_MS`，默认 30000 ms；小于 5000 按默认值处理。该间隔同时驱动 outbox 投递与解析轮询 |
+| 每轮做什么 | 先跑一轮 outbox 投递（最多 20 条），再跑一轮解析状态轮询（最多 50 条，见 6.3）；两段互不影响 |
 | 并发保护 | 进程内用标志位避免重入；多进程部署各自认领，靠 `claimJobs` 的原子认领保证同一任务不被处理两次 |
 
 ---
 
-## 6. Logto 登录路由（浏览器跳转，非 JSON 接口）
+### 6.3 `POST /api/parse/run`
+
+手动推进**一轮**解析状态轮询：把 RAGFlow 的文档解析进度回写到 `content_refs.parse_status`。后台 worker 每轮跑的是同一段逻辑（`pollParsingOnce`），这个端点用于排障或想让状态立刻更新时手动催一次。
+
+**请求体**：无（传了也不读）。
+
+**执行规则**：
+
+- 每轮最多检查 **50** 条引用：`parseStatus` 为 `pending` 或 `running`、且未软删除的，按 `updatedAt` 正序取前 50 条。
+- 按 `datasetId` 分组，逐组调用 `GET /api/v1/datasets/{id}/documents?page=&page_size=`（`page_size` 默认 100，每组最多翻 50 页），建立 `documentId → 文档` 索引。
+- 状态映射：
+
+| RAGFlow `run` | 应用侧动作 | 计入结果 |
+|---------------|-----------|----------|
+| `UNSTART` | 补触发一次解析（`POST /chunks`） | `started` |
+| `RUNNING` / `SCHEDULE` | 引用置 `running`，清空 `parseError` | `running` |
+| `DONE` | 引用置 `succeeded`，清空 `parseError` | `succeeded` |
+| `FAIL` / `CANCEL` | 引用置 `failed`，`parseError` 取 `progress_msg` 最后一行（最多 1000 字符）；`CANCEL` 不计入 `errors` | `failed` |
+| 文档不存在 | 引用置 `failed`，`parseError` 为「RAGFlow 文档不存在（可能已被删除）」 | `failed`，同时进 `errors` |
+| 其他未知值 | 不改状态 | 进 `errors` |
+
+- **单条失败不拖垮整轮**：某个 dataset 的文档列表请求失败时，该组的引用只进 `errors`、状态不变，其他组照常处理，接口仍返回 200。
+- **不按调用者归属过滤**：与其他引用一样，轮询会处理队列中任何 `ownerSub` 的引用，以系统身份运行。
+
+**响应**：`200`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `checked` | number | 本轮取到的引用数（≤ 50） |
+| `started` | number | 本轮补触发解析的文档数 |
+| `running` | number | RAGFlow 侧仍在解析的数 |
+| `succeeded` | number | 本轮确认为解析成功的数 |
+| `failed` | number | 失败数（含文档不存在） |
+| `errors` | array | 失败明细：`refId`、`documentId`、`message` |
+
+```json
+{
+  "checked": 2,
+  "started": 0,
+  "running": 1,
+  "succeeded": 1,
+  "failed": 0,
+  "errors": []
+}
+```
+
+没有待处理的引用时返回全 0 且 `errors: []`，不报错。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 401 `UNAUTHORIZED` | 未登录 |
+| 500 `INTERNAL` | 缺 `RAGFLOW_BASE_URL` / `RAGFLOW_API_KEY`（仅在本轮确实有待处理引用、需要构造客户端时才触发；没有待处理引用时正常返回全 0） |
+
+> 实测（RAGFlow v0.20.5，本机）：上传后引用立即为 `running`，约 9–12 秒后解析完成，下一轮轮询回写 `succeeded`，文档 `chunk_count = 1`。
+
+---
+
+## 7. Logto 登录路由（浏览器跳转，非 JSON 接口）
 
 三条路由供页面跳转使用，**不要**在脚本里当 JSON API 调用。
 
@@ -643,7 +886,7 @@ draft ──► finished ──► published ──► practiced
 
 ---
 
-## 7. curl 示例（`AUTH_MODE=mock`，本地直接可用）
+## 8. curl 示例（`AUTH_MODE=mock`，本地直接可用）
 
 开发环境默认就是 `AUTH_MODE=mock`，无需登录、无需 Cookie。
 
@@ -714,40 +957,55 @@ curl -s -X POST $BASE/api/objects/<id>/content \
 # 13. 手动催一轮 outbox 投递（返回 claimed / done / failed）
 curl -s -X POST $BASE/api/sync/run
 
-# 14. 软删除（预期 204，无响应体）
+# 14. 手动催一轮解析状态轮询（返回 checked / started / running / succeeded / failed / errors）
+curl -s -X POST $BASE/api/parse/run
+
+# 15. 列出对象的内容引用（含 parseStatus / syncState）
+curl -s $BASE/api/objects/<id>/content
+
+# 16. 下载内容原文（refId 取自上一步返回的 id；响应是文件流）
+curl -s -D headers.txt -o downloaded.bin \
+  "$BASE/api/objects/<id>/content/<refId>"
+
+# 17. 内容检索（q 必填；limit 1-50，默认 10；threshold 0-1，默认 0.2）
+curl -s -G "$BASE/api/search" \
+  --data-urlencode "q=知识管理" \
+  -d "limit=10&library=internal&threshold=0.2"
+
+# 18. 软删除（预期 204，无响应体）
 curl -s -i -X DELETE $BASE/api/objects/<id>
 ```
 
-`<id>` 替换为上一步返回的对象 `id`；示例里的 `revision` 需要按实际返回值调整。
+`<id>` 替换为上一步返回的对象 `id`，`<refId>` 替换为内容引用列表里的 `id`；示例里的 `revision` 需要按实际返回值调整。
 
-内容上传依赖真实 RAGFlow：`.env.local` 里要有 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY`，缺任一项该接口返回 500（其他接口不受影响）。
+内容上传、解析轮询、内容下载与检索都依赖真实 RAGFlow：`.env.local` 里要有 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY`，缺任一项这些接口返回 500（对象增删改查与 `/api/health` 不受影响）。检索在 dataset 尚未创建时返回空结果而不是错误。
 
 ---
 
-## 8. 尚未实现（不要按这些能力设计调用方）
+## 9. 尚未实现（不要按这些能力设计调用方）
 
 以下能力**当前代码中不存在**，本文不作契约承诺：
 
 | 能力 | 现状 |
 |------|------|
-| 解析状态轮询 | 未实现。`parseStatus` 上传后恒为 `pending`，不回写 `succeeded` / `failed`，也没有 `chunk_count` |
-| 解析触发的向量化 | 未接线。不调用 `POST /api/v1/datasets/{id}/chunks`；缺 chat model / embedding 外部 API key |
-| 搜索 / 全文检索 / 问答 | 未实现。`GET /api/objects?q=` 只做 SQLite 字段匹配，不查 RAGFlow |
-| 内容下载 / 正文读取 | 未接入。RAGFlow 的文档下载接口没有被封装成应用接口 |
-| 内容引用查询（`content_refs` 列表） | 未实现。只有上传写入口，没有读取端点；调用方只能看上传响应或数据库 |
-| 内容删除 / 附件管理 | 未实现。没有删除某条内容、列出对象全部附件或解绑附件的接口；删除走对象级 `DELETE` + worker |
-| 列表总数 / 游标 | 未实现。列表只返回数组，没有 `total`、页码或游标 |
-| 多用户权限 / 角色 / 共享 | 未实现。只有按 `ownerSub` 的单用户归属过滤，没有角色或协作概念。注意 `/api/sync/run` 与后台 worker 不按调用者过滤（见 5.2） |
+| 内容删除 / 附件解绑 | 未实现。没有删除某条 `content_ref`、列出对象全部附件或解绑单个附件的接口；删除只能走对象级 `DELETE` + worker（整对象全部文档） |
+| RAGFlow 问答会话 | 未实现。检索接口只返回召回片段，不组装上下文、不调用 chat model，也没有多轮会话 |
+| LightRAG 知识图谱 | 未实现。没有实体/关系抽取、图查询或相关接口 |
+| 列表总数 / 游标 | 未实现。`GET /api/objects` 只返回数组，没有 `total`、页码或游标 |
+| 多用户权限 / 角色 / 共享 | 未实现。只有按 `ownerSub` 的单用户归属过滤，没有角色或协作概念。注意 `/api/sync/run`、`/api/parse/run` 与后台 worker 不按调用者过滤（见 6.2、6.3） |
 | OpenAPI / Swagger 描述文件 | 未实现。本文是唯一接口说明 |
-| 同步投递的真实环境验证 | 已在真实 RAGFlow v0.20.5 上端到端验证「迁移→meta 回读→删除→文档消失」；失败重试与退避仍只有假网关单测覆盖 |
+| 同步投递与解析轮询的失败路径实测 | 失败重试 / 退避 / 解析失败回写目前只有假网关单测覆盖；真实 RAGFlow 上验证的是成功路径（上传 → 解析完成 → 检索 → 下载 → 归档后检索为 0） |
+
+> 检索的相似度由 RAGFlow 的 embedding 模型决定，换模型或换解析器后同样的查询会得到不同的分数与排序。阈值 0.2 只是默认值，不是质量承诺。
 
 ---
 
-## 9. 变更记录
+## 10. 变更记录
 
 | 日期 | 变更 |
 |------|------|
 | 2026-11-11 | 首版：覆盖 `health`、`objects` 七个端点与三条 Logto 跳转路由；补充错误码表与未实现清单 |
-| 2026-11-11（HEAD `49e26de`） | 补入四个新能力：`GET /api/objects/{id}`（对象详情）、`GET /api/objects/{id}/library`（迁移审计读取）、`POST /api/objects/{id}/content`（multipart 内容上传与 RAGFlow 映射）、`GET /api/objects` 的 `q` / `category` / `tag` / `status` / `sort` / `limit` / `offset`。端点总览更新为 14 条；第 8 节删去已实现的条目 |
-| 2026-11-11（HEAD `1ea0b86`） | 补入 outbox 消费端：新增 `POST /api/sync/run` 与后台 worker 行为（启动条件、间隔、认领上限、失败退避），端点总数 15 条；更新 PATCH / DELETE / 跨库迁移里「只入队不投递」的旧表述；第 8 节移除「同步 worker 未实现」，保留解析轮询、检索、下载与 OpenAPI 等真正缺失的能力。同日已在真实 RAGFlow 上端到端验证投递：迁移库别后 meta 回读为 `library=external`、删除对象后文档从数据集消失；失败重试仍为假网关单测 |
+| 2026-11-11（HEAD `49e26de`） | 补入四个新能力：`GET /api/objects/{id}`（对象详情）、`GET /api/objects/{id}/library`（迁移审计读取）、`POST /api/objects/{id}/content`（multipart 内容上传与 RAGFlow 映射）、`GET /api/objects` 的 `q` / `category` / `tag` / `status` / `sort` / `limit` / `offset`。端点总览更新为 14 条；未实现清单删去已实现的条目 |
+| 2026-11-11（HEAD `1ea0b86`） | 补入 outbox 消费端：新增 `POST /api/sync/run` 与后台 worker 行为（启动条件、间隔、认领上限、失败退避），端点总数 15 条；更新 PATCH / DELETE / 跨库迁移里「只入队不投递」的旧表述；未实现清单移除「同步 worker 未实现」，保留解析轮询、检索、下载与 OpenAPI 等当时仍缺失的能力。同日已在真实 RAGFlow 上端到端验证投递：迁移库别后 meta 回读为 `library=external`、删除对象后文档从数据集消失；失败重试仍为假网关单测 |
 | 2026-11-11（HEAD `a7aa5f3`） | 列表 `archived` 参数扩展为 `true` / `false` / `only`，非法取值改为 400（此前非 `true` 的值被静默忽略） |
+| 2026-11-11（HEAD `b860530`） | 补入四条内容链路接口：`POST /api/parse/run`（手动解析轮询，单轮 50 条）、`GET /api/objects/{id}/content`（内容引用列表）、`GET /api/objects/{id}/content/{refId}`（原文下载，二进制流）、`GET /api/search`（内容检索，含归属 / 归档 / 库别过滤）；端点总数 19 条。上传章节改为「上传即触发解析」，第 9 节移除已实现的解析轮询、检索、下载与内容列表。实测（RAGFlow v0.20.5）：上传即 `running`，9–12 秒后 `succeeded`、`chunk_count=1`；检索相似度 0.38–0.48；下载与上传文件逐字节一致；归档后同一检索 0 条 |
