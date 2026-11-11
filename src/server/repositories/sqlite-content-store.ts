@@ -1,10 +1,11 @@
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 
 import type { ContentRef } from "../../domain/content-ref";
-import { ConflictError, DomainError, NotFoundError } from "../../domain/errors";
+import { DomainError, NotFoundError } from "../../domain/errors";
 import type { AppDatabase } from "../db/client";
 import { ulid } from "../db/id";
 import { contentRefs, syncJobs, type ContentRefRow, type NewContentRefRow, type SyncJobRow } from "../db/schema";
+import { translateSqliteError } from "./sqlite-errors";
 import type {
   ClaimJobsInput,
   ContentStore,
@@ -76,19 +77,7 @@ function toSyncJob(row: SyncJobRow): SyncJob {
 }
 
 function translate(error: unknown): never {
-  const message = error instanceof Error ? error.message : String(error);
-
-  if (/UNIQUE constraint failed/i.test(message)) {
-    throw new ConflictError(`内容引用唯一约束冲突：${message}`, { detail: message });
-  }
-
-  if (/CHECK constraint failed/i.test(message)) {
-    throw new DomainError("CONSTRAINT_VIOLATION", `数据库约束拒绝写入：${message}`, {
-      detail: message,
-    });
-  }
-
-  throw error;
+  return translateSqliteError(error, "内容引用");
 }
 
 export class SqliteContentStore implements ContentStore {

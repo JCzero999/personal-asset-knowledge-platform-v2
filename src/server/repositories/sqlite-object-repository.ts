@@ -12,6 +12,7 @@ import { ConflictError, DomainError, NotFoundError, ValidationError } from "../.
 import { assertTransition } from "../../domain/workflow";
 import type { AppDatabase } from "../db/client";
 import { ulid } from "../db/id";
+import { translateSqliteError } from "./sqlite-errors";
 import {
   libraryEvents,
   objects,
@@ -130,29 +131,6 @@ function toLibraryEvent(row: LibraryEventRow): LibraryChangeEvent {
     actorSub: row.actorSub,
     createdAt: row.createdAt,
   };
-}
-
-/** 把 sqlite 约束错误翻译成领域错误，避免上层看到驱动细节。 */
-function translateSqliteError(error: unknown): never {
-  const message = error instanceof Error ? error.message : String(error);
-
-  if (/CHECK constraint failed/i.test(message)) {
-    throw new DomainError("CONSTRAINT_VIOLATION", `数据库约束拒绝写入：${message}`, {
-      constraint: extractConstraint(message),
-    });
-  }
-
-  if (/UNIQUE constraint failed/i.test(message)) {
-    throw new ConflictError(`唯一约束冲突：${message}`, {
-      constraint: extractConstraint(message),
-    });
-  }
-
-  throw error;
-}
-
-function extractConstraint(message: string): string | undefined {
-  return /constraint failed:\s*(.+)$/i.exec(message)?.[1]?.trim();
 }
 
 export class SqliteObjectRepository implements ObjectRepository {
