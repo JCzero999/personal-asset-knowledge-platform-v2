@@ -1,13 +1,23 @@
+import Link from "next/link";
+
 import {
   workFormats,
   type BusinessObject,
   type WorkStatus,
 } from "@/domain/objects";
 import { libraryLabels, statusLabels } from "@/lib/object-labels";
+import {
+  activeFilterChips,
+  hasActiveFilters,
+  LIST_LIMIT,
+  sortLabels,
+  type WorkspaceFilters,
+} from "@/lib/workspace-filters";
 import type { Session } from "@/server/ports/session";
 import { CreateObjectButton } from "./create-object-dialog";
 import { Icon, type IconName } from "./icon";
 import { ObjectActions } from "./object-actions";
+import { ObjectFilters } from "./object-filters";
 
 const navigation: Array<{ label: string; icon: IconName; href: string; active?: boolean }> = [
   { label: "工作台", icon: "grid", href: "/workspace", active: true },
@@ -92,28 +102,54 @@ function CompositionRow({
 export function WorkspaceShell({
   session,
   objects,
+  allObjects,
+  filters,
   signOutHref = null,
 }: {
   session: Session;
+  /** 当前筛选与范围下的列表结果。 */
   objects: BusinessObject[];
+  /** 不含归档的全量对象，用于概览、阶段与构成统计，不受列表筛选影响。 */
+  allObjects: BusinessObject[];
+  filters: WorkspaceFilters;
   signOutHref?: string | null;
 }) {
   const now = new Date();
-  const works = objects.filter((object) => object.type === "work");
-  const assets = objects.filter((object) => object.type === "asset");
-  const internalCount = objects.filter((object) => object.library === "internal").length;
-  const externalCount = objects.length - internalCount;
+  const works = allObjects.filter((object) => object.type === "work");
+  const assets = allObjects.filter((object) => object.type === "asset");
+  const internalCount = allObjects.filter((object) => object.library === "internal").length;
+  const externalCount = allObjects.length - internalCount;
   const weekAgo = now.getTime() - 7 * 86_400_000;
-  const weeklyCount = objects.filter(
+  const weeklyCount = allObjects.filter(
     (object) => Date.parse(object.createdAt) >= weekAgo,
   ).length;
 
   const countByStatus = (status: WorkStatus) =>
     works.filter((work) => work.status === status).length;
 
-  const recent = objects.slice(0, 5);
-  const total = objects.length;
+  const filtersActive = hasActiveFilters(filters);
+  const archivedView = filters.archived === "only";
+  const hasConditions = Boolean(
+    filters.q || filters.type || filters.library || filters.status,
+  );
+  // 默认视图只露最近 5 条预览；一旦用了筛选或排序，就展示完整结果。
+  const rows = filtersActive ? objects : objects.slice(0, 5);
+  const conditions = activeFilterChips(filters);
+  const total = allObjects.length;
   const percentOf = (count: number) => (total === 0 ? 0 : Math.round((count / total) * 100));
+
+  const listTitle = archivedView
+    ? "已归档"
+    : hasConditions
+      ? "筛选结果"
+      : filters.sort === "updated"
+        ? "最近内容"
+        : "全部内容";
+  const listSubtitle = archivedView
+    ? "归档的内容不占用工作台，取消归档后会回到在用列表。"
+    : filtersActive
+      ? `按${sortLabels[filters.sort]}排列`
+      : "资产与作品按最近更新排列";
 
   const overview = [
     { label: "全部内容", value: total, icon: "inbox" as IconName },
@@ -236,24 +272,65 @@ export function WorkspaceShell({
           <section className="panel recent-panel" id="recent" aria-labelledby="recent-heading">
             <div className="panel-heading">
               <div>
-                <h2 id="recent-heading">最近内容</h2>
-                <p>资产与作品按最近更新排列</p>
+                <h2 id="recent-heading">{listTitle}</h2>
+                <p>{listSubtitle}</p>
               </div>
-              <CreateObjectButton label="新建" variant="secondary" />
+              {filtersActive ? (
+                <span className="meta-chip">{objects.length} 条</span>
+              ) : (
+                <CreateObjectButton label="新建" variant="secondary" />
+              )}
             </div>
 
-            {recent.length === 0 ? (
-              <div className="empty-state">
-                <span className="empty-icon"><Icon name="inbox" size={26} /></span>
-                <div className="empty-copy">
-                  <strong>还没有内容</strong>
-                  <p>新建一个资产收纳资料，或新建作品开始推进四个阶段。</p>
+            <ObjectFilters filters={filters} />
+
+            {rows.length === 0 ? (
+              archivedView && !hasConditions ? (
+                <div className="empty-state">
+                  <span className="empty-icon"><Icon name="archive" size={26} /></span>
+                  <div className="empty-copy">
+                    <strong>还没有归档内容</strong>
+                    <p>归档只改元数据、不移动内容，需要时随时可以恢复到在用。</p>
+                  </div>
+                  <Link className="btn btn-secondary empty-action" href="/workspace">
+                    回到在用
+                  </Link>
                 </div>
-                <CreateObjectButton label="新建第一条" className="empty-action" />
-              </div>
+              ) : filtersActive ? (
+                <div className="empty-state">
+                  <span className="empty-icon"><Icon name="search" size={26} /></span>
+                  <div className="empty-copy">
+                    <strong>没有匹配的内容</strong>
+                    <p>
+                      {archivedView
+                        ? "归档里没有符合当前条件的内容。"
+                        : "当前条件下没有内容，换个关键字或放宽筛选试试。"}
+                    </p>
+                  </div>
+                  <div className="empty-filters" aria-label="当前筛选条件">
+                    {conditions.map((condition) => (
+                      <span className="meta-chip" key={condition.key}>
+                        {condition.label}
+                      </span>
+                    ))}
+                  </div>
+                  <Link className="btn btn-secondary empty-action" href="/workspace">
+                    清空筛选
+                  </Link>
+                </div>
+              ) : (
+                <div className="empty-state">
+                  <span className="empty-icon"><Icon name="inbox" size={26} /></span>
+                  <div className="empty-copy">
+                    <strong>还没有内容</strong>
+                    <p>新建一个资产收纳资料，或新建作品开始推进四个阶段。</p>
+                  </div>
+                  <CreateObjectButton label="新建第一条" className="empty-action" />
+                </div>
+              )
             ) : (
               <ul className="object-list">
-                {recent.map((object) => {
+                {rows.map((object) => {
                   const meta = object.type === "work"
                     ? `${formatLabels.get(object.format) ?? object.format} · ${statusLabels[object.status]} · ${libraryLabels[object.library]}`
                     : `资料与参考 · ${libraryLabels[object.library]}`;
@@ -280,10 +357,13 @@ export function WorkspaceShell({
               </ul>
             )}
 
-            {total > recent.length && (
+            {rows.length > 0
+              && (filtersActive ? objects.length >= LIST_LIMIT : total > rows.length) && (
               <div className="panel-footnote">
                 <span />
-                共 {total} 条内容，这里显示最近 {recent.length} 条
+                {filtersActive
+                  ? `最多显示 ${LIST_LIMIT} 条，用关键字可以缩小范围`
+                  : `共 ${total} 条内容，这里显示最近 ${rows.length} 条`}
               </div>
             )}
           </section>

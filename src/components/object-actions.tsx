@@ -301,7 +301,17 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
   return (
     <>
       <div className="object-side">
-        {nextStatus && !object.archivedAt ? (
+        {object.archivedAt ? (
+          <button
+            className="object-step object-undo"
+            type="button"
+            aria-label={`取消归档「${object.title}」`}
+            disabled={busy}
+            onClick={toggleArchive}
+          >
+            {pending === "archive" ? "处理中…" : "取消归档"}
+          </button>
+        ) : nextStatus ? (
           <button
             className="object-step"
             type="button"
