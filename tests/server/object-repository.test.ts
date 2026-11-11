@@ -336,6 +336,71 @@ describe("归档", () => {
   });
 });
 
+describe("outbox 入队", () => {
+  type JobRow = { owner_type: string; owner_id: string; action: string; state: string };
+
+  function jobs(): JobRow[] {
+    return handle.sqlite
+      .prepare("SELECT owner_type, owner_id, action, state FROM sync_jobs ORDER BY created_at, id")
+      .all() as JobRow[];
+  }
+
+  function markAllDone(): void {
+    handle.sqlite.prepare("UPDATE sync_jobs SET state = 'done'").run();
+  }
+
+  it("编辑、迁移、归档都只产生一条活跃 upsert（同一对象去重）", async () => {
+    const work = await repo.create(workInput);
+
+    await repo.update(work.id, { title: "改名", expectedRevision: 1 });
+    await repo.changeLibrary({
+      objectId: work.id,
+      to: "internal",
+      reason: "已复盘",
+      actorSub: "user_test",
+      expectedRevision: 2,
+    });
+    await repo.archive(work.id);
+
+    expect(jobs()).toEqual([
+      { owner_type: "work", owner_id: work.id, action: "upsert", state: "pending" },
+    ]);
+  });
+
+  it("删除写入 delete 任务，与未完成的 upsert 并存", async () => {
+    const work = await repo.create(workInput);
+    await repo.update(work.id, { title: "改名", expectedRevision: 1 });
+    await repo.softDelete(work.id);
+
+    expect(jobs()).toEqual([
+      { owner_type: "work", owner_id: work.id, action: "upsert", state: "pending" },
+      { owner_type: "work", owner_id: work.id, action: "delete", state: "pending" },
+    ]);
+  });
+
+  it("任务完成后同一对象可再次入队", async () => {
+    const work = await repo.create(workInput);
+    await repo.update(work.id, { title: "第一次", expectedRevision: 1 });
+
+    markAllDone();
+    await repo.update(work.id, { title: "第二次", expectedRevision: 2 });
+
+    const rows = jobs();
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((row) => row.state === "pending")).toHaveLength(1);
+  });
+
+  it("冲突失败的对象更新不留下任务", async () => {
+    const work = await repo.create(workInput);
+
+    await expect(
+      repo.update(work.id, { title: "抢改", expectedRevision: 99 }),
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect(jobs()).toHaveLength(0);
+  });
+});
+
 describe("仓储错误语义", () => {
   it("找不到对象时抛 NotFoundError", async () => {
     await expect(repo.softDelete("01HZZZZZZZZZZZZZZZZZZZZZZZ")).rejects.toBeInstanceOf(

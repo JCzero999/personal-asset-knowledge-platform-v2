@@ -103,3 +103,11 @@
 - 新增 `src/server/adapters/ragflow/{client,index}.ts`：`listDatasets` / `createDocument` / `deleteDocument`，错误映射到领域错误，配置缺失即拒绝启动；15 个 mock fetch 单测
 - 已知限制：解析流水线未实测（缺 chat model API key）；MinIO 使用社区重建镜像 `pgsty/minio`
 - 验证：typecheck、lint、8 个测试文件 84 项用例通过（构建此前已通过）
+
+## 2026-11-11（outbox 与写库同事务）
+
+- 对象的编辑、归档 / 取消归档、跨库迁移改为在同一个数据库事务里写 `objects`（迁移时连同 `library_events`）并入队 `sync_jobs`，不再出现「元数据已改但没有同步任务」
+- 软删除在同一事务中写 `objects.deleted_at` 与一条 `delete` 任务，避免 RAGFlow 侧留下孤儿文档
+- 同一对象同一动作只保留一条活跃任务（`sync_jobs_active_uq` + `ON CONFLICT DO NOTHING`）：编辑后紧接着归档或迁移，不会堆出多条重复 upsert
+- revision 过期导致更新失败时整个事务回滚，不会留下无对应改动的任务
+- 验证：typecheck、lint、8 个测试文件 88 项用例通过（新增 4 项 outbox 断言：去重、删除任务并存、完成后可再次入队、冲突不留任务）

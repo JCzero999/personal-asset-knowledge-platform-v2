@@ -15,6 +15,7 @@ import { ulid } from "../db/id";
 import {
   libraryEvents,
   objects,
+  syncJobs,
   type LibraryEventRow,
   type NewObjectRow,
   type ObjectRow,
@@ -28,6 +29,38 @@ import type {
   ObjectRepository,
   UpdateObjectInput,
 } from "../ports/object-repository";
+
+/** better-sqlite3 事务里的 drizzle 句柄，仅供同步写入使用。 */
+type Tx = Parameters<Parameters<AppDatabase["transaction"]>[0]>[0];
+
+/**
+ * 元数据变化即入队：RAGFlow 侧 `meta_fields` 依赖这条任务刷新。
+ * 同一对象同一动作至多一条活跃任务，重复入队由 sync_jobs_active_uq 吞掉。
+ */
+function enqueueSyncJob(
+  tx: Tx,
+  ownerType: "asset" | "work",
+  ownerId: string,
+  action: "upsert" | "delete",
+  now: string,
+): void {
+  tx.insert(syncJobs)
+    .values({
+      id: ulid(),
+      ownerType,
+      ownerId,
+      contentRefId: null,
+      action,
+      state: "pending",
+      attempts: 0,
+      lastError: null,
+      availableAt: now,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing()
+    .run();
+}
 
 /**
  * `ObjectRepository` 的 SQLite 实现。
@@ -253,24 +286,38 @@ export class SqliteObjectRepository implements ObjectRepository {
     }
 
     try {
-      const [updated] = await this.db
-        .update(objects)
-        .set(patch)
-        .where(
-          and(
-            eq(objects.id, id),
-            eq(objects.revision, input.expectedRevision),
-            isNull(objects.deletedAt),
-          ),
-        )
-        .returning();
+      // 元数据变更与 outbox 入队同事务：不能出现「已改库但没有同步任务」。
+      const updated = this.db.transaction((tx) => {
+        const row = tx
+          .update(objects)
+          .set(patch)
+          .where(
+            and(
+              eq(objects.id, id),
+              eq(objects.revision, input.expectedRevision),
+              isNull(objects.deletedAt),
+            ),
+          )
+          .returning()
+          .get();
 
-      if (!updated) {
-        throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+        if (!row) {
+          throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+            id,
+            expectedRevision: input.expectedRevision,
+          });
+        }
+
+        enqueueSyncJob(
+          tx,
+          row.type as "asset" | "work",
           id,
-          expectedRevision: input.expectedRevision,
-        });
-      }
+          "upsert",
+          patch.updatedAt as string,
+        );
+
+        return row;
+      });
 
       return toObject(updated);
     } catch (error) {
@@ -339,23 +386,51 @@ export class SqliteObjectRepository implements ObjectRepository {
   }
 
   async softDelete(id: string, at: string = nowIso()): Promise<void> {
-    const [deleted] = await this.db
-      .update(objects)
-      .set({ deletedAt: at, updatedAt: at })
-      .where(and(eq(objects.id, id), isNull(objects.deletedAt)))
-      .returning({ id: objects.id });
+    const current = await this.findById(id);
 
-    if (!deleted) {
+    if (!current) {
       throw new NotFoundError("对象不存在或已删除", { id });
+    }
+
+    try {
+      // 删除与「通知 RAGFlow 删除文档」同事务，避免留下孤儿文档。
+      this.db.transaction((tx) => {
+        const row = tx
+          .update(objects)
+          .set({ deletedAt: at, updatedAt: at })
+          .where(and(eq(objects.id, id), isNull(objects.deletedAt)))
+          .returning({ id: objects.id })
+          .get();
+
+        if (!row) {
+          throw new NotFoundError("对象不存在或已删除", { id });
+        }
+
+        enqueueSyncJob(tx, current.type, id, "delete", at);
+      });
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      return translateSqliteError(error);
     }
   }
 
   async archive(id: string, at: string = nowIso()): Promise<BusinessObject> {
-    const [row] = await this.db
-      .update(objects)
-      .set({ archivedAt: at, updatedAt: at, revision: sql`${objects.revision} + 1` })
-      .where(and(eq(objects.id, id), isNull(objects.archivedAt), isNull(objects.deletedAt)))
-      .returning();
+    const row = this.db.transaction((tx) => {
+      const updated = tx
+        .update(objects)
+        .set({ archivedAt: at, updatedAt: at, revision: sql`${objects.revision} + 1` })
+        .where(and(eq(objects.id, id), isNull(objects.archivedAt), isNull(objects.deletedAt)))
+        .returning()
+        .get();
+
+      if (updated) {
+        enqueueSyncJob(tx, updated.type as "asset" | "work", id, "upsert", at);
+      }
+
+      return updated ?? null;
+    });
 
     if (row) {
       return toObject(row);
@@ -371,11 +446,20 @@ export class SqliteObjectRepository implements ObjectRepository {
   }
 
   async unarchive(id: string, at: string = nowIso()): Promise<BusinessObject> {
-    const [row] = await this.db
-      .update(objects)
-      .set({ archivedAt: null, updatedAt: at, revision: sql`${objects.revision} + 1` })
-      .where(and(eq(objects.id, id), isNotNull(objects.archivedAt), isNull(objects.deletedAt)))
-      .returning();
+    const row = this.db.transaction((tx) => {
+      const updated = tx
+        .update(objects)
+        .set({ archivedAt: null, updatedAt: at, revision: sql`${objects.revision} + 1` })
+        .where(and(eq(objects.id, id), isNotNull(objects.archivedAt), isNull(objects.deletedAt)))
+        .returning()
+        .get();
+
+      if (updated) {
+        enqueueSyncJob(tx, updated.type as "asset" | "work", id, "upsert", at);
+      }
+
+      return updated ?? null;
+    });
 
     if (row) {
       return toObject(row);
@@ -465,6 +549,8 @@ export class SqliteObjectRepository implements ObjectRepository {
             createdAt: now,
           })
           .run();
+
+        enqueueSyncJob(tx, row.type as "asset" | "work", input.objectId, "upsert", now);
 
         return toObject(row);
       });
