@@ -354,7 +354,7 @@
 draft ──► finished ──► published ──► practiced
 ```
 
-额外规则：**外库（`external`）作品不能进入 `practiced`**，必须先迁到内库。数据库 CHECK `objects_external_not_practiced` 作为最后防线。
+额外规则：**外库（`external`）作品不能进入 `practiced`**，必须先迁到内库。数据库 CHECK `objects_external_not_practiced` 作为最后防线。**已归档作品不能推进状态**：归档表示退出工作台，先 `POST /api/objects/{id}/archive` 传 `{"archived": false}` 取消归档，再按原状态机继续。
 
 **响应**：`200`，状态已更新、`revision + 1` 的对象。
 
@@ -367,7 +367,7 @@ draft ──► finished ──► published ──► practiced
 | 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
 | 409 `INVALID_TRANSITION` | 跳级、回退、或与当前状态相同（`details` 带 `from` / `to`，跳级时另带 `allowed`） |
 | 409 `EXTERNAL_LIBRARY_PRACTICED` | 外库作品试图变为 `practiced` |
-| 409 `CONFLICT` | 版本号不一致 |
+| 409 `CONFLICT` | 版本号不一致，或作品已归档（`details.archivedAt`） |
 
 ---
 
