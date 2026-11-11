@@ -7,6 +7,8 @@ import {
   changeObjectStatus,
   createObject,
   deleteObject,
+  getObject,
+  listObjectLibraryEvents,
   listObjects,
   parseChangeLibraryBody,
   parseChangeStatusBody,
@@ -237,6 +239,39 @@ describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject"
     expect(await listObjects(handle.db, { ownerSub: "u1", includeArchived: true })).toHaveLength(
       0,
     );
+  });
+});
+
+describe("getObject / listObjectLibraryEvents", () => {
+  it("按身份读取详情与迁移审计；他人对象一律 404", async () => {
+    const work = await createObject(handle.db, "u1", {
+      type: "work",
+      title: "一门课",
+      library: "external",
+      format: "course",
+    });
+
+    expect((await getObject(handle.db, "u1", work.id)).title).toBe("一门课");
+    await expect(getObject(handle.db, "u2", work.id)).rejects.toBeInstanceOf(NotFoundError);
+
+    await changeObjectLibrary(handle.db, "u1", work.id, {
+      to: "internal",
+      reason: "已复盘确认",
+    });
+
+    const events = await listObjectLibraryEvents(handle.db, "u1", work.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      objectId: work.id,
+      fromLibrary: "external",
+      toLibrary: "internal",
+      reason: "已复盘确认",
+      actorSub: "u1",
+    });
+
+    await expect(
+      listObjectLibraryEvents(handle.db, "u2", work.id),
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 

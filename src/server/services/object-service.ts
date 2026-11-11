@@ -19,6 +19,7 @@ import {
 import type { AppDatabase } from "../db/client";
 import type {
   CreateObjectInput,
+  LibraryChangeEvent,
   ListObjectsQuery,
   UpdateObjectInput,
 } from "../ports/object-repository";
@@ -399,4 +400,24 @@ export async function listObjects(
   query: ListObjectsQuery = {},
 ): Promise<BusinessObject[]> {
   return new SqliteObjectRepository(db).list(query);
+}
+
+export async function getObject(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+): Promise<BusinessObject> {
+  const repo = new SqliteObjectRepository(db);
+  return requireOwned(repo, ownerSub, objectId);
+}
+
+/** 跨库迁移审计：按身份校验归属后返回该对象的全部迁移记录。 */
+export async function listObjectLibraryEvents(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+): Promise<LibraryChangeEvent[]> {
+  const repo = new SqliteObjectRepository(db);
+  await requireOwned(repo, ownerSub, objectId);
+  return repo.listLibraryEvents(objectId);
 }
