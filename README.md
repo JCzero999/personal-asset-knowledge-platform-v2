@@ -116,8 +116,9 @@ agents/                    CrewAI 文档进度 Agent（非业务应用）
 | [docs/03_DECISIONS.md](docs/03_DECISIONS.md) | ADR 决策记录 |
 | [docs/04_INTEGRATION.md](docs/04_INTEGRATION.md) | Logto / RAGFlow / LightRAG 集成事实（只写实测值） |
 | [docs/05_CHANGELOG.md](docs/05_CHANGELOG.md) | 变更日志 |
-| [docs/06_API.md](docs/06_API.md) | HTTP API 参考（19 条路由） |
+| [docs/06_API.md](docs/06_API.md) | HTTP API 参考（24 条路由） |
 | [docs/07_PLAYBOOK.md](docs/07_PLAYBOOK.md) | 开发流程与问题沉淀 |
+| [docs/08_RUN_LOG.md](docs/08_RUN_LOG.md) | 真实登录联调与验收的操作实录 |
 
 ## 开发约束
 

@@ -198,3 +198,14 @@
 - **实测（本机 CPU，2026-11-11）**：118 字测试文本约 226 秒完成抽取，得到 9 个实体 / 3 条关系；`/graph` 页面 SSR 返回实体与初始邻域，浏览器点击实体后标题与子图切换；`POST /api/graph/query` 约 93.8 秒返回中文答案（测试文档未带 `pakp:` 前缀，因此来源列表为空，符合过滤规则）；`/api/graph/sync` 在本机空库返回 `candidates: 0`
 - **限制**：LightRAG 图 / 问答路由绑定单实例默认 workspace，`LIGHTRAG-WORKSPACE` 未覆盖这些路由，当前只适合单用户本机部署；7B 模型会把 `#` 等噪声当实体；子图沿有向边展开，只有入边的实体显示为空
 - **工程**：`eslint.config.mjs` 增加 `**/.venv/**` 忽略（嵌套 venv 里打包的 WebUI 静态资源不再产生 573 条误报）。验证：typecheck、lint、`next build` 通过；19 个测试文件 / 216 项用例通过
+
+## 2026-11-11（真实登录联调、图谱归属隔离与开机自启）
+
+- **修 Logto 回调 500**：`@logto/next` 的 `handleSignIn` 在传入 `URLSearchParams` 时会自行按 `${baseUrl}/callback` 拼回调地址，与登记的 `/api/logto/sign-in-callback` 不一致，报 `callback_uri_verification.redirect_uri_mismatched`。改为传完整 `new URL(request.url)`（`src/app/api/logto/sign-in-callback/route.ts`），假 code 复测错误变为预期的 `sign_in_session.not_found`，真实登录 307 → `/workspace 200`
+- **修注册 500**：Logto 默认调用 `api.pwnedpasswords.com` 做弱密码检查，本机无外网 DNS（`EAI_AGAIN`）导致 `POST /api/experience/profile` 500；`infra/logto/docker-compose.yml` 增加 `ENABLE_PWNED_PASSWORD_API: "false"` 并重建容器
+- **真实登录冒烟（无头 Chromium + CDP）**：发起登录 → Logto 登录页 → 回调换码 → `/workspace`；`/search`、`/graph`、`/workspace/[id]` 渲染正常；创建资产 201、非法请求体 400、匿名 `/api/objects` 401。测试账号 `pakp_test`（`sub` `7vjekboa76zu`），本人账号 `JCzero001`（`sub` `gdv8t04dw4ca`）
+- **ADR-011 图谱按账号归属过滤**：LightRAG 1.5.7 的 workspace 是进程级、无法按请求切换，采用读侧过滤——`LightragNode/Edge` 带出 `file_path`，标签列表、实体邻域、构图进度、问答引用只保留映射到本账号对象的节点 / 边 / 文档；问答引用为空时返回空答复；标签结果按账号缓存 60 秒。实测第二个账号 0 条内容时 `/graph` 从「9 个实体」变为「0 个实体」
+- **服务自启**：新增 `scripts/autostart.ps1`（幂等拉起 Logto / RAGFlow / LightRAG / embedding，`-Check` 只检查、`-App` 连带起应用）与 `scripts/install-autostart.ps1`（在用户「启动」文件夹放快捷方式，免提权；`-Remove` 撤销）
+- **验证**：typecheck、lint、`next build` 通过；19 个测试文件 / 216 项用例通过；`next start`（3100）实测 health 200、首页 200、未登录 `/graph` 307、sign-in 307 到 Logto
+- **文档沉淀**：新增 `docs/08_RUN_LOG.md`，按时间顺序记录真实登录联调与验收的操作过程（回调 500 的定位与修复、pwned password 导致的注册 500、无头浏览器 9 项冒烟与断言表、图谱跨账号泄漏的复现与修复前后对比、生产模式检查、服务自启验证、遗留清单）；`07_PLAYBOOK` 补问题 34~36（PowerShell 无 BOM、`schtasks` 提权失败、冒烟断言字段写错）并更新阶段表；`06_API` 更正「登录未人工验证」的过时表述；README 文档索引加入 08，路由数更正为 24
+

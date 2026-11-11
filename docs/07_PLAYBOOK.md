@@ -2,7 +2,7 @@
 
 > **读者**：接手本项目的开发者 / AI、需要评估进度的协作者。
 > **写法**：只记录仓库里能核实的事实（提交、文件、测试、实测端口）。无法核实的标「未验证」，不写规划口吻的完成状态。
-> **快照时间**：2026-11-11 18:58（Asia/Shanghai），HEAD `2e7f70a` 之后新增 Phase 3 四个提交（`c9ea9a0` ~ `d945a83`），分支 `master`。测试基线 **19 个文件 216 项**（typecheck / lint / test / build 均在本轮 Phase 3 结束时复跑通过）。
+> **快照时间**：2026-11-11 22:30（Asia/Shanghai），本轮联调改动提交前 HEAD `85c6093`，分支 `master`。测试基线 **19 个文件 216 项**（typecheck / lint / test / build 均在本轮复跑通过）。真实登录、前端冒烟与图谱归属隔离的操作过程见 [08_RUN_LOG.md](08_RUN_LOG.md)。
 > **与其他文档的关系**：阶段定义以 [02_PHASES.md](02_PHASES.md) 为准，决策以 [03_DECISIONS.md](03_DECISIONS.md) 为准，接口以 [06_API.md](06_API.md) 为准。本文件不重复契约，只讲「怎么做的、踩过什么、怎么验证」。
 
 ---
@@ -26,11 +26,11 @@ Phase 1 = **身份 + 最小持久化 CRUD**。这是 2026-11-11 扩展后的口�
 | 阶段 | 目标 | 状态（截至本快照） |
 |------|------|--------------------|
 | Phase 0 | 文档体系 + 基础环境 | Logto、RAGFlow 均已部署并连通实测；环境部分可视为完成 |
-| Phase 1 | 身份 + 最小持久化 CRUD | 代码完成；**浏览器内完整登录未人工验证**（见第 7 节） |
+| Phase 1 | 身份 + 最小持久化 CRUD | 已完成；真实登录用测试账号端到端验证（2026-11-11） |
 | Phase 2 | RAGFlow 内容底座 | 上传 / 替换 / meta 已打通；outbox 投递、解析轮询、检索、下载均已实现并端到端实测 |
 | Phase 3 | LightRAG 知识图谱 | 主路径完成：本机部署、适配器、`graph-service`、5 条接口与 `/graph` 页；单 workspace 限制待解决 |
 | Phase 4 | 核心业务（资产 + 工作流） | 元数据、工作流、内容上传、同步投递与检索前端均已实现 |
-| Phase 5 | 联调与打磨 | 主路径完成；剩 Logto 真实登录验收与失败路径实测 |
+| Phase 5 | 联调与打磨 | 主路径完成；剩失败路径实测与打磨 |
 
 > **文档同步现状**：`02_PHASES.md` 已按本轮实测更新（2026-11-11），与 `04_INTEGRATION.md` 一致；`01_ARCHITECTURE.md` 的 Phase 3 实现状态待同步。
 
@@ -201,6 +201,12 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 28 | 图谱问答返回了答案，但 `references` 为空 | 测试文档的 `file_path` 是不带 `pakp:obj:` 前缀的 `smoke-design-tokens.txt`，被归属过滤器丢弃 | 不改过滤规则：只有本系统写入的文档才映射回业务对象；用真实对象同步的数据复测 | 来源标识在写入时就带上，读取侧只认自己的前缀；测试数据也要走同一入口 |
 | 29 | 生产模式 `next start` 打开页面返回 307，看起来像路由坏了 | `.env.local` 是 `AUTH_MODE=logto`，未登录访问受保护页会跳转登录 | 冒烟时用进程环境变量覆盖 `AUTH_MODE=mock` 启动；不要改 `.env.local` 以免影响登录联调 | 区分「配置导致的预期跳转」与「路由错误」；先看响应头 `Location` |
 | 30 | 调 `/api/graph/sync` 返回 `candidates: 0`，以为同步逻辑失效 | 生产模式启动时 `DATABASE_PATH` 未设置，用的是空的 `data/app.db`；开发数据在 `data/dev.db` | 确认服务连的库与预期一致后再判断；这不是代码缺陷 | 冒烟前核对 `DATABASE_PATH`；把「候选为 0」与「同步失败」分开表述 |
+| 31 | Logto 登录回调 500：`callback_uri_verification.redirect_uri_mismatched`，"The callback URI mismatches the redirect URI." | `@logto/next` 的 `handleSignIn(config, searchParams)` 拿到 `URLSearchParams` 时会按 `${baseUrl}/callback` **自行拼**回调地址，和登记 / 实际路由 `/api/logto/sign-in-callback` 不一致 | 回调路由改为传完整 URL：`handleSignIn(createLogtoConfig(), new URL(request.url))`；实测换码 307 → `/workspace 200` | SDK 的「助手函数」要读源码确认它替你拼了什么；回调地址以控制台登记值为准，并用假 code 复测错误是否变成预期的 `sign_in_session.not_found` |
+| 32 | Logto 注册 / 改密提交时 `POST /api/experience/profile` 500，容器日志 `getaddrinfo EAI_AGAIN api.pwnedpasswords.com` | Logto 默认做弱密码泄露检查，本机无外网 DNS 时直接失败 | compose 的 logto 服务加 `ENABLE_PWNED_PASSWORD_API: "false"` 并 `docker compose up -d` 重建容器 | 自托管服务默认会回调外网；无外网环境先查容器日志的 DNS 错误，再决定关哪个能力 |
+| 33 | 用后台 UI 自动化在 ego/Chrome 里点导航，地址栏与标题都变了，页面内容却是上一页、刷新后空白 | Chromium 对**被遮挡的后台窗口**冻结渲染；渲染器没提交新导航、可访问性树为空 | 改用无头 Chromium（`chrome-headless-shell` + CDP）跑完整登录与页面断言；前台窗口完全不受影响 | 后台自动化只用于「能用 UIA 语义操作」的控件；要断言渲染结果，用无头浏览器或真实前台，不要靠后台截图判断页面状态 |
+| 34 | 新增的 `scripts\*.ps1` 一运行就报「字符串缺少终止符」等解析错误 | Windows PowerShell 5.1 把无 BOM 的 UTF-8 当 ANSI 读，中文字符串被截断 | 用 Node 在文件头写入 `U+FEFF` 后另存为带 BOM 的 UTF-8；`-Check` 复测正常 | 含中文的 `.ps1` 显式存为带 BOM 的 UTF-8，或改用 `pwsh`；编码问题先看字节头，不先怀疑语法 |
+| 35 | `schtasks /create` 注册开机自启返回「拒绝访问」 | 注册计划任务需要管理员权限 | 改为在当前用户「启动」文件夹放快捷方式（`scripts/install-autostart.ps1`），免提权，`-Remove` 可撤销 | 非提权场景优先用启动文件夹；确需系统级任务时再提权 |
+| 36 | 冒烟脚本报告「创建资产失败」，但数据库里对象已建成 | 断言读 `body.data.id`，接口实际返回顶层 `id` | 改为 `body.id ?? body.data.id`，复跑 9 项全过 | 冒烟失败先打印并核对响应体结构，再怀疑业务逻辑 |
 
 **通用预防**（比单条修复更重要）：
 
@@ -235,6 +241,28 @@ curl -s http://localhost:3000/api/health
 > 本地 `.env` 当前是 `AUTH_MODE=logto`。要用 mock 身份做接口冒烟，需临时改成 `AUTH_MODE=mock`（`.env.example` 的默认值就是 `mock`），完成后再改回，避免影响登录联调。
 >
 > 冒烟前先确认端口归属：`netstat -ano \| findstr :3000`。残留的 `next start` 子进程会占住端口，让请求打到旧代码上（表现为莫名其妙的 405），见第 4 节第 13 条。
+
+**本机依赖一键拉起（幂等）**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1 -Check   # 只检查
+powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1         # 拉起 Logto / RAGFlow / LightRAG + embedding
+```
+
+- 开机自启：`powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1` 在当前用户的「启动」文件夹创建 `PAKP Autostart.lnk`（无需管理员；`-Remove` 撤销）。`schtasks` 方式需要提权，未采用。
+- `autostart.ps1` 只负责拉起，不轮询健康；脚本末尾会打印各服务端口状态，全部就绪时退出码 0。
+
+### 5.2.1 真实 Logto 登录冒烟（无头浏览器，不打断前台）
+
+后台窗口里的 Chromium 会冻结渲染，靠截图 / 可访问性树判断页面状态不可靠（第 4 节第 33 条）。用本机已有的 `chrome-headless-shell` + CDP 跑完整流程，脚本放临时目录，不写进仓库：
+
+1. 启动：`chrome-headless-shell --headless=new --remote-debugging-port=9333 --user-data-dir=<临时目录>`
+2. `PUT http://127.0.0.1:9333/json/new?about:blank` 拿页面 WS，`Runtime.evaluate` 驱动。
+3. 打开 `/api/logto/sign-in`，等 `location.host === 'localhost:3001'`；用原生 setter 写 `input[name=identifier]` / `input[type=password]`，点 `button[type=submit]`。
+4. 等回到 `localhost:3000`，断言 `/workspace` 显示账号名；依次访问 `/search`、`/graph`、`/workspace` 并断言 `document.body.innerText` 非空。
+5. 同会话内 `fetch('/api/objects', {method:'POST'})` 建一条资产，再打开 `/workspace/{id}` 断言标题出现；另测非法请求体 400、匿名请求 401。
+
+最近一次结果（2026-11-11）：9 项全过（登录、工作区、检索、图谱、详情、身份、400、401、创建 201）。测试账号 `pakp_test`（Logto `sub` `7vjekboa76zu`），验证完可在 Logto 控制台删除。完整操作步骤、断言表与排障过程见 [08_RUN_LOG.md](08_RUN_LOG.md)。
 
 ### 5.3 HTTP 冒烟（`AUTH_MODE=mock`，无需 Cookie）
 
@@ -340,9 +368,9 @@ curl -s http://127.0.0.1:9381/v1/models
 
 | 项 | 影响 | 需要谁 | 现状 |
 |----|------|--------|------|
-| Logto 浏览器内完整登录 | Phase 1 验收 AUTH-02 / 04 / 06 / 07 无法确认；`ownerSub` 未与真实 Logto 用户对齐 | 用户本人登录一次 | `GET /api/logto/sign-in` 已验证 307 且回调地址被 Logto 接受；换码与进 `/workspace` **未验证**。步骤见 `04_INTEGRATION.md`「待人工完成」 |
+| 本人账号的一次真实登录 | 确认 `JCzero001` 的 `sub`（`gdv8t04dw4ca`）能写入业务库 | 用户本人 | 登录链路已用测试账号 `pakp_test` 完整验证；本人账号只需按同样方式点一次登录即可 |
 | 审查机器人 provider 401 | 后续提交没有独立复审，P1 之后的回归风险靠自测兜底 | 恢复审查通道 | 本轮仍不可用；不影响已提交代码运行 |
-| LightRAG 单 workspace | `/api/graph/*` 的实体与答案正文不按用户隔离 | 多用户前改造部署 | 图 / 问答路由绑定默认 workspace，`LIGHTRAG-WORKSPACE` 头只覆盖部分接口；当前只适用于单用户本机部署 |
+| LightRAG 单 workspace | 实体抽取仍是全局的；读侧已按账号过滤（ADR-011），强隔离未做 | 多账号同时使用图谱前 | 标签 / 邻域 / 进度 / 问答引用已按 `file_path` 过滤；同事实体仍在 LightRAG 内部合并 |
 
 ### 7.2 待验证 / 未完成
 
@@ -351,9 +379,9 @@ curl -s http://127.0.0.1:9381/v1/models
 - **图谱同步是手动的**：没有定时同步，也没有对象变更后自动入图；单轮最多 50 个对象。长期运行需要补自动同步与失败重试。
 - **图谱抽取质量未评估**：7B 模型会把「#」等符号当实体、关系描述偶有格式告警；换更强模型后需在真实语料上复评，当前图谱不作为质量基线。
 - **CPU 很慢**：118 字文档抽取约 3.8 分钟、`mix` 问答约 94 秒；长文档的等待时间未测，生产使用需评估 GPU 或云模型。
-- **真实 Logto 下的前端冒烟未做**：`/search`、`/workspace/{id}`、`/graph` 均在 `AUTH_MODE=mock` 下实测。
-- **生产构建已复跑**：Phase 3 结束时 `next build` 与 `next start`（mock 身份）通过；`MIGRATIONS_FOLDER` 指向仓库 `drizzle/` 的部署方式仍需在目标环境确认。
-- **LightRAG / embedding 服务开机自启未配置**：当前靠手动或 `infra/lightrag/start.ps1` 启动。
+- **真实 Logto 下的前端冒烟已完成**（2026-11-11）：无头浏览器走通登录 → `/workspace`、`/search`、`/graph`、`/workspace/{id}`，创建 201、非法请求 400、匿名 401。测试账号 `pakp_test` 可在 Logto 控制台删除。
+- **生产构建已复跑**：`next build` 通过；`next start`（3100 端口，`AUTH_MODE=logto`）实测 `/api/health 200`、`/ 200`、未登录 `/graph 307 → /`、`/api/logto/sign-in 307` 到 Logto。`MIGRATIONS_FOLDER` 指向仓库 `drizzle/` 的跨目录部署仍需在目标机器确认。
+- **服务开机自启已配置**：`scripts\autostart.ps1` + 「启动」文件夹快捷方式；Logto / RAGFlow / LightRAG / embedding 四项开机拉起，Ollama 由现有自启项负责。
 - **验收标准与实现的端点名不一致**：产品验收标准使用 `/api/assets`、`/api/works`、`/api/auth/callback`、`/api/auth/sign-out`；实现是 `/api/objects` 与 `/api/logto/*`。验收前必须统一口径，否则「按标准测」会全部对不上。
 
 ---

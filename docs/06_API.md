@@ -1039,7 +1039,7 @@ curl -s -D headers.txt -o downloaded.bin \
 
 前端入口：首页在 `AUTH_MODE=logto` 时显示「登录」按钮（`/api/logto/sign-in`），工作台侧栏显示「退出」（`/api/logto/sign-out`）；`mock` / `disabled` 下两个入口都不渲染。
 
-> 浏览器内完整登录（换码并进入 `/workspace`）**尚未人工验证**，见 `07_PLAYBOOK.md` 第 7 节。
+> 浏览器内完整登录（换码并进入 `/workspace`）已于 2026-11-11 用测试账号 `pakp_test` 端到端验证；操作过程见 [08_RUN_LOG.md](08_RUN_LOG.md)。
 
 ---
 

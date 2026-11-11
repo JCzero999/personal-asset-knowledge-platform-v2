@@ -14,7 +14,7 @@
 ## Logto
 
 - 部署方式：Docker 自托管（ADR-003），编排文件 `infra/logto/docker-compose.yml`
-- 当前状态：容器已启动并通过连通性验证（2026-11-11 实测）；管理员账号已创建，应用已配置，应用侧已接入（客户端流程待人工登录验证）
+- 当前状态：容器已启动并通过连通性验证（2026-11-11 实测）；管理员账号已创建，应用已配置，应用侧已接入并完成真实账号的完整登录 / 回调换码实测（2026-11-11）
 
 | 字段 | 实测值 |
 |---|---|
@@ -32,11 +32,14 @@
 | Next.js 接入方式 | `@logto/next` 4.2.11 的 server-actions：`signIn` / `handleSignIn` / `getLogtoContext` / `signOut` |
 | 应用侧路由 | `GET /api/logto/sign-in`（发起登录）、`GET /api/logto/sign-in-callback`（换码后进 `/workspace`）、`GET /api/logto/sign-out`（清会话并回首页） |
 | 应用侧环境变量名 | `AUTH_MODE=logto`、`APP_URL`、`LOGTO_ENDPOINT`、`LOGTO_APP_ID`、`LOGTO_APP_SECRET`、`LOGTO_COOKIE_SECRET`；真实值只写 `.env.local`（已 gitignore），本文档不记录 |
-| 登录 / 注册 / 会话验证结果 | `GET /api/logto/sign-in` → 307，`redirect_uri` 为已保存的回调地址；该 authorize URL 被 Logto 接受（303 → `/unknown-session`，非 `invalid_redirect_uri`）。浏览器内完整登录与回调换码待人工完成一次后补记 |
+| 登录 / 注册 / 会话验证结果 | 2026-11-11 实测（无头 Chromium + 真实 Logto）：`/api/logto/sign-in` → 302 到 `http://localhost:3001/sign-in`；填账号密码后 → `localhost:3000/api/logto/sign-in-callback?code=…` → 307 → `GET /workspace 200`，页面显示「晚上好，pakp_test」，`/workspace`、`/workspace/[id]`、`/search`、`/graph` 均 200 且内容渲染；匿名访问 `/api/objects` 返回 401。注册链路（用户名 → 设置密码 → submit）同样走通 |
+| 账号与 ownerSub | 测试账号 `pakp_test`，Logto User ID（`sub`）`7vjekboa76zu`，对应 SQLite `objects.owner_sub`；本人账号 `JCzero001`，Logto User ID `gdv8t04dw4ca`（未在本轮做登录实测） |
+| 回调换码的已知坑 | `@logto/next` 的 `handleSignIn(config, searchParams)` 会按 `${baseUrl}/callback` 自行拼回调地址，与登记的回调路径不一致时报 `callback_uri_verification.redirect_uri_mismatched`；必须传完整回调 URL（`new URL(request.url)`），见 `src/app/api/logto/sign-in-callback/route.ts` |
+| 注册 / 改密依赖外网 | 服务端默认会用 `api.pwnedpasswords.com` 校验弱密码；本机无外网 DNS 时触发 `EAI_AGAIN` 并让 `POST /api/experience/profile` 返回 500。compose 已设 `ENABLE_PWNED_PASSWORD_API: "false"` |
 
 **部署要点（实测）**：镜像只 `EXPOSE 3001`，但进程同时监听 3002（`ADMIN_PORT` 默认值）；控制台挂在 `ADMIN_ENDPOINT` 的 `/console` 路径下。默认 entrypoint 只跑 `npm start`，而启动时会校验数据库已 seed 且业务表已启用 RLS，因此 compose 中把入口覆盖为 `npm run cli db seed -- --swe && npm start`，`--swe` 保证已初始化时跳过、可重复执行。
 
-**待人工完成**：浏览器打开 `http://localhost:3000`，点「登录」用 Logto 账号完成一次登录；成功后 `requireSession()` 应放行 `/workspace`，记录写入的 `ownerSub` 为 Logto 用户 `sub`。
+**已完成的真实验证**：`AUTH_MODE=logto` 下用测试账号走通「发起登录 → Logto 登录页 → 回调换码 → `/workspace`」，会话可用；`ownerSub` 取自 Logto `sub`。测试账号仅用于验证，可由管理员在 Logto 控制台删除。
 
 ## RAGFlow
 
@@ -145,7 +148,8 @@
 ### 已知行为与限制
 
 - **子图按有向边展开**：实测 `#2B6CB0 → 品牌蓝` 存在边时，查 `#2B6CB0` 能返回两者，查 `品牌蓝` 返回空；UI 以入边实体为中心时会显示「没有邻居」。
-- **单 workspace**：图与问答路由在服务端绑定默认 `rag` 实例，`LIGHTRAG-WORKSPACE` 头只在部分接口（如 `/health`）生效，无法给图谱 / 问答做按用户隔离。当前定位为**单用户本机部署**；开放多用户前必须拆分实例或工作目录。
+- **单 workspace**：图与问答路由在服务端绑定默认 `rag` 实例，`LIGHTRAG-WORKSPACE` 头只在部分接口（如 `/health`）生效，无法给图谱 / 问答做按用户隔离。业务层改为**读侧过滤**（ADR-011）：标签列表、实体邻域、构图进度只保留 `properties.file_path` 能映射到当前账号对象（`pakp:obj:{objectId}:{hash}`）的节点 / 边 / 文档；问答若引用不到本账号文档则返回空答复。实测（2026-11-11）：第二个账号 0 条内容时 `/graph` 显示 0 个实体，此前会看到他人（已删除对象遗留）的 9 个实体。
+- **抽取仍是全局的**：同事实体在 LightRAG 内部按名称合并，描述可能混合多个账号的原文；开放多用户前仍需拆分实例或工作目录。
 - **引用过滤**：业务层只把 `pakp:obj:` 前缀且属于当前用户的引用展示为来源对象；未带前缀的图谱文档（如手工冒烟文档）不会出现在来源列表，但仍可能影响答案文本。
 - **速度**：CPU 下 118 字文本约 3.8 分钟完成抽取、问答约 94 秒；文档越长越慢。`POST /api/graph/sync` 只负责入库，抽取在 LightRAG 后台继续，页面按 15 秒轮询进度。
 - **抽取质量**：`deepseek-r1:7b` 会把 `#` 当成实体，关系描述偶发格式告警；当前结果可用于连通性与交互验收，不作为质量基线。
