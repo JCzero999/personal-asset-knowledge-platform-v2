@@ -1,0 +1,3 @@
+# 任务配置文件（tasks.yaml）
+# 当前项目中的 Task 通过 @task 装饰器在 crew.py 中直接定义，
+# 本文件保留为空以兼容 CrewAI @CrewBase 的自动加载机制。
