@@ -48,6 +48,21 @@ export const objects = sqliteTable(
       "objects_external_not_practiced",
       sql`NOT (library = 'external' AND status = 'practiced')`,
     ),
+    // 取值域：应用层已收敛，这里钉死，避免绕过服务层写入脏值。
+    check(
+      "objects_status_check",
+      sql`status IS NULL OR status IN ('draft', 'finished', 'published', 'practiced')`,
+    ),
+    check(
+      "objects_format_check",
+      sql`format IS NULL OR format IN ('article', 'script', 'course', 'live', 'consult', 'flomo')`,
+    ),
+    // 资产不带作品字段；作品必须有形态。
+    check(
+      "objects_asset_has_no_work_fields",
+      sql`type = 'work' OR (format IS NULL AND source_note IS NULL)`,
+    ),
+    check("objects_work_requires_format", sql`type = 'asset' OR format IS NOT NULL`),
     index("objects_type_status_idx").on(table.type, table.status),
     index("objects_library_idx").on(table.library),
     index("objects_updated_at_idx").on(table.updatedAt),
