@@ -2,7 +2,7 @@
 
 > **读者**：接手本项目的开发者 / AI、需要评估进度的协作者。
 > **写法**：只记录仓库里能核实的事实（提交、文件、测试、实测端口）。无法核实的标「未验证」，不写规划口吻的完成状态。
-> **快照时间**：2026-11-11 18:58（Asia/Shanghai），HEAD `2e7f70a`，分支 `master`；Phase 3（LightRAG）改动仍在工作区、尚未提交。测试基线 **19 个文件 216 项**（typecheck / lint / test / build 均在本轮 Phase 3 结束时复跑通过）。
+> **快照时间**：2026-11-11 18:58（Asia/Shanghai），HEAD `2e7f70a` 之后新增 Phase 3 四个提交（`c9ea9a0` ~ `d945a83`），分支 `master`。测试基线 **19 个文件 216 项**（typecheck / lint / test / build 均在本轮 Phase 3 结束时复跑通过）。
 > **与其他文档的关系**：阶段定义以 [02_PHASES.md](02_PHASES.md) 为准，决策以 [03_DECISIONS.md](03_DECISIONS.md) 为准，接口以 [06_API.md](06_API.md) 为准。本文件不重复契约，只讲「怎么做的、踩过什么、怎么验证」。
 
 ---
@@ -152,15 +152,18 @@ route handler  →  services  →  ports  ←  repositories  →  db
 
 **本快照的实测结果（2026-11-11 18:58，工作区）**：`npm run typecheck`、`npm run lint`、`npm test`（19 个文件 216 项）与 `npm run build` 全部通过；Phase 3 的 UI 与接口另用生产构建 + mock 身份做了 HTTP / 浏览器冒烟。
 
-### 3.1 工作区未提交内容
+### 3.1 Phase 3 提交切分
 
-18:58 时工作区如下，均为 Phase 3（LightRAG 知识图谱）：
+Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态：
 
-- 已修改：`.env.example`、`.gitignore`（忽略 `infra/lightrag` 的 venv / 模型 / 数据 / `.env`）、`docs/02~06`、`eslint.config.mjs`（忽略嵌套 `.venv`）、`src/app/globals.css`、`src/components/app-sidebar.tsx`、`src/server/adapters/ragflow/{client,index}.ts`（新增分块原文读取）
-- 新增：`infra/lightrag/`（部署与启动脚本，敏感文件已忽略）、`src/server/adapters/lightrag/`、`src/server/services/graph-service.ts`、`src/app/api/graph/`（5 条路由）、`src/app/graph/`、`src/components/graph-explorer.tsx`、`src/lib/graph-{layout,labels}.ts`、`tests/lib/graph-{layout,labels}.test.ts`
-- 本地运行生成、未纳入版本控制：`infra/lightrag/.venv`、`models`、`data`、`.env`；根目录 `data/dev.db`
+| 提交 | 内容 |
+|------|------|
+| `c9ea9a0` | LightRAG 基础设施（`infra/lightrag/`）、适配器、RAGFlow 分块读取、ADR-010、忽略规则 |
+| `8432585` | `graph-service` 与 5 条 `/api/graph/*` 接口 |
+| `ec6a48f` | `/graph` 页、`GraphExplorer`、侧栏入口、样式、布局与标签纯函数及单测 |
+| `d945a83` | 01/02/04/05/06/07 文档与实测数据 |
 
-提交前以 `git status` 为准；Phase 3 计划按「基础设施 + 适配器 / 服务 + 接口 / 前端 / 文档」拆成四个提交。
+本地运行生成、未纳入版本控制的仍是 `infra/lightrag/.venv`、`models`、`data`、`.env` 与根目录 `data/` 下的 SQLite 文件。
 
 ---
 
