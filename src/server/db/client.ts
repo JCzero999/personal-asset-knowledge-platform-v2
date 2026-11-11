@@ -1,7 +1,7 @@
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import * as schema from "./schema";
@@ -24,7 +24,14 @@ export interface DatabaseHandle {
   close: () => void;
 }
 
-const MIGRATIONS_FOLDER = path.resolve(process.cwd(), "drizzle");
+/**
+ * 迁移目录默认跟随进程工作目录，但允许用 MIGRATIONS_FOLDER 覆盖：
+ * 以 `next start` 从其他目录启动时，cwd/drizzle 可能不存在。
+ */
+function defaultMigrationsFolder(): string {
+  const configured = process.env.MIGRATIONS_FOLDER?.trim();
+  return path.resolve(configured || path.resolve(process.cwd(), "drizzle"));
+}
 
 export interface OpenDatabaseOptions {
   /** 文件路径，或 `:memory:`。 */
@@ -37,10 +44,16 @@ export interface OpenDatabaseOptions {
 export function openDatabase({
   file,
   migrate: shouldMigrate = true,
-  migrationsFolder = MIGRATIONS_FOLDER,
+  migrationsFolder = defaultMigrationsFolder(),
 }: OpenDatabaseOptions): DatabaseHandle {
   if (file !== ":memory:") {
     mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+  }
+
+  if (shouldMigrate && !existsSync(path.join(migrationsFolder, "meta", "_journal.json"))) {
+    throw new Error(
+      `找不到迁移目录：${migrationsFolder}（可用 MIGRATIONS_FOLDER 指定仓库内的 drizzle 目录）`,
+    );
   }
 
   const sqlite = new Database(file);

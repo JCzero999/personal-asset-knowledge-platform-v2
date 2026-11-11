@@ -140,6 +140,8 @@ export const libraryEvents = sqliteTable(
   (table) => [
     check("library_events_from_check", sql`from_library in ('internal', 'external')`),
     check("library_events_to_check", sql`to_library in ('internal', 'external')`),
+    // 迁移记录必须真正跨库，同库记录没有审计意义。
+    check("library_events_cross_check", sql`from_library <> to_library`),
     index("library_events_object_idx").on(table.objectId, table.createdAt),
   ],
 );

@@ -89,6 +89,34 @@ describe("openDatabase (file)", () => {
         .run(at, at),
     ).toThrow(/CHECK constraint failed/i);
 
+    handle.sqlite
+      .prepare(
+        `insert into objects
+           (id, type, title, library, source, origin, priority, owner_sub,
+            created_at, updated_at)
+         values ('obj_1', 'asset', '资产', 'external', 'handwritten', 'self', 'medium', 'u', ?, ?)`,
+      )
+      .run(at, at);
+
+    expect(() =>
+      handle.sqlite
+        .prepare(
+          `insert into library_events
+             (id, object_id, from_library, to_library, reason, actor_sub, created_at)
+           values ('evt_same', 'obj_1', 'internal', 'internal', 'r', 'u', ?)`,
+        )
+        .run(at),
+    ).toThrow(/CHECK constraint failed/i);
+
     handle.close();
+  });
+
+  it("迁移目录不存在时给出可读错误", () => {
+    expect(() =>
+      openDatabase({
+        file: ":memory:",
+        migrationsFolder: path.join(dir, "missing-migrations"),
+      }),
+    ).toThrow(/找不到迁移目录/);
   });
 });

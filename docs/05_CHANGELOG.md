@@ -117,3 +117,9 @@
 - 新增 `GET /api/objects/{id}`：按身份返回单个对象，他人对象与不存在的对象统一 404
 - 新增 `GET /api/objects/{id}/library`：返回该对象的跨库迁移记录（时间正序），迁移审计从「只写不可读」变为可查询
 - 验证：typecheck、lint、8 个测试文件 89 项用例通过；mock 身份实测详情 200、迁移 200、审计 200、未知 id 404（首次冒烟误命中 3100 端口上残留的旧生产服务，停止后重测）
+
+## 2026-11-11（数据层加固：迁移目录与审计约束）
+
+- 迁移目录改为运行时解析，并支持 `MIGRATIONS_FOLDER` 覆盖：以 `next start` 从其他工作目录启动时不再依赖「cwd 恰好是仓库根」；目录里缺 `meta/_journal.json` 时直接给出可读错误，而不是让 drizzle 抛出晦涩异常
+- 迁移 `drizzle/0004_library_events_cross_check.sql`：`library_events` 增加 `from_library <> to_library` CHECK，同库迁移记录在数据库层被拒绝（服务层此前已拒绝）
+- 验证：typecheck、lint、8 个测试文件 90 项用例通过（新增迁移目录缺失、同库审计记录两项断言）
