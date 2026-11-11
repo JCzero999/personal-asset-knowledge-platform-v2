@@ -353,6 +353,14 @@ export class SqliteObjectRepository implements ObjectRepository {
       throw new ValidationError("资产没有作品状态", { id: input.objectId });
     }
 
+    // 归档是「退出工作台」的明确意图，先取消归档再推进，避免归档内容被悄悄改动。
+    if (current.archivedAt) {
+      throw new ConflictError("已归档的作品不能推进状态，请先取消归档", {
+        id: input.objectId,
+        archivedAt: current.archivedAt,
+      });
+    }
+
     // 状态机在这里是唯一的写入口：非法迁移与「外库直接 practiced」都先于 SQL 被拒绝。
     assertTransition(current.status, input.to, { library: current.library });
 

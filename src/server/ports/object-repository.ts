@@ -119,7 +119,8 @@ export interface ObjectRepository {
 
   /**
    * 作品状态迁移：按 `src/domain/workflow.ts` 的显式迁移表校验，非法迁移抛
-   * INVALID_TRANSITION / EXTERNAL_LIBRARY_PRACTICED；资产没有状态，直接拒绝。
+   * INVALID_TRANSITION / EXTERNAL_LIBRARY_PRACTICED；资产没有状态、已归档作品
+   * 不能推进状态（抛 CONFLICT）。
    */
   changeStatus(input: ChangeStatusInput): Promise<BusinessObject>;
 

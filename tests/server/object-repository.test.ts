@@ -213,6 +213,19 @@ describe("作品状态迁移", () => {
       repo.changeStatus({ objectId: work.id, to: "published", expectedRevision: 1 }),
     ).rejects.toBeInstanceOf(ConflictError);
   });
+
+  it("已归档作品不能推进状态，取消归档后恢复", async () => {
+    const work = await repo.create({ ...workInput, library: "internal" });
+    await repo.archive(work.id);
+
+    await expect(
+      repo.changeStatus({ objectId: work.id, to: "finished" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    await repo.unarchive(work.id);
+    const finished = await repo.changeStatus({ objectId: work.id, to: "finished" });
+    expect(finished.status).toBe("finished");
+  });
 });
 
 describe("library 迁移与审计", () => {
