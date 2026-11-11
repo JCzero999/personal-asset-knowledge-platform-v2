@@ -7,6 +7,7 @@
 
 export const errorCodes = [
   "VALIDATION_FAILED",
+  "UNAUTHORIZED",
   "NOT_FOUND",
   "CONFLICT",
   "INVALID_TRANSITION",

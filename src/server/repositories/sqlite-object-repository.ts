@@ -196,6 +196,10 @@ export class SqliteObjectRepository implements ObjectRepository {
       conditions.push(eq(objects.type, query.type));
     }
 
+    if (query.ownerSub) {
+      conditions.push(eq(objects.ownerSub, query.ownerSub));
+    }
+
     if (query.library) {
       conditions.push(eq(objects.library, query.library));
     }

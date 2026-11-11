@@ -17,6 +17,7 @@ export interface ErrorEnvelope {
 
 const statusByCode: Record<ErrorCode, number> = {
   VALIDATION_FAILED: 400,
+  UNAUTHORIZED: 401,
   INVALID_TRANSITION: 409,
   EXTERNAL_LIBRARY_PRACTICED: 409,
   NOT_FOUND: 404,

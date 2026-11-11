@@ -1065,3 +1065,65 @@ button:disabled {
   .connection-list { display: block; }
   .empty-state { text-align: left; }
 }
+
+/* 对象列表（工作台「最近内容」，数据来自业务库） */
+.object-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.object-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-2);
+  border-radius: var(--r-md);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.object-row:last-child { border-bottom: 0; }
+.object-row:hover { background: var(--surface-2); }
+
+.object-type {
+  flex: none;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0.04em;
+}
+
+.object-type.asset { background: var(--green-050); color: var(--green-700); }
+.object-type.work { background: var(--info-bg); color: var(--info-fg); }
+
+.object-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.object-main strong {
+  font-size: var(--fs-14);
+  font-weight: var(--fw-medium);
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.object-main small {
+  font-size: var(--fs-12);
+  color: var(--text-3);
+}
+
+.object-date {
+  flex: none;
+  font-size: var(--fs-12);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}

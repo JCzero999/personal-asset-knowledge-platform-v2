@@ -54,6 +54,8 @@ export interface UpdateObjectInput {
 }
 
 export interface ListObjectsQuery {
+  /** 只返回该用户的对象；单用户阶段由调用方固定传入当前会话的 sub。 */
+  ownerSub?: string;
   type?: ObjectType;
   library?: Library;
   status?: WorkStatus;
