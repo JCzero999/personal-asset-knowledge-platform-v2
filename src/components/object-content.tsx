@@ -1,0 +1,274 @@
+"use client";
+
+import { useEffect, useId, useRef, useState, useTransition, type ChangeEvent } from "react";
+import { useRouter } from "next/navigation";
+
+import type { ContentRef, ContentRole } from "@/domain/content-ref";
+import { apiErrorMessage, apiRequest } from "@/lib/api-client";
+import {
+  formatDateTime,
+  formatFileSize,
+  isParsePending,
+  MAX_UPLOAD_BYTES,
+  parseStatusLabels,
+  parseStatusTones,
+} from "@/lib/content-format";
+import { contentRoleLabels } from "@/lib/object-labels";
+import { Icon } from "./icon";
+
+/**
+ * 对象的内容区：列出内容引用、下载原文、上传主内容 / 附件。
+ *
+ * 上传成功后只刷新服务端数据；解析状态停在 pending / running 时
+ * 每 5 秒自动 `router.refresh()`，让「解析中」最终能变成「已解析」。
+ */
+export function ObjectContent({
+  objectId,
+  refs,
+}: {
+  objectId: string;
+  refs: ContentRef[];
+}) {
+  const router = useRouter();
+  const idPrefix = useId();
+  const primaryInputRef = useRef<HTMLInputElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+
+  const [uploading, setUploading] = useState<ContentRole | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [refreshing, startRefresh] = useTransition();
+
+  const hasPrimary = refs.some((ref) => ref.role === "primary");
+  const parsing = refs.some((ref) => isParsePending(ref.parseStatus));
+  const busy = uploading !== null;
+
+  useEffect(() => {
+    if (!parsing) return;
+
+    let ticks = 0;
+    const timer = window.setInterval(() => {
+      ticks += 1;
+      if (ticks > 60) {
+        window.clearInterval(timer);
+        return;
+      }
+      router.refresh();
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, [parsing, router]);
+
+  useEffect(() => {
+    if (!toast) return;
+
+    const timer = window.setTimeout(() => setToast(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  async function upload(file: File, role: ContentRole) {
+    if (busy) return;
+
+    if (file.size === 0) {
+      setError("文件是空的，换一个再试。");
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(`文件不能超过 ${MAX_UPLOAD_BYTES / (1024 * 1024)} MB。`);
+      return;
+    }
+
+    setUploading(role);
+    setError(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("role", role);
+
+    try {
+      await apiRequest<ContentRef>(`/api/objects/${objectId}/content`, {
+        method: "POST",
+        body: formData,
+      });
+      setToast(
+        role === "primary"
+          ? "主内容已上传，解析完成后就可以被检索。"
+          : "附件已上传，解析完成后就可以被检索。",
+      );
+      router.refresh();
+    } catch (cause) {
+      setError(apiErrorMessage(cause));
+    } finally {
+      setUploading(null);
+      if (primaryInputRef.current) primaryInputRef.current.value = "";
+      if (attachmentInputRef.current) attachmentInputRef.current.value = "";
+    }
+  }
+
+  function pick(event: ChangeEvent<HTMLInputElement>, role: ContentRole) {
+    const file = event.target.files?.[0];
+    if (file) void upload(file, role);
+  }
+
+  return (
+    <>
+      <div className="content-toolbar">
+        <p className="content-hint">
+          主内容用于检索，同类型再次上传会替换旧文件；附件会一直挂在这个对象下。
+        </p>
+        <div className="upload-actions">
+          <button
+            className="btn btn-primary"
+            type="button"
+            disabled={busy}
+            onClick={() => primaryInputRef.current?.click()}
+          >
+            {uploading === "primary" ? (
+              <span className="spinner" aria-hidden="true" />
+            ) : (
+              <Icon name="upload" size={16} />
+            )}
+            {uploading === "primary"
+              ? "上传中…"
+              : hasPrimary ? "替换主内容" : "上传主内容"}
+          </button>
+          <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={busy}
+            onClick={() => attachmentInputRef.current?.click()}
+          >
+            {uploading === "attachment" ? (
+              <span className="spinner spinner-dark" aria-hidden="true" />
+            ) : (
+              <Icon name="plus" size={16} />
+            )}
+            {uploading === "attachment" ? "上传中…" : "添加附件"}
+          </button>
+          <button
+            className="btn btn-ghost"
+            type="button"
+            disabled={refreshing}
+            onClick={() => startRefresh(() => router.refresh())}
+          >
+            <Icon name="refresh" size={15} />
+            {refreshing ? "刷新中…" : "刷新状态"}
+          </button>
+        </div>
+
+        <input
+          ref={primaryInputRef}
+          id={`${idPrefix}-primary`}
+          type="file"
+          hidden
+          aria-label="选择主内容文件"
+          onChange={(event) => pick(event, "primary")}
+        />
+        <input
+          ref={attachmentInputRef}
+          id={`${idPrefix}-attachment`}
+          type="file"
+          hidden
+          aria-label="选择附件文件"
+          onChange={(event) => pick(event, "attachment")}
+        />
+      </div>
+
+      {error ? (
+        <div className="form-alert content-alert" role="alert">
+          <Icon name="alert" size={16} />
+          <p>{error}</p>
+        </div>
+      ) : null}
+
+      {parsing ? (
+        <div className="content-notice" role="status">
+          <span className="spinner spinner-dark" aria-hidden="true" />
+          有文件正在解析，页面会每 5 秒自动刷新状态。
+        </div>
+      ) : null}
+
+      {refs.length === 0 ? (
+        <div className="empty-state content-empty">
+          <span className="empty-icon"><Icon name="file" size={26} /></span>
+          <div className="empty-copy">
+            <strong>还没有内容文件</strong>
+            <p>上传主内容后，解析完成就能被检索；附件也会随对象一起保存。</p>
+          </div>
+          <button
+            className="btn btn-primary empty-action"
+            type="button"
+            disabled={busy}
+            onClick={() => primaryInputRef.current?.click()}
+          >
+            上传第一条
+          </button>
+        </div>
+      ) : (
+        <ul className="content-list">
+          {refs.map((ref) => {
+            const tone = parseStatusTones[ref.parseStatus];
+            const pending = isParsePending(ref.parseStatus);
+
+            return (
+              <li className="content-row" key={ref.id}>
+                <span className="content-icon" aria-hidden="true">
+                  <Icon name="file" size={18} />
+                </span>
+
+                <div className="content-main">
+                  <div className="content-name-row">
+                    <strong className="content-name">
+                      {ref.documentName ?? "未命名内容"}
+                    </strong>
+                    <span className={`status-badge ${tone}`}>
+                      {parseStatusLabels[ref.parseStatus]}
+                    </span>
+                    <span className="badge">{contentRoleLabels[ref.role]}</span>
+                  </div>
+
+                  <small className="content-meta">
+                    {formatFileSize(ref.sizeBytes)}
+                    {" · "}
+                    {ref.mime ?? "未知类型"}
+                    {" · 更新于 "}
+                    {formatDateTime(ref.updatedAt)}
+                  </small>
+
+                  {pending ? (
+                    <small className="content-parse-note">
+                      解析完成后这段内容就能被检索，通常只需要几十秒。
+                    </small>
+                  ) : null}
+
+                  {ref.parseError ? (
+                    <p className="content-error">
+                      <Icon name="alert" size={14} />
+                      <span>{ref.parseError}</span>
+                    </p>
+                  ) : null}
+                </div>
+
+                <a
+                  className="btn btn-secondary content-download"
+                  href={`/api/objects/${objectId}/content/${ref.id}`}
+                  aria-label={`下载 ${ref.documentName ?? "内容文件"}`}
+                >
+                  <Icon name="download" size={15} />
+                  下载
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {toast ? (
+        <div className="toast" role="status">
+          <Icon name="check" size={16} />
+          {toast}
+        </div>
+      ) : null}
+    </>
+  );
+}

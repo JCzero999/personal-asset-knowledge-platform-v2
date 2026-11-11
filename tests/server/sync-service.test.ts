@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DomainError, NotFoundError } from "../../src/domain/errors";
 import type { DocumentMetaFields } from "../../src/server/adapters/ragflow";
@@ -83,11 +83,19 @@ beforeAll(() => {
   handle = openDatabase({ file: ":memory:" });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 afterAll(() => {
   handle.close();
 });
 
 beforeEach(() => {
+  // 入队时写入的是系统时钟，认领用的是测试里的 NOW；固定系统时间，
+  // 否则真实时间越过 NOW 后任务会变成「尚未到期」，测试随时间失效。
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(NOW));
   handle.sqlite.exec(`
     DELETE FROM sync_jobs;
     DELETE FROM content_refs;

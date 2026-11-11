@@ -1,4 +1,11 @@
-import type { Library, WorkStatus } from "@/domain/objects";
+import type {
+  Library,
+  ObjectOrigin,
+  ObjectSource,
+  ObjectType,
+  Priority,
+  WorkStatus,
+} from "@/domain/objects";
 
 /** 界面统一使用的中文状态名，服务端组件与客户端组件共用。 */
 export const statusLabels: Record<WorkStatus, string> = {
@@ -12,3 +19,30 @@ export const libraryLabels: Record<Library, string> = {
   internal: "内库",
   external: "外库",
 };
+
+export const objectTypeLabels: Record<ObjectType, string> = {
+  asset: "资产",
+  work: "作品",
+};
+
+export const priorityLabels: Record<Priority, string> = {
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
+export const sourceLabels: Record<ObjectSource, string> = {
+  handwritten: "手写",
+  ai_extracted: "AI 提取",
+};
+
+export const originLabels: Record<ObjectOrigin, string> = {
+  self: "自建",
+  imported: "导入",
+};
+
+export const contentRoleLabels = {
+  primary: "主内容",
+  attachment: "附件",
+} as const;
+

@@ -14,16 +14,11 @@ import {
   type WorkspaceFilters,
 } from "@/lib/workspace-filters";
 import type { Session } from "@/server/ports/session";
+import { AppSidebar } from "./app-sidebar";
 import { CreateObjectButton } from "./create-object-dialog";
 import { Icon, type IconName } from "./icon";
 import { ObjectActions } from "./object-actions";
 import { ObjectFilters } from "./object-filters";
-
-const navigation: Array<{ label: string; icon: IconName; href: string; active?: boolean }> = [
-  { label: "工作台", icon: "grid", href: "/workspace", active: true },
-  { label: "最近内容", icon: "archive", href: "#recent" },
-  { label: "作品进程", icon: "workflow", href: "#track" },
-];
 
 const stages: Array<{
   key: WorkStatus;
@@ -162,52 +157,7 @@ export function WorkspaceShell({
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
-          <span className="brand-copy">
-            <strong>知产工作台</strong>
-            <small>ASSET &amp; KNOWLEDGE</small>
-          </span>
-        </div>
-
-        <nav className="main-nav" aria-label="主导航">
-          <p className="nav-label">工作空间</p>
-          {navigation.map((item) => (
-            <a
-              className={`nav-item${item.active ? " active" : ""}`}
-              href={item.href}
-              key={item.label}
-              aria-current={item.active ? "page" : undefined}
-            >
-              <Icon name={item.icon} />
-              <span>{item.label}</span>
-            </a>
-          ))}
-        </nav>
-
-        <div className="sidebar-bottom">
-          <div className="nav-preview">
-            <p className="nav-label">即将开放</p>
-            <p className="preview-row"><Icon name="search" size={16} /><span>内容检索</span></p>
-            <p className="preview-row"><Icon name="graph" size={16} /><span>知识图谱</span></p>
-          </div>
-          <div className="sidebar-user">
-            <span className="sidebar-avatar" aria-hidden="true">{session.name.slice(0, 1)}</span>
-            <span className="sidebar-user-copy">
-              <strong>{session.name}</strong>
-              <small>本地工作区</small>
-            </span>
-            {signOutHref ? (
-              <a className="sidebar-signout" href={signOutHref}>退出</a>
-            ) : null}
-          </div>
-        </div>
-      </aside>
+      <AppSidebar session={session} active="workspace" signOutHref={signOutHref} />
 
       <main className="workspace" id="overview">
         <header className="workspace-header">
@@ -340,13 +290,13 @@ export function WorkspaceShell({
                       <span className={`object-type-icon ${object.type}`} aria-hidden="true">
                         <Icon name={object.type === "work" ? "workflow" : "archive"} size={18} />
                       </span>
-                      <div className="object-main">
+                      <Link className="object-main" href={`/workspace/${object.id}`}>
                         <strong>{object.title}</strong>
                         <small>
                           {meta}
                           {object.archivedAt ? " · 已归档" : ""}
                         </small>
-                      </div>
+                      </Link>
                       <span className="object-date" title={object.updatedAt.slice(0, 10)}>
                         {formatUpdatedAt(object.updatedAt, now)}
                       </span>

@@ -17,10 +17,12 @@ export async function GET(
   try {
     const { id, refId } = await params;
     const { ref, file } = await downloadObjectContent(getDb(), session.sub, id, refId);
-    const filename = file.filename ?? ref.documentName ?? "content";
+    // RAGFlow 回传的文件名可能只剩扩展名（非 ASCII 被它过滤过），
+    // 本地记录的上传名才是用户认得的那个，优先用它。
+    const filename = ref.documentName ?? file.filename ?? "content";
     const headers = new Headers({
       "Content-Type": file.contentType,
-      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+      "Content-Disposition": contentDisposition(filename),
       "Cache-Control": "private, no-store",
     });
     if (file.contentLength !== null) {
@@ -31,4 +33,18 @@ export async function GET(
   } catch (error) {
     return fromError(error);
   }
+}
+
+/** 同时给出 ASCII 兜底名与 UTF-8 原名，中文文件名在两种浏览器上都能还原。 */
+function contentDisposition(filename: string): string {
+  const safe = filename.replace(/[\r\n"\\]/g, "").trim() || "content";
+  const extension = /\.[A-Za-z0-9]{1,8}$/.exec(safe)?.[0] ?? "";
+  const stem = safe
+    .slice(0, safe.length - extension.length)
+    .replace(/[^\x20-\x7e]/g, "")
+    .replace(/[:*?<>|/]/g, "")
+    .trim();
+  const fallback = `${stem || "download"}${extension}`;
+
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
 }

@@ -11,62 +11,16 @@ import {
   type WorkStatus,
 } from "@/domain/objects";
 import { allowedTransitions } from "@/domain/workflow";
-import { apiErrorField, humanizeMessage, messageForError, type ApiErrorBody } from "@/lib/api-error";
-import { libraryLabels, statusLabels } from "@/lib/object-labels";
+import {
+  apiErrorMessage,
+  apiRequest,
+  jsonBodyInit,
+} from "@/lib/api-client";
+import { libraryLabels, priorityLabels, statusLabels } from "@/lib/object-labels";
 import { Icon } from "./icon";
 
 type DialogMode = "edit" | "library" | "delete";
 
-const priorityLabels: Record<Priority, string> = {
-  low: "低",
-  medium: "中",
-  high: "高",
-};
-
-class ApiFailure extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ApiFailure";
-  }
-}
-
-function jsonInit(body: unknown): RequestInit {
-  return {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  };
-}
-
-/** 统一解析成功数据与错误信封；失败抛出的 message 已经是可以直接展示的中文。 */
-async function request<T>(url: string, init: RequestInit): Promise<T> {
-  let response: Response;
-
-  try {
-    response = await fetch(url, init);
-  } catch {
-    throw new ApiFailure("网络异常，请检查连接后重试。");
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  const data = (await response.json().catch(() => null)) as (ApiErrorBody & T) | null;
-
-  if (!response.ok) {
-    const apiError = data?.error;
-    const field = apiErrorField(data);
-    const message = humanizeMessage(apiError?.message ?? "操作失败，请稍后再试。", field);
-    throw new ApiFailure(messageForError(apiError?.code, message));
-  }
-
-  return data as T;
-}
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof ApiFailure ? cause.message : "网络异常，请检查连接后重试。";
-}
 
 function splitList(value: string): string[] {
   return [
@@ -170,7 +124,7 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
     setError(null);
 
     try {
-      await request(`/api/objects/${object.id}/status`, jsonInit({
+      await apiRequest(`/api/objects/${object.id}/status`, jsonBodyInit({
         to,
         expectedRevision: object.revision,
       }));
@@ -178,7 +132,7 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
       setToast(`已推进到「${statusLabels[to]}」`);
       router.refresh();
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(apiErrorMessage(cause));
     } finally {
       setPending(null);
     }
@@ -191,12 +145,12 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
     setError(null);
 
     try {
-      await request(`/api/objects/${object.id}/archive`, jsonInit({ archived: !archived }));
+      await apiRequest(`/api/objects/${object.id}/archive`, jsonBodyInit({ archived: !archived }));
       setExpanded(false);
       setToast(archived ? "已取消归档" : "已归档");
       router.refresh();
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(apiErrorMessage(cause));
     } finally {
       setPending(null);
     }
@@ -215,7 +169,7 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
     setDialogError(null);
 
     try {
-      await request(`/api/objects/${object.id}`, {
+      await apiRequest(`/api/objects/${object.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -231,7 +185,7 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
       setToast("已保存修改");
       router.refresh();
     } catch (cause) {
-      setDialogError(errorMessage(cause));
+      setDialogError(apiErrorMessage(cause));
     } finally {
       setPending(null);
     }
@@ -250,7 +204,7 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
     setDialogError(null);
 
     try {
-      await request(`/api/objects/${object.id}/library`, jsonInit({
+      await apiRequest(`/api/objects/${object.id}/library`, jsonBodyInit({
         to: targetLibrary,
         reason: reason.trim(),
         expectedRevision: object.revision,
@@ -260,7 +214,7 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
       setToast(`已迁移到${libraryLabels[targetLibrary]}`);
       router.refresh();
     } catch (cause) {
-      setDialogError(errorMessage(cause));
+      setDialogError(apiErrorMessage(cause));
     } finally {
       setPending(null);
     }
@@ -272,11 +226,11 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
     setDialogError(null);
 
     try {
-      await request(`/api/objects/${object.id}`, { method: "DELETE" });
+      await apiRequest(`/api/objects/${object.id}`, { method: "DELETE" });
       setDialogMode(null);
       router.refresh();
     } catch (cause) {
-      setDialogError(errorMessage(cause));
+      setDialogError(apiErrorMessage(cause));
     } finally {
       setPending(null);
     }
