@@ -222,6 +222,25 @@ export class SqliteContentStore implements ContentStore {
     return rows.map(toContentRef);
   }
 
+  async findByDocuments(datasetId: string, documentIds: string[]): Promise<ContentRef[]> {
+    if (documentIds.length === 0) {
+      return [];
+    }
+
+    const rows = await this.db
+      .select()
+      .from(contentRefs)
+      .where(
+        and(
+          eq(contentRefs.datasetId, datasetId),
+          inArray(contentRefs.documentId, documentIds),
+          isNull(contentRefs.deletedAt),
+        ),
+      );
+
+    return rows.map(toContentRef);
+  }
+
   async updateState(
     id: string,
     patch: Partial<

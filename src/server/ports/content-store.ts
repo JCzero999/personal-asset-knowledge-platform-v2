@@ -87,6 +87,9 @@ export interface ContentStore {
   /** 待解析或解析中的引用，供解析轮询使用。 */
   listParsing(limit?: number): Promise<ContentRef[]>;
 
+  /** 按 document_id 批量认回引用（检索结果映射回业务对象）。 */
+  findByDocuments(datasetId: string, documentIds: string[]): Promise<ContentRef[]>;
+
   /** 解析/同步状态回写；`documentId` 可在重传后更新（可变指针）。 */
   updateState(
     id: string,

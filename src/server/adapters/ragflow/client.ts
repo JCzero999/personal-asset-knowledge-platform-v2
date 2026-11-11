@@ -96,6 +96,36 @@ export interface RagflowDownload {
   filename: string | null;
 }
 
+export interface RetrievalInput {
+  question: string;
+  datasetIds: string[];
+  documentIds?: string[];
+  page?: number;
+  pageSize?: number;
+  similarityThreshold?: number;
+  vectorSimilarityWeight?: number;
+  topK?: number;
+  keyword?: boolean;
+  highlight?: boolean;
+}
+
+export interface RagflowChunk {
+  id: string;
+  content: string;
+  highlight: string | null;
+  documentId: string;
+  documentName: string | null;
+  datasetId: string;
+  similarity: number;
+  termSimilarity: number;
+  vectorSimilarity: number;
+}
+
+export interface RagflowRetrievalResult {
+  chunks: RagflowChunk[];
+  total: number;
+}
+
 /** RAGFlow 所有接口的统一响应信封。 */
 interface RagflowEnvelope<T> {
   code: number;
@@ -127,6 +157,23 @@ interface RawDocument {
 
 interface RawDocumentList {
   docs?: RawDocument[];
+  total?: number;
+}
+
+interface RawChunk {
+  id?: string;
+  content?: string;
+  highlight?: string;
+  document_id?: string;
+  document_keyword?: string;
+  dataset_id?: string;
+  similarity?: number;
+  term_similarity?: number;
+  vector_similarity?: number;
+}
+
+interface RawRetrieval {
+  chunks?: RawChunk[];
   total?: number;
 }
 
@@ -295,6 +342,55 @@ export class RagflowClient {
     return {
       documents: data.docs.map((raw) => toDocument(raw, datasetId)),
       total: data.total ?? data.docs.length,
+    };
+  }
+
+  /**
+   * 检索：`POST /api/v1/retrieval`，返回命中的 chunk 及相似度。
+   * 过滤（库别、归属）不在这里做：RAGFlow 只认内容与 meta，业务规则在服务层。
+   */
+  async retrieve(input: RetrievalInput): Promise<RagflowRetrievalResult> {
+    const question = input.question?.trim();
+    if (!question) {
+      throw new ValidationError("question 不能为空");
+    }
+    if (!Array.isArray(input.datasetIds) || input.datasetIds.length === 0) {
+      throw new ValidationError("datasetIds 不能为空");
+    }
+
+    const body: Record<string, unknown> = {
+      question,
+      dataset_ids: input.datasetIds,
+      page: input.page ?? 1,
+      page_size: input.pageSize ?? 10,
+      similarity_threshold: input.similarityThreshold ?? 0.2,
+      vector_similarity_weight: input.vectorSimilarityWeight ?? 0.3,
+      top_k: input.topK ?? 1024,
+      keyword: input.keyword ?? false,
+      highlight: input.highlight ?? true,
+    };
+    if (input.documentIds?.length) {
+      body.document_ids = input.documentIds;
+    }
+
+    const data = await this.request<RawRetrieval>("POST", "/api/v1/retrieval", body);
+    if (!data || !Array.isArray(data.chunks)) {
+      throw unexpectedShape("POST /api/v1/retrieval", data);
+    }
+
+    return {
+      chunks: data.chunks.map((chunk) => ({
+        id: chunk.id ?? "",
+        content: chunk.content ?? "",
+        highlight: chunk.highlight?.trim() || null,
+        documentId: chunk.document_id ?? "",
+        documentName: chunk.document_keyword?.trim() || null,
+        datasetId: chunk.dataset_id ?? "",
+        similarity: chunk.similarity ?? 0,
+        termSimilarity: chunk.term_similarity ?? 0,
+        vectorSimilarity: chunk.vector_similarity ?? 0,
+      })),
+      total: data.total ?? data.chunks.length,
     };
   }
 

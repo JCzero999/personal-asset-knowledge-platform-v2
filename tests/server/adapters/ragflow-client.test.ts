@@ -278,6 +278,77 @@ describe("RagflowClient.downloadDocument", () => {
   });
 });
 
+describe("RagflowClient.retrieve", () => {
+  it("按实测契约 POST /api/v1/retrieval 并解析 chunk 字段", async () => {
+    const { client, fetchMock } = makeClient(
+      jsonResponse({
+        code: 0,
+        data: {
+          total: 1,
+          chunks: [
+            {
+              id: "chunk_1",
+              content: "Copper Lantern",
+              highlight: "<em>Copper</em> Lantern",
+              document_id: "doc_1",
+              document_keyword: "note.txt",
+              dataset_id: "ds_1",
+              similarity: 0.8,
+              term_similarity: 0.5,
+              vector_similarity: 0.7,
+            },
+          ],
+        },
+      }),
+    );
+
+    const result = await client.retrieve({
+      question: "codename",
+      datasetIds: ["ds_1"],
+      pageSize: 5,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/api/v1/retrieval`);
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      question: "codename",
+      dataset_ids: ["ds_1"],
+      page_size: 5,
+      similarity_threshold: 0.2,
+      vector_similarity_weight: 0.3,
+      top_k: 1024,
+      highlight: true,
+    });
+    expect(result.total).toBe(1);
+    expect(result.chunks).toEqual([
+      {
+        id: "chunk_1",
+        content: "Copper Lantern",
+        highlight: "<em>Copper</em> Lantern",
+        documentId: "doc_1",
+        documentName: "note.txt",
+        datasetId: "ds_1",
+        similarity: 0.8,
+        termSimilarity: 0.5,
+        vectorSimilarity: 0.7,
+      },
+    ]);
+  });
+
+  it("空问题或空 dataset 本地拒绝", async () => {
+    const { client, fetchMock } = makeClient(jsonResponse({ code: 0 }));
+
+    await expect(
+      client.retrieve({ question: "  ", datasetIds: ["ds_1"] }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      client.retrieve({ question: "q", datasetIds: [] }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("RagflowClient.deleteDocument", () => {
   it("按 { ids } 批量删除", async () => {
     const { client, fetchMock } = makeClient(jsonResponse({ code: 0 }));
