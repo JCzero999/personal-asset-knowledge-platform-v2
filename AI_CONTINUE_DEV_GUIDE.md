@@ -1,9 +1,9 @@
 # AI 继续开发指导文档（Handoff）
 
 > 本文件供任意编码 Agent / DSH 环境直接阅读并执行。  
-> **生成日期**：2026-11-01  
-> **当前阻塞**：本机 Docker / WSL 未就绪（用户有任务在跑，暂不重启）  
-> **原则**：无 Docker 时只做不依赖容器的工作；有 Docker 后再做 Phase 0 收尾与 Phase 1。
+> **生成日期**：2026-11-01 ｜ **最近同步**：2026-11-11  
+> **当前状态**：**Docker / WSL 已就绪**（2026-11-11 实测：Docker 29.9.2、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版）；Logto 与 RAGFlow **尚未部署、尚未验证**  
+> **原则**：Docker 阻塞已解除，后续工作不是「等 Docker」，而是按 **第 6 节** 的顺序执行。
 
 ---
 
@@ -15,6 +15,8 @@
 2. **每次有意义工作后**按 `docs/prompts/maintain-docs.md` 更新 `02_PHASES.md` 与 `05_CHANGELOG.md`
 3. **禁止编造**未实现的 API / 端口 / 接口细节（写入 `04_INTEGRATION.md` 前必须真实可验证）
 4. **禁止**在未获用户确认时执行破坏性操作（删库、强制推送、覆盖已采纳 ADR）
+
+**当前阻塞**：无。Docker / WSL 已于 2026-11-11 实测就绪，当前无容器运行、端口 3000 / 3001 / 9380 空闲。Phase 0 剩余工作为**拉起并验证 Logto 与 RAGFlow**，直接按 **第 6 节** 顺序执行。
 
 先读完本文件，再读 `docs/00_SCOPE.md` → `03_DECISIONS.md` → `02_PHASES.md` → `01_ARCHITECTURE.md`。
 
@@ -52,13 +54,17 @@
 - [x] 从零创建 Next.js App Router + TypeScript 骨架、Mock UI、`.env.example` 业务占位与 `/api/health`
 - [x] Asset / Work 元数据、`content_ref` 映射、四阶段状态机与 Logto 清单 DRAFT；未连接真实服务
 - [x] lint、TypeScript、单元测试、生产构建与首页 / health HTTP 200 验证
-- [x] 本机检查：Docker 当时不可用；端口 3000 / 3001 / 9380 空闲（以当时验证为准，重新环境后需再查）
+- [x] 本机检查：Docker 当时不可用；端口 3000 / 3001 / 9380 空闲（当时状态，已于 2026-11-11 复查，见 3.2）
+- [x] 仓库纳入 Git 版本控制，基线提交 `ebe32e6`（此前无版本控制）
 
-### 3.2 未完成 / 阻塞
+### 3.2 未完成清单与阻塞状态（截至 2026-11-11）
 
-- [ ] WSL + Docker Desktop 可用（用户侧：装 WSL 需重启，当前 DSH 任务未结束故延后）
-- [ ] Logto Docker 启动并验证
-- [ ] RAGFlow Docker 启动并验证
+**环境阻塞已解除**，下列前两项为复查通过的记录，其余未勾选项才是待办：
+
+- [x] WSL + Docker 已就绪：Docker 29.9.2、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版（2026-11-11 实测）
+- [x] 端口复查：3000 / 3001 / 9380 均空闲，当前无容器运行；资源满足 RAGFlow 要求（31.5 GB 内存，D 盘可用 494 GB）
+- [ ] Logto Docker 启动并验证（**尚未部署**）
+- [ ] RAGFlow Docker 启动并验证（**尚未部署**）
 - [ ] `04_INTEGRATION.md` 填入**真实**端口、URL、环境变量（禁止虚构）
 - [ ] Phase 1：Next.js 对接 Logto（登录/注册/会话）
 - [ ] Phase 2~5：见 `02_PHASES.md`
@@ -96,50 +102,32 @@
 
 ---
 
-## 5. 无 Docker 时你可以做的事（给 DSH 优先任务）
+## 5. 当前起点：Docker 已就绪（原「无 Docker 时」清单已失效）
 
-在用户完成 WSL 重启 / Docker 可用之前，**只做下列工作**，不要空等：
+Docker / WSL 已于 2026-11-11 实测就绪（Docker 29.9.2、Compose v5.6.1、WSL Ubuntu；无容器运行；端口 3000 / 3001 / 9380 空闲）。**不再需要「等 Docker 时做什么」的优先级排期**：当前工作就是 **按第 6 节顺序执行**，先拉起 Logto，再拉起 RAGFlow。
 
-### P0 — 文档与仓库卫生（立刻可做）
+下列历史清单已全部完成，仅作记录，不要重复执行：
 
-1. 通读并核对 `docs/00`~`05` 与 `maintain-docs.md` 一致性（有笔误/格式断裂可修，**不改 ADR 结论**）。
-2. 整理 `04_INTEGRATION.md` 为「待填模板」：保留章节，明确哪些字段等 Docker 后实测再写。
-3. 在 `02_PHASES.md`「下一步行动」中区分：  
-   - **不依赖 Docker** 的任务  
-   - **依赖 Docker** 的任务  
-4. 每次改动后：`append` `05_CHANGELOG.md`，必要时更新 `02_PHASES` 当前状态。
+- P0 文档与仓库卫生：docs 一致性核对、`04_INTEGRATION.md` 待实测模板、`02_PHASES.md` 任务分层 —— 已完成
+- P1 Next.js 骨架（App Router + TypeScript、`.env.example`、`/api/health`、Mock 登录态 UI）—— 已完成
+- P2 设计草案（Asset/Work ↔ RAGFlow 映射、四阶段状态机、Logto 接入清单）—— 已写入 DRAFT
 
-### P1 — Next.js 骨架（默认必做方向，仓库确认无前端）
+**仍然有效的约束（与 Docker 是否就绪无关）**：
 
-在**不依赖 Logto 真服务**的前提下可做（ADR-006）：
-
-1. **从零**初始化 Next.js（App Router）+ TypeScript + 基础目录（create-next-app 或等价）。
-2. 环境变量模板：`.env.example`（Logto / RAGFlow / Embedding 占位，无真实密钥提交）。
-3. 健康检查路由：`/api/health`。
-4. 占位页：未登录态 / 已登录态 UI 壳子（Mock 用户即可）。
-5. 业务元数据层设计草案（SQLite 或 JSON）：Asset / Work 字段 + `content_ref` 占位，**不接 RAGFlow 真 API**。
-
-### P2 — 设计文档（仍不调用外部服务）
-
-1. **Asset/Work ↔ RAGFlow Document 映射草案**（字段表），写入 `docs/` 下独立草案文件或 `04_INTEGRATION.md` 的「草案」小节，标题标明 **DRAFT**。
-2. **四阶段状态机**文字说明（合法迁移边、谁可触发）。
-3. Logto 集成步骤清单（OIDC 回调路径、所需 env 名），等 Docker 后逐项勾选。
-
-### 明确不要做（无 Docker 时）
-
-- 不要假装 Logto/RAGFlow 已启动并编造可用 URL。
-- 不要执行 `docker run` / `compose up`（环境未就绪会失败且污染文档）。
-- 不要实现「写死假 content_ref 当生产逻辑」。
-- 不要恢复已砍功能（加密分享、试运行评估、旧图谱、多用户隔离）。
+1. **不要**把 Logto / RAGFlow 写成已部署、已连接；部署前两者一律表述为「未部署 / 未验证」。
+2. **不要**编造端口、URL、`content_ref`；只写实测值。
+3. **不要**实现「写死假 content_ref 当生产逻辑」。
+4. **不要**恢复已砍功能（加密分享、试运行评估、旧图谱、多用户隔离）。
+5. **不要**重复初始化 Next.js 骨架，也不要寻找不存在的旧业务代码（ADR-006）。
 
 ---
 
-## 6. Docker 就绪后的执行顺序（用户重启并确认后）
+## 6. Docker 就绪后的执行顺序（环境已就绪，从现在开始按序执行）
 
 严格按序：
 
-1. 验证：`docker version`、`docker compose version`、`wsl --status`。
-2. Infra：给出并落地 **Logto** compose（端口建议避开冲突；实测后写入 `04_INTEGRATION.md`）。
+1. 环境核验 ✅ 已实测（2026-11-11）：Docker 29.9.2、`docker compose` v5.6.1、WSL 内有 Ubuntu 发行版；当前无容器运行，端口 3000 / 3001 / 9380 空闲。启动前复核端口即可，无需重新搭建。
+2. Infra：给出并落地 **Logto** compose（端口避开已确认空闲的 3000 / 3001 / 9380 冲突；实测后写入 `04_INTEGRATION.md`）。
 3. 验证 Logto 控制台 / 登录页可打开。
 4. Infra：落地 **RAGFlow** compose；验证 Web/API 可访问。
 5. 把真实 baseURL、端口、版本、必要 env **只写真实值** 进 `04_INTEGRATION.md`。
@@ -207,17 +195,17 @@ python agents/main.py
 
 1. **确认工作区**：ADR-006 是 greenfield 起点记录；当前 Next.js 骨架已存在，不要找旧代码，也不要重复初始化。
 2. **文档卫生**：继续与 SCOPE/PHASES/ADR 保持一致；`04_INTEGRATION.md` 保持待实测模板，不编造端口。
-3. **无 Docker 时**：只维护当前骨架和第 5 节允许的 DRAFT，不接真服务、不扩展资产 CRUD。
-4. **Docker 就绪后**：严格转到第 6 节顺序，先验证环境，再从 Logto compose 开始。
-5. **输出**：简短《本轮完成》+《待用户 Docker 就绪后的第一步命令清单》。
+3. **当前状态**：Docker 已就绪、无容器运行；工作从第 6 节第 2 步（Logto compose）开始，不再有「等 Docker」的分支。
+4. **顺序**：Logto 起来并验证 → RAGFlow 起来并验证 → 实测值写入 `04_INTEGRATION.md` → 关闭 Phase 0 → 再进入 Phase 1 接真 Logto。
+5. **输出**：简短《本轮完成》+《下一步命令清单》。
 
 ---
 
 ## 11. 给用户的同步点（你完成后告诉用户）
 
 - 本轮改了哪些文件  
-- 哪些在等 Docker  
-- 用户重启并 `docker version` 成功后，应发你的下一句指令建议（例如：「Docker 已就绪，从 Logto compose 开始」）
+- 当前服务状态：Docker 已就绪；Logto / RAGFlow **未部署**  
+- 下一步：无需用户侧操作，直接按第 6 节从 Logto compose 开始
 
 ---
 
@@ -239,4 +227,4 @@ python agents/main.py
 
 **结束语给执行 Agent**：  
 方向已锁死在 RAGFlow 内容底座 + 资产/工作流业务层 + Logto + LightRAG。  
-现在最大外部依赖是用户本机 Docker。在此之前把文档、骨架与映射设计做扎实；Docker 一就绪就按第 6 节顺序推进，不要跳相。
+原最大外部依赖（本机 Docker）已解除，文档、骨架与映射设计已完成。现在按第 6 节顺序推进 **Logto → RAGFlow**，不要跳步；两者部署完成前，任何文档都不得写成「已部署、已验证」。

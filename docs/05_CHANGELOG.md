@@ -4,11 +4,6 @@
 - 确立项目方向：RAGFlow + LightRAG + Logto，保留资产与四阶段工作流
 - 创建文档体系（00~05）
 - 采纳 ADR-001 ~ ADR-004
-
-## 2026-10-26
-- 确立项目方向：RAGFlow + LightRAG + Logto，保留资产与四阶段工作流
-- 创建文档体系（00~05）
-- 采纳 ADR-001 ~ ADR-004
 - **新增 ADR-005**：以 RAGFlow 为统一内容存储底座，资产与工作流作为业务层；不再以本地 Markdown 为内容唯一真相源
 - 更新 00_SCOPE.md 以反映存储策略变更
 
@@ -40,3 +35,9 @@
 - 新增 Asset / Work 元数据、`content_ref` 映射、四阶段状态机与 Logto 接入 DRAFT；将 `04_INTEGRATION.md` 整理为待实测模板，并修复 `01_ARCHITECTURE.md` 的 Markdown 断裂
 - 验证 lint、TypeScript、1 项单元测试、生产构建及首页 / health HTTP 200；生产依赖审计为 0，ESLint 9 开发依赖链仍有 16 个中等级别 minimatch 审计项，未执行强制修复
 - 同步 00_SCOPE / 01_ARCHITECTURE / 02_PHASES / AI_CONTINUE_DEV_GUIDE 的当前实现状态，保留 ADR-006 的 greenfield 起点记录
+
+## 2026-11-11
+- 仓库纳入 Git 版本控制，基线提交 `ebe32e6`（此前无版本控制）
+- 环境实测：Docker 29.9.2 运行中、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版；当前无容器运行，端口 3000 / 3001 / 9380 均空闲；本机内存 31.5 GB、D 盘可用 494 GB，满足 RAGFlow 资源要求
+- 同步 `docs/02_PHASES.md` 与 `AI_CONTINUE_DEV_GUIDE.md`：Docker / WSL 阻塞标记为解除，Phase 0 剩余项收敛为「拉起并验证 Logto 与 RAGFlow」；Logto 与 RAGFlow **仍未部署、未验证**
+- 清理 `docs/05_CHANGELOG.md` 中 2026-10-26 的重复条目（保留含 ADR-005 的完整一条）

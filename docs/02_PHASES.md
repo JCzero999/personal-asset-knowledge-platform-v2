@@ -5,16 +5,16 @@
 
 ## 当前状态
 
-- **所处阶段**：Phase 0（环境待就绪）；Phase 1 的无 Docker 骨架已提前完成
-- **状态表述**：文档与多 Agent 已就绪；已按 **greenfield / ADR-006** 从零创建 Next.js + TypeScript 骨架、Mock UI、health 与元数据 DRAFT；真实 Logto / RAGFlow 仍未连接
+- **所处阶段**：Phase 0（环境已就绪，待启动并验证服务）；Phase 1 骨架已提前完成
+- **状态表述**：文档与多 Agent 已就绪；已按 **greenfield / ADR-006** 从零创建 Next.js + TypeScript 骨架、Mock UI、health 与元数据 DRAFT。**Docker / WSL 阻塞已解除**（2026-11-11 实测：Docker 29.9.2、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版）。Phase 0 只剩拉起并验证 **Logto** 与 **RAGFlow**；两者目前**均未部署、未验证**，真实 Logto / RAGFlow 仍未连接
 - **最新关键决策**：ADR-005（RAGFlow 内容底座）+ ADR-006（从零新建业务代码）
-- **阻塞项**：Docker 环境未就绪（WSL/Docker Desktop；用户侧暂缓重启）
+- **阻塞项**：无环境阻塞。待办仅为 Logto / RAGFlow 的部署与实测，不需要用户侧操作
 
 ## 阶段总览
 
 | 阶段 | 目标 | 状态 | 完成标准 |
 |------|------|------|----------|
-| **Phase 0** | 文档体系 + 基础环境就绪 | 进行中（仅环境阻塞） | docs 与 ADR 对齐；Logto、RAGFlow 能 Docker 启动并访问 |
+| **Phase 0** | 文档体系 + 基础环境就绪 | 进行中（环境已就绪，待启动并验证服务） | docs 与 ADR 对齐；Logto、RAGFlow 能 Docker 启动并访问 |
 | **Phase 1** | Next.js 骨架 + Logto 认证 | 进行中（骨架已完成） | **新建** Next.js 应用；登录/注册可用；能获取用户身份 |
 | **Phase 2** | RAGFlow 内容底座 | 未开始（映射 DRAFT 已写） | Dataset/Document、解析与检索；业务侧有 content_ref |
 | **Phase 3** | LightRAG 知识图谱 | 未开始 | 构图与查询；共用 Embedding、独立存储 |
@@ -40,25 +40,30 @@
 - [x] 编写四阶段合法迁移边 / 触发者与 Logto 待验证清单 DRAFT
 - [x] 整理 `04_INTEGRATION.md` 待实测模板，修复 `01_ARCHITECTURE.md` 格式断裂
 - [x] lint、TypeScript、单元测试、生产构建通过；首页与 health 实测 HTTP 200
-- [ ] Logto Docker 可启动并验证
-- [ ] RAGFlow Docker 可启动并验证
+- [x] 仓库纳入 Git 版本控制，基线提交 `ebe32e6`（此前无版本控制）
+- [x] Docker 环境实测就绪：Docker 29.9.2、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版；当前无容器运行，端口 3000 / 3001 / 9380 均空闲
+- [x] 资源实测满足 RAGFlow 要求：本机内存 31.5 GB，D 盘可用 494 GB
+- [ ] Logto Docker 可启动并验证（当前未部署）
+- [ ] RAGFlow Docker 可启动并验证（当前未部署）
 - [ ] 将 Mock 身份替换为真实 Logto 登录 / 注册 / 会话
 
 ## 下一步行动
 
-### A. 不依赖 Docker（可在 DSH 先做）
+Docker / WSL 阻塞已解除，当前唯一目标：**拉起并验证 Logto 与 RAGFlow**。执行顺序见 `AI_CONTINUE_DEV_GUIDE.md` 第 6 节。
 
-1. 保留当前新骨架，不重复初始化；如需继续，只做接手指南第 5 节允许的文档 / DRAFT 工作
-2. 保持 Mock 身份与真实认证边界清晰，不将 DRAFT 当作已实施的外部接口
-3. 保持 `04_INTEGRATION.md` 中未实测项为「待实测」，禁止编造 URL / 端口或假 `content_ref`
+### A. Phase 0 收尾（环境已就绪，立即执行）
 
-### B. 依赖 Docker（用户本机 WSL 重启并 Docker 可用后）
-
-1. 先验证 `docker version`、`docker compose version`、`wsl --status`
+1. 环境已实测（Docker 29.9.2 / Compose v5.6.1 / WSL Ubuntu / 端口空闲），无需重复搭建；启动前可再确认端口未被占用
 2. 启动 Logto Docker，验证控制台 / 登录页可访问
 3. 启动 RAGFlow Docker，验证管理界面 / API 可访问
 4. 将**实测**端口、地址、版本、环境变量写入 `04_INTEGRATION.md`
-5. 更新本文件已完成项，关闭 Phase 0 环境部分，再在 Phase 1 接真 Logto 并替换 Mock 身份
+5. 勾选本文件已完成项，关闭 Phase 0 环境部分
+
+### B. Phase 1 起（Phase 0 收尾后）
+
+1. Phase 1 接真 Logto，替换 Mock 身份
+2. 保持 Mock 身份与真实认证边界清晰，不将 DRAFT 当作已实施的外部接口
+3. 保持 `04_INTEGRATION.md` 中未实测项为「待实测」，禁止编造 URL / 端口或假 `content_ref`
 
 ## 各阶段关键约束（提醒）
 
@@ -74,7 +79,8 @@
 | 风险 | 应对 |
 |------|------|
 | 执行 Agent 寻找旧代码或重复初始化 | 以 ADR-006 的 greenfield 起点为准，维护当前新骨架 |
-| RAGFlow 资源占用较高 | 本机建议 ≥16GB 内存；先验证能启动再优化 |
+| RAGFlow 资源占用较高 | 本机已实测 31.5 GB 内存、D 盘可用 494 GB，满足要求；启动后仍关注实际占用，必要时再优化 |
+| 把「Docker 可用」误写成「Logto / RAGFlow 已部署」 | 两者分开表述；只有实测容器运行、端口可访问后才可标记完成 |
 | 映射设计不当 | Phase 2 结束前明确字段并写入 04_INTEGRATION.md |
 | 文档与实现脱节 | 遵守 maintain-docs；每次有意义工作后更新本文件与 CHANGELOG |
-| 无 Docker 时编造集成细节 | 禁止；04_INTEGRATION 只写已验证信息 |
+| 服务未启动就编造集成细节 | 禁止；04_INTEGRATION 只写已实测信息 |
