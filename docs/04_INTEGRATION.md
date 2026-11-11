@@ -2,7 +2,7 @@
 
 > 本文件只记录已确认决策与已实测的集成事实。`待实测` 表示当前没有可填写的真实值；禁止把历史建议端口、规划地址或草案字段写成已可用配置。
 >
-> 当前环境：本机 Docker 可用（Docker 29.9.2 / Compose v5.6.1）；已完成 Logto 与 RAGFlow 自托管部署及连通性实测，LightRAG 仍未部署。
+> 当前环境：本机 Docker 可用（Docker 29.9.2 / Compose v5.6.1）；Logto 1.46.0 与 RAGFlow v0.20.5 已自托管部署并完成连通性 / API 实测；Logto 的浏览器端完整登录仍待人工验证；LightRAG 未部署。
 
 ## 填写规则
 
@@ -42,8 +42,8 @@
 
 - 部署方式：本地 Docker Compose（`infra/ragflow/docker-compose.yml`，基于官方 v0.20.5 编排精简，只保留 elasticsearch 文档引擎）
 - 内容职责：统一内容存储、解析、分块、向量化与检索（ADR-005）
-- 当前状态：已部署并通过 API 实测（2026-11-11）；dataset / document 的创建、上传、删除与清理均已跑通，解析流水线尚未实测
-- 应用侧适配器：`src/server/adapters/ragflow/client.ts`（`listDatasets` / `createDataset` / `createDocument` / `updateDocumentMetaFields` / `deleteDocument`，mock 单测见 `tests/server/adapters/ragflow-client.test.ts`）
+- 当前状态：已部署并通过 API 实测（2026-11-11）；内容上传、meta 同步、解析、检索与下载已端到端跑通；归档后检索返回 0 条。失败重试路径只有假网关单测
+- 应用侧适配器：`src/server/adapters/ragflow/client.ts`（`listDatasets` / `createDataset` / `createDocument` / `updateDocumentMetaFields` / `listDocuments` / `startParsing` / `retrieve` / `downloadDocument` / `deleteDocument` 等，mock 单测见 `tests/server/adapters/ragflow-client.test.ts`）
 
 | 字段 | 实测值 |
 |---|---|
@@ -59,7 +59,7 @@
 | ES 前置条件 | Docker Desktop 的 Linux VM 需 `vm.max_map_count=262144`（本机实测已为该值） |
 | 镜像拉取 | 本机从华为云镜像 `swr.cn-north-4.myhuaweicloud.com/infiniflow/ragflow:v0.20.5` 拉取后重打 tag；`docker pull` 需分段续传，见 `infra/ragflow/README.md` |
 | Dataset / Document 接口契约 | 见下方“已验证 API 调用”，均为实测请求/响应 |
-| 解析与检索验证结果 | 待实测：未调用 `POST /api/v1/datasets/{id}/chunks`，未执行 chunk / embedding / 检索 |
+| 解析与检索验证结果 | 已实测（2026-11-11）：上传后触发 `POST /api/v1/datasets/{id}/chunks`，文档约 9–12 秒后转为 `DONE`、`chunk_count = 1`；`POST /api/v1/retrieval` 召回同一文档，相似度约 0.38–0.48；归档后同一检索返回 0 条 |
 | Asset / Work 映射结果 | 已实测单对象内容上传 / 替换（2026-11-11 15:02）；附件、批量与对账未实测 |
 
 ### 已验证 API 调用（2026-11-11 14:52，全部使用上面的真实 API key）
@@ -99,14 +99,19 @@
 3. 本地库：1 条 `primary` 引用 + 1 条 `pending` 的 `upsert` 同步任务；
 4. 冒烟结束后删除临时文档，`docs:[] , total:0`。
 
-### 还缺什么才能跑通解析
+### 解析、检索与下载（2026-11-11 实测）
 
-- 未配置任何外部模型 API key。full 版镜像自带 embedding 模型（实测租户默认 `BAAI/bge-large-zh-v1.5@BAAI`），建库和上传可用；
-- 但解析链路（`POST /api/v1/datasets/{id}/chunks` → task executor → chunk / 向量化 / 写索引）**未实测**，需要：
-  1. 确认本地 embedding 模型可加载（首次会按 `HF_ENDPOINT` 拉取模型，本机已指向 `https://hf-mirror.com`，尚未验证下载结果）；
-  2. 对话 / 问答与 GraphRAG、RAPTOR 需要 chat model API key（当前没有）；
-  3. 若改用 `-slim` 镜像，则必须额外配置外部 embedding 服务，否则创建 dataset 就会失败。
-- 因此本阶段只把 RAGFlow 当作内容 CRUD 与后续解析的接入点，解析结果字段（`parse_status` / `chunk_count`）暂不接线。
+- **解析触发**：上传时调用 `POST /api/v1/datasets/{id}/chunks`，body `{document_ids:[…]}`；触发失败不影响上传，引用停在 `pending`，由 `POST /api/parse/run` 兜底重试。
+- **解析轮询**：读取 `GET /api/v1/datasets/{id}/documents` 的 `run`、`progress_msg`、`chunk_count`，回写 `content_refs.parse_status`；状态覆盖 `UNSTART / RUNNING / SCHEDULE / DONE / FAIL / CANCEL`。实测上传后为 `running`，约 9–12 秒转为 `succeeded`、`chunk_count = 1`。
+- **检索**：`POST /api/v1/retrieval`，请求含 `question`、`dataset_ids`、`page_size`、`similarity_threshold`（默认 0.2）等字段；响应 `chunks[]` 带 `document_id` 与 `similarity`，应用层据此认回 `content_refs` 并做归属 / 归档 / 库别过滤。实测同一文档相似度 0.38–0.48，归档后同一检索 0 条。
+- **下载**：`GET /api/v1/datasets/{id}/documents/{document_id}` 返回文件流（实测 `Content-Type: application/octet-stream`），内容与上传文件逐字节一致；该路径不是 JSON 详情接口。
+- **失败路径**：解析 `FAIL` 回写、outbox 重试退避目前只有假网关单测覆盖，真实 RAGFlow 上的失败场景待实测。
+
+### 还缺什么才能跑通问答
+
+- 未配置任何 chat model API key。full 版镜像自带 embedding 模型（租户默认 `BAAI/bge-large-zh-v1.5@BAAI`），建库、上传、解析、向量化与检索均已够用；
+- 问答 / 多轮会话、GraphRAG、RAPTOR 需要 chat model，当前不可用；应用侧 `GET /api/search` 只返回召回片段，不组装上下文、不调用生成模型；
+- 若改用 `-slim` 镜像，必须额外配置外部 embedding 服务，否则创建 dataset 就会失败。
 
 ## LightRAG
 
@@ -125,14 +130,14 @@
 ## Embedding
 
 - 决策：RAGFlow 与 LightRAG 共用 Embedding 模型，不共用向量库（ADR-001）
-- 当前状态：模型与服务配置待实测
+- 当前状态：RAGFlow 侧使用镜像内置默认模型（租户默认 `BAAI/bge-large-zh-v1.5@BAAI`，解析与检索已实测可用）；LightRAG 侧尚未部署，共用配置待 Phase 3 实测
 
 | 字段 | 实测值 |
 |---|---|
-| 提供方 / 模型 | 待实测 |
-| 服务地址 | 待实测 |
-| 维度与配置 | 待实测 |
-| 两套系统验证结果 | 待 Phase 2 / Phase 3 验证 |
+| 提供方 / 模型 | RAGFlow 内置默认：`BAAI/bge-large-zh-v1.5@BAAI`（实测）；LightRAG 侧待实测 |
+| 服务地址 | RAGFlow 内置，无独立服务地址；LightRAG 侧待实测 |
+| 维度与配置 | 待实测（应用侧未直接读取维度） |
+| 两套系统验证结果 | RAGFlow 已用于解析与检索；LightRAG 待 Phase 3 验证 |
 
 ## 设计草案（非已验证集成）
 

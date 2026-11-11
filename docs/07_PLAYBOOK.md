@@ -164,6 +164,11 @@ route handler  →  services  →  ports  ←  repositories  →  db
 | 12 | 替换主内容时存在丢内容窗口：先删旧文档，再传新文档，上传失败就两头空 | 原实现按「删除 + 重传」字面顺序写，把不可逆操作放在了前面 | 改为「临时名上传 → 写 meta → 落 refs + 入队 → 删旧文档 → 改名」；并补三条失败路径测试：新文档上传失败、meta 写入失败、旧文档已不存在 | 涉及外部系统的多步写，先做可回滚的那一半；为每个失败点写一条断言，而不是只测成功路径 |
 | 13 | HTTP 冒烟一直返回 405，看起来像路由没实现 | 3100 端口上残留着一个旧的 `next start` 子进程，请求根本没打到 dev server | `netstat -ano \| findstr :3100` 找到监听 PID，再 `taskkill //PID <pid> //T //F` 整棵进程树杀掉（Windows 下普通 `kill` 停不掉 Next dev 派生的子进程） | 冒烟前先确认端口归属；405 / 404 先查「请求打到哪」，再查代码 |
 | 14 | 冒烟脚本读不到临时文件，数据库也打不开 | Windows 上 `curl` 不认 MSYS 的 `/tmp` 路径；better-sqlite3 打不开跨盘符映射的路径 | 冒烟用的临时文件放仓库根目录，用相对路径；结果一律以 HTTP 响应体核对，不靠本地文件回读 | 冒烟资产放项目内、用相对路径；断言只看 HTTP 层返回 |
+| 15 | 检索表单的 `useEffect(() => setQ(initialQ), [initialQ])` 被 ESLint 判为 `react-hooks/set-state-in-effect`，页面无法过 lint | 用 effect 把 props 回写进本地 state，React 19 的 hooks 规则不允许 | 去掉三个同步 effect；服务端页面用 `key={currentHref}` 在地址变化时重新挂载表单，初始值直接来自 URL | 表单状态以 URL 为唯一来源时，用 key 重挂载而不是 effect 同步 |
+| 16 | 检索页输入框被拉成 220px 高，标签与输入框之间出现巨大空白 | 共用的 `.filter-search` 是横向工具条里的 flex 项（`flex: 1 1 220px`），放进纵向字段后 flex-basis 被当作高度 | 在 `.search-query .filter-search` 覆盖为 `flex: 0 0 auto; width: 100%` | 复用横向工具条样式前先确认父容器方向；截图验收时看真实渲染，不只看 DOM |
+| 17 | 下载接口响应头是 `filename*=UTF-8''.txt`，中文文件名整段丢失 | RAGFlow 回传的文件名已被它过滤掉非 ASCII 字符，只剩扩展名；路由优先用了 `file.filename` | 下载名优先取本地 `ref.documentName`，同时输出 `filename="download.txt"` 兜底与 `filename*=UTF-8''<原名>`；服务端实测响应头已还原中文名 | 外部系统回传的展示字段不可信；下载名以本地记录为准，并给不支持 `filename*` 的客户端留 ASCII 兜底 |
+| 18 | `sync-service` 的 8 项用例在真实时间越过固定 `NOW` 后全部失败（`claimed: 0`） | 入队写的是系统时钟，认领用的是测试里的固定 `NOW`；真实时间超过 `NOW` 后任务被视为「尚未到期」 | 每个用例前 `vi.useFakeTimers()` + `vi.setSystemTime(NOW)`，用例后恢复真实计时器 | 涉及「到期时间」的测试必须同时固定系统时钟与业务时间基准，避免随时间失效 |
+| 19 | 访问不存在的对象，页面正确显示「找不到这条内容」，但 HTTP 状态是 200 | `src/app/workspace/loading.tsx` 让页面先流出 shell，响应头已发出后 `notFound()` 无法再改状态码 | 未改结构：页面在浏览器里展示正确；仅记录为已知行为（带 streaming 的 App Router 路由普遍如此） | 需要严格 404 状态码的公开页面，不要在该路由段放 `loading.tsx`，或在更早的边界判定存在性 |
 
 **通用预防**（比单条修复更重要）：
 
