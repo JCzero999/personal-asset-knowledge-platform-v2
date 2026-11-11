@@ -4,60 +4,135 @@ import {
   type WorkStatus,
 } from "@/domain/objects";
 import type { Session } from "@/server/ports/session";
+import { CreateObjectButton } from "./create-object-dialog";
 import { Icon, type IconName } from "./icon";
 
-const navigation: Array<{ label: string; icon: IconName; href?: string }> = [
-  { label: "工作台", icon: "grid", href: "/workspace" },
-  { label: "我的资产", icon: "archive" },
-  { label: "作品工作流", icon: "workflow" },
-  { label: "内容检索", icon: "search" },
-  { label: "知识图谱", icon: "graph" },
+const navigation: Array<{ label: string; icon: IconName; href: string; active?: boolean }> = [
+  { label: "工作台", icon: "grid", href: "/workspace", active: true },
+  { label: "最近内容", icon: "archive", href: "#recent" },
+  { label: "作品进程", icon: "workflow", href: "#track" },
 ];
 
 const stages: Array<{
   key: WorkStatus;
-  order: string;
   title: string;
   description: string;
   icon: IconName;
 }> = [
-  { key: "draft", order: "01", title: "草稿", description: "沉淀想法与内容", icon: "file" },
-  { key: "finished", order: "02", title: "完成", description: "形成完整作品", icon: "check" },
-  { key: "published", order: "03", title: "发布", description: "让知识产生价值", icon: "book" },
-  { key: "practiced", order: "04", title: "实践", description: "回到行动与反馈", icon: "sparkles" },
+  { key: "draft", title: "草稿", description: "记下想法，随时补充", icon: "file" },
+  { key: "finished", title: "已完成", description: "内容成形，可以交付", icon: "check" },
+  { key: "published", title: "已发布", description: "发出去，触达读者", icon: "book" },
+  { key: "practiced", title: "已实践", description: "用起来，收集反馈", icon: "sparkles" },
 ];
 
 const formatLabels = new Map(workFormats.map((item) => [item.value, item.label]));
 
 const statusLabels: Record<WorkStatus, string> = {
   draft: "草稿",
-  finished: "完成",
-  published: "发布",
-  practiced: "实践",
+  finished: "已完成",
+  published: "已发布",
+  practiced: "已实践",
 };
 
-function formatDate(iso: string): string {
-  return iso.slice(0, 10);
+const libraryLabels = {
+  internal: "内库",
+  external: "外库",
+} as const;
+
+function greeting(hour: number): string {
+  if (hour < 5) return "夜深了";
+  if (hour < 11) return "早上好";
+  if (hour < 14) return "中午好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function formatUpdatedAt(iso: string, now: Date): string {
+  const date = new Date(iso);
+
+  if (Number.isNaN(date.getTime())) {
+    return iso.slice(0, 10);
+  }
+
+  const days = Math.round(
+    (startOfDay(now).getTime() - startOfDay(date).getTime()) / 86_400_000,
+  );
+
+  if (days <= 0) return "今天";
+  if (days === 1) return "昨天";
+  if (days < 7) return `${days} 天前`;
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+}
+
+function CompositionRow({
+  label,
+  count,
+  percent,
+  soft = false,
+}: {
+  label: string;
+  count: number;
+  percent: number;
+  soft?: boolean;
+}) {
+  return (
+    <div className="composition-row">
+      <div className="composition-row-head">
+        <span>{label}</span>
+        <strong>{count}</strong>
+      </div>
+      <div className="composition-bar" aria-hidden="true">
+        <span
+          className={`composition-fill${soft ? " soft" : ""}`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+    </div>
+  );
 }
 
 export function WorkspaceShell({
   session,
   objects,
+  signOutHref = null,
 }: {
   session: Session;
   objects: BusinessObject[];
+  signOutHref?: string | null;
 }) {
+  const now = new Date();
   const works = objects.filter((object) => object.type === "work");
   const assets = objects.filter((object) => object.type === "asset");
-  const countByStatus = (status: WorkStatus) => works.filter((work) => work.status === status).length;
-  const recent = objects.slice(0, 5);
+  const internalCount = objects.filter((object) => object.library === "internal").length;
+  const externalCount = objects.length - internalCount;
+  const weekAgo = now.getTime() - 7 * 86_400_000;
+  const weeklyCount = objects.filter(
+    (object) => Date.parse(object.createdAt) >= weekAgo,
+  ).length;
 
-  const stats = [
-    { label: "全部资产", value: assets.length, icon: "archive" as IconName, tone: "green" },
-    { label: "已完成作品", value: countByStatus("finished") + countByStatus("published") + countByStatus("practiced"), icon: "check" as IconName, tone: "blue" },
-    { label: "已发布", value: countByStatus("published") + countByStatus("practiced"), icon: "book" as IconName, tone: "amber" },
-    { label: "已实践", value: countByStatus("practiced"), icon: "sparkles" as IconName, tone: "violet" },
+  const countByStatus = (status: WorkStatus) =>
+    works.filter((work) => work.status === status).length;
+
+  const recent = objects.slice(0, 5);
+  const total = objects.length;
+  const percentOf = (count: number) => (total === 0 ? 0 : Math.round((count / total) * 100));
+
+  const overview = [
+    { label: "全部内容", value: total, icon: "inbox" as IconName },
+    { label: "资产", value: assets.length, icon: "archive" as IconName },
+    { label: "作品", value: works.length, icon: "workflow" as IconName },
+    { label: "本周新增", value: weeklyCount, icon: "clock" as IconName },
   ];
+
+  const todayLabel = `${now.getMonth() + 1}月${now.getDate()}日 · ${now.toLocaleDateString("zh-CN", { weekday: "long" })}`;
 
   return (
     <div className="app-shell">
@@ -73,123 +148,195 @@ export function WorkspaceShell({
             <small>ASSET &amp; KNOWLEDGE</small>
           </span>
         </div>
+
         <nav className="main-nav" aria-label="主导航">
           <p className="nav-label">工作空间</p>
           {navigation.map((item) => (
-            item.href ? (
-              <a className="nav-item active" href={item.href} key={item.label}>
-                <Icon name={item.icon} /><span>{item.label}</span>
-              </a>
-            ) : (
-              <button className="nav-item" type="button" disabled key={item.label} title="将在后续阶段接入">
-                <Icon name={item.icon} /><span>{item.label}</span><small>待接入</small>
-              </button>
-            )
+            <a
+              className={`nav-item${item.active ? " active" : ""}`}
+              href={item.href}
+              key={item.label}
+              aria-current={item.active ? "page" : undefined}
+            >
+              <Icon name={item.icon} />
+              <span>{item.label}</span>
+            </a>
           ))}
         </nav>
+
         <div className="sidebar-bottom">
-          <div className="architecture-note">
-            <span className="note-icon"><Icon name="database" size={18} /></span>
-            <div><strong>业务库已连接</strong><p>对象与状态存于本地 SQLite，内容区等待 RAGFlow。</p></div>
+          <div className="nav-preview">
+            <p className="nav-label">即将开放</p>
+            <p className="preview-row"><Icon name="search" size={16} /><span>内容检索</span></p>
+            <p className="preview-row"><Icon name="graph" size={16} /><span>知识图谱</span></p>
           </div>
-          <button className="nav-item settings-item" type="button" disabled title="将在后续阶段接入">
-            <Icon name="settings" /><span>设置</span>
-          </button>
-          <div className="sidebar-version">本地运行 · v0.1.0</div>
+          <div className="sidebar-user">
+            <span className="sidebar-avatar" aria-hidden="true">{session.name.slice(0, 1)}</span>
+            <span className="sidebar-user-copy">
+              <strong>{session.name}</strong>
+              <small>本地工作区</small>
+            </span>
+            {signOutHref ? (
+              <a className="sidebar-signout" href={signOutHref}>退出</a>
+            ) : null}
+          </div>
         </div>
       </aside>
 
       <main className="workspace" id="overview">
         <header className="workspace-header">
-          <div>
-            <p className="breadcrumb">工作空间 / 工作台</p>
-            <h1>欢迎回来，{session.name}</h1>
+          <div className="workspace-greeting">
+            <p className="workspace-date">{todayLabel}</p>
+            <h1>{greeting(now.getHours())}，{session.name}</h1>
+            <p className="workspace-subtitle">把收集到的资料沉淀成资产，把想法推进成作品。</p>
           </div>
           <div className="header-actions">
-            <span className="mock-session"><span />本地开发会话</span>
-            <span className="avatar" title={session.email ?? session.sub} aria-label={session.name}>
+            <CreateObjectButton label="新建" />
+            <span className="avatar" title={session.email ?? session.name} aria-label={session.name}>
               {session.name.slice(0, 1)}
             </span>
           </div>
         </header>
 
-        <div className="preview-banner">
-          <Icon name="sparkles" size={18} />
-          <p><strong>数据已落库。</strong>对象与状态写入本地业务库；登录仍为本地会话，Logto 管理员待创建。</p>
-        </div>
-
-        <section className="stats-grid" aria-label="业务概览">
-          {stats.map((stat) => (
-            <article className="stat-card" key={stat.label}>
-              <div className={`stat-icon ${stat.tone}`}><Icon name={stat.icon} size={21} /></div>
-              <div className="stat-title">{stat.label}<span>{stat.value}</span></div>
-              <p>{stat.label === "全部资产" ? "内库与外库合计" : "按作品状态统计"}</p>
-            </article>
+        <section className="overview" aria-label="内容概览">
+          {overview.map((item) => (
+            <div className="overview-item" key={item.label}>
+              <span className="overview-icon"><Icon name={item.icon} size={19} /></span>
+              <div className="overview-copy">
+                <strong>{item.value}</strong>
+                <span>{item.label}</span>
+              </div>
+            </div>
           ))}
         </section>
 
-        <section className="dashboard-grid">
-          <article className="panel workflow-panel">
+        <section className="panel track-panel" id="track" aria-labelledby="track-heading">
+          <div className="panel-heading">
+            <div>
+              <h2 id="track-heading">作品进程</h2>
+              <p>每件作品从一个阶段走到下一个阶段，进度一眼可见。</p>
+            </div>
+            <span className="meta-chip">{works.length} 件作品</span>
+          </div>
+
+          <div className="track-scroll">
+            <ol className="track">
+              {stages.map((stage) => {
+                const count = countByStatus(stage.key);
+
+                return (
+                  <li className={`track-step${count > 0 ? " has-items" : ""}`} key={stage.key}>
+                    <div className="track-marker">
+                      <span className="track-dot"><Icon name={stage.icon} size={19} /></span>
+                    </div>
+                    <div className="track-title">
+                      <strong>{stage.title}</strong>
+                      <span className="track-count">{count} 件</span>
+                    </div>
+                    <p className="track-desc">{stage.description}</p>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+          <p className="track-hint">左右滑动查看完整阶段</p>
+        </section>
+
+        <div className="dashboard-grid">
+          <section className="panel recent-panel" id="recent" aria-labelledby="recent-heading">
             <div className="panel-heading">
-              <div><h2>作品工作流</h2><p>从灵感沉淀到实践反馈</p></div>
-              <span className="draft-badge">四阶段</span>
+              <div>
+                <h2 id="recent-heading">最近内容</h2>
+                <p>资产与作品按最近更新排列</p>
+              </div>
+              <CreateObjectButton label="新建" variant="secondary" />
             </div>
-            <div className="stage-list">
-              {stages.map((stage, index) => (
-                <div className="stage-item" key={stage.key}>
-                  <div className="stage-order">{stage.order}</div>
-                  <span className="stage-icon"><Icon name={stage.icon} size={20} /></span>
-                  <div className="stage-copy"><strong>{stage.title}</strong><small>{stage.key}</small></div>
-                  <p>{stage.description}</p>
-                  <span className="stage-count">{countByStatus(stage.key)}</span>
-                  {index < stages.length - 1 && <span className="stage-connector" aria-hidden="true" />}
+
+            {recent.length === 0 ? (
+              <div className="empty-state">
+                <span className="empty-icon"><Icon name="inbox" size={26} /></span>
+                <div className="empty-copy">
+                  <strong>还没有内容</strong>
+                  <p>新建一个资产收纳资料，或新建作品开始推进四个阶段。</p>
                 </div>
-              ))}
-            </div>
-            <div className="panel-footnote"><span />流转只更新业务状态，不移动 RAGFlow 中的内容</div>
-          </article>
+                <CreateObjectButton label="新建第一条" className="empty-action" />
+              </div>
+            ) : (
+              <ul className="object-list">
+                {recent.map((object) => {
+                  const meta = object.type === "work"
+                    ? `${formatLabels.get(object.format) ?? object.format} · ${statusLabels[object.status]} · ${libraryLabels[object.library]}`
+                    : `资料与参考 · ${libraryLabels[object.library]}`;
 
-          <article className="panel connection-panel">
-            <div className="panel-heading"><div><h2>接入状态</h2><p>真实服务连接进度</p></div></div>
-            <div className="connection-list">
-              <div><span className="service-icon"><Icon name="check" size={18} /></span><p><strong>业务库</strong><small>SQLite · Drizzle</small></p><span className="status-ready">已连接</span></div>
-              <div><span className="service-icon"><Icon name="check" size={18} /></span><p><strong>Logto</strong><small>登录 / 注册 / 会话</small></p><span className="status-pending">待建管理员</span></div>
-              <div><span className="service-icon"><Icon name="database" size={18} /></span><p><strong>RAGFlow</strong><small>统一内容存储与检索</small></p><span className="status-pending">部署中</span></div>
-              <div><span className="service-icon"><Icon name="graph" size={18} /></span><p><strong>LightRAG</strong><small>独立知识图谱存储</small></p><span className="status-later">Phase 3</span></div>
-            </div>
-          </article>
-        </section>
+                  return (
+                    <li className="object-row" key={object.id}>
+                      <span className={`object-type-icon ${object.type}`} aria-hidden="true">
+                        <Icon name={object.type === "work" ? "workflow" : "archive"} size={18} />
+                      </span>
+                      <div className="object-main">
+                        <strong>{object.title}</strong>
+                        <small>{meta}</small>
+                      </div>
+                      <span className="object-date" title={object.updatedAt.slice(0, 10)}>
+                        {formatUpdatedAt(object.updatedAt, now)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
 
-        <section className="panel empty-panel">
-          <div className="panel-heading"><div><h2>最近内容</h2><p>资产与作品按更新时间排列</p></div></div>
-          {recent.length === 0 ? (
-            <div className="empty-state">
-              <span><Icon name="file" size={26} /></span>
-              <div><strong>还没有任何对象</strong><p>业务库已就绪，创建第一个资产或作品后会出现在这里。</p></div>
+            {total > recent.length && (
+              <div className="panel-footnote">
+                <span />
+                共 {total} 条内容，这里显示最近 {recent.length} 条
+              </div>
+            )}
+          </section>
+
+          <aside className="panel composition-panel" aria-labelledby="composition-heading">
+            <div className="panel-heading">
+              <div>
+                <h2 id="composition-heading">内容构成</h2>
+                <p>按类型与归属查看当前结构</p>
+              </div>
             </div>
-          ) : (
-            <ul className="object-list">
-              {recent.map((object) => (
-                <li className="object-row" key={object.id}>
-                  <span className={`object-type ${object.type}`}>
-                    {object.type === "work" ? "作品" : "资产"}
-                  </span>
-                  <div className="object-main">
-                    <strong>{object.title}</strong>
-                    <small>
-                      {object.type === "work"
-                        ? `${formatLabels.get(object.format) ?? object.format} · ${statusLabels[object.status]}`
-                        : "资产"}
-                      {" · "}
-                      {object.library === "internal" ? "内库" : "外库"}
-                    </small>
-                  </div>
-                  <span className="object-date">{formatDate(object.updatedAt)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+            <div className="composition-body">
+              <div className="composition-group">
+                <p className="composition-label">按类型</p>
+                <CompositionRow
+                  label="资产"
+                  count={assets.length}
+                  percent={percentOf(assets.length)}
+                />
+                <CompositionRow
+                  label="作品"
+                  count={works.length}
+                  percent={percentOf(works.length)}
+                  soft
+                />
+              </div>
+              <div className="composition-group">
+                <p className="composition-label">按归属</p>
+                <CompositionRow
+                  label="内库 · 已验证"
+                  count={internalCount}
+                  percent={percentOf(internalCount)}
+                />
+                <CompositionRow
+                  label="外库 · 待验证"
+                  count={externalCount}
+                  percent={percentOf(externalCount)}
+                  soft
+                />
+              </div>
+            </div>
+            <div className="panel-footnote">
+              <span />
+              内库放验证过的内容，外库放待验证的输入
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );

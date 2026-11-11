@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "个人资产与知识平台",
-  description: "以 RAGFlow 为内容底座的个人资产与知识工作台。",
+  description: "把资料沉淀成资产，把想法推进成作品的个人工作台。",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

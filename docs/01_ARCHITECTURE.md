@@ -6,7 +6,7 @@
 ## 1. 项目一句话
 以 RAGFlow 为统一内容存储与检索底座，在其上实现资产管理和四阶段工作流，结合 LightRAG 提供知识图谱能力，通过 Logto 提供登录注册的个人知识工作台。
 
-> **实现状态（ADR-006）**：业务侧 Next.js 已从零创建本地骨架（App Router + TypeScript）；真实认证、内容服务与业务持久化尚未接入。当前 `src/` 是本轮新建实现，不是旧系统代码。
+> **实现状态（ADR-006）**：业务侧 Next.js 已从零创建本地骨架（App Router + TypeScript）；业务持久化的**数据层已落地**（SQLite + Drizzle，见第 5 节），但 API 路由与页面尚未接入。真实认证与内容服务（RAGFlow）仍未接入。当前 `src/` 是新建实现，不是旧系统代码。
 
 ## 2. 逻辑架构（高层）
 
@@ -65,7 +65,64 @@ Knowledge Graph (LightRAG)
 - **业务元数据与状态**：存在业务侧轻量存储（可后续用 SQLite / PostgreSQL / 甚至结构化 JSON）。
 - **映射**：每个资产/作品通过 `content_ref`（或等价字段）关联到 RAGFlow 中的文档。
 
-## 5. 主要数据流
+## 5. 业务数据层实现
+
+> 本节记录**已落地**的实现（提交 `e95d154`），依据 ADR-007（内容映射契约）、ADR-008（内外库字段拆分）、ADR-009（存储选型与分层）。表结构以 `src/server/db/schema.ts` 与迁移 `drizzle/0000_military_wasp.sql` 为准；两者不一致时以代码和迁移为准，并修文档。
+
+### 5.1 分层与职责
+
+| 层 | 目录 | 职责 | 明确不做 |
+|----|------|------|----------|
+| **domain** | `src/domain/` | 纯类型、取值集合与规则：`objects.ts`（Asset / Work 类型与取值）、`content-ref.ts`（内容引用）、`workflow.ts`（四阶段状态机）、`errors.ts`（带稳定错误码的 `DomainError`） | 不引入任何 IO，不依赖数据库或框架 |
+| **server.ports** | `src/server/ports/` | 仓储端口接口：`ObjectRepository`、`ContentStore` | 不做权限、不发起外部调用 |
+| **server.db** | `src/server/db/` | 连接与表结构：`client.ts`（单例连接 + 迁移）、`schema.ts`（四张表）、`id.ts`（ULID） | 不写业务判断 |
+| **server.repositories** | `src/server/repositories/` | 端口的 SQLite 实现：`SqliteObjectRepository`、`SqliteContentStore`；负责把数据库约束错误翻译成领域错误 | 不调用 RAGFlow |
+| **server.http** | `src/server/http/` | 统一响应信封 `ok` / `created` / `empty` / `fail` / `fromError`，错误码→HTTP 状态映射 | 不写业务逻辑 |
+| **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009） | 本轮仅有占位 README，未实现 |
+| **server.services** | `src/server/services/` | 用例编排（创建对象、迁移库别、内容同步） | 本轮仅有占位 README，未实现 |
+
+调用方向是单向的：`route handler → services → ports ← repositories → db`。`domain` 被所有上层引用，自己不知道谁在用它。route handler 的厚度上限为 15 行（ADR-009）。
+
+**连接约定**（`src/server/db/client.ts`）：
+
+- 运行时用 `getDb()` 单例，挂在 `globalThis` 上，避免 Next dev 的 HMR 反复新建连接。
+- 数据库文件默认 `data/app.db`，可用环境变量 `DATABASE_PATH` 覆盖。
+- 连接固定开启 `journal_mode = WAL`、`foreign_keys = ON`、`busy_timeout = 5000`。
+- 打开连接时执行 `drizzle/` 下的迁移，因此迁移可重复执行；测试用 `openDatabase({ file: ":memory:" })` 建内存库，不碰真实文件。
+
+### 5.2 四张表
+
+| 表 | 承担什么 | 要点 |
+|----|----------|------|
+| **`objects`** | 资产与作品的业务主表，两者**同表**、由 `type`（`asset` / `work`）区分 | 作品才有 `format`、`status`、`source_note`，资产三列恒为 `NULL`；`library` / `source` / `origin` 三个正交字段按 ADR-008 拆分；`primary_category` 由写入时的 `categories[0]` 派生；软删除走 `deleted_at`，不物理删行；`revision` 作乐观锁；索引为 `(type, status)`、`library`、`updated_at` |
+| **`content_refs`** | 业务对象与 RAGFlow 文档之间的映射，独立成表而非 JSON 字段（ADR-007） | `provider` 固定为 `ragflow`（单一内容底座）；`document_id` 是**可变指针**，`content_key` 才是幂等键；`role` 为 `primary` / `attachment`，用部分唯一索引保证**每个对象最多一个有效主引用**；`parse_status` 与 `sync_state` 分别跟踪解析进度和同步对账 |
+| **`library_events`** | 跨库迁移的审计流水 | 记录 `from_library` / `to_library` / `reason` / `actor_sub`；`reason` 必填，因为「内库 = 已验证」是承诺，必须可追溯；与对象更新**同事务**写入，不出现「库别已变但没有记录」 |
+| **`sync_jobs`** | 内容同步的 outbox | 内容变更即入队（`action` 为 `upsert` / `delete`），`state` 走 `pending → running → done / failed`，带 `attempts`、`last_error` 与可延迟的 `available_at`；索引 `(state, available_at)` 供后续 worker 取任务。**本轮只负责可靠落队，不实现投递**，消费由 Phase 3 的 LightRAG worker 承担 |
+
+### 5.3 两条 CHECK 约束（数据库兜底）
+
+规则在领域层与数据库里**各实现一次**，两层都不能省：应用层给可读错误，数据库是最后防线。
+
+```sql
+-- 资产无 status：status 只属于作品（ADR-008）
+CONSTRAINT "objects_status_only_for_work" CHECK(type = 'work' OR status IS NULL)
+
+-- 外库作品不得直接 practiced：必须先迁移到内库（ADR-008）
+CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND status = 'practiced'))
+```
+
+- 第一条对应 `src/domain/objects.ts` 里 `AssetObject.status: null` 的类型约束，以及仓储在写入前对「资产携带 status / format / sourceNote」的拒绝。
+- 第二条对应 `src/domain/workflow.ts` 的 `canTransition` / `assertTransition`：状态只能 `draft → finished → published → practiced` 逐级前进，不允许跳级或回退，且 `practiced` 在 `library = 'external'` 时被拒绝。
+- 约束被触发时，仓储把驱动的 `CHECK constraint failed` 翻译成 `CONSTRAINT_VIOLATION`（HTTP 422），唯一约束冲突翻译成 `CONFLICT`（HTTP 409），上层不必感知 SQLite 报错文本。
+
+### 5.4 一致性要点
+
+- **乐观锁**：`update` 与 `changeLibrary` 都要求传入的 `expectedRevision` 与库中 `revision` 一致，不一致抛 `CONFLICT`，避免读-改-写覆盖。
+- **身份与指针分离**：`content_refs` 的 upsert 以 `(dataset_id, content_key)` 认回记录，再更新 `document_id`。RAGFlow 更新正文是「删除 + 重传」，`document_id` 必变，不能当身份用。
+- **失败不回滚外部**：跨服务失败不靠分布式事务，靠 `sync_jobs` 落队 + 后续对账修正（ADR-007）。
+- **状态与内容解耦**：状态流转与跨库迁移只改业务元数据，不移动内容、不换 `document_id`（ADR-005 / ADR-007）。
+
+## 6. 主要数据流
 
 1. **用户登录** → Logto 完成认证，前端获得身份。
 2. **创建/更新资产或作品**  
@@ -76,7 +133,7 @@ Knowledge Graph (LightRAG)
 4. **知识图谱构建 / 查询** → LightRAG 基于内容（可从 RAGFlow 获取或同步）进行。
 5. **四阶段流转** → 仅更新业务侧状态；内容仍留在 RAGFlow，不随状态物理移动文件。
 
-## 6. 与旧系统的关键差异
+## 7. 与旧系统的关键差异
 
 | 旧系统 | 新系统 |
 |--------|--------|
@@ -85,21 +142,21 @@ Knowledge Graph (LightRAG)
 | 知识库是附加功能 | 知识库（RAGFlow）是内容底座 |
 | 状态变化可能伴随文件移动 | 状态变化只改业务元数据，内容位置稳定 |
 
-## 7. 第一期明确不做的部分
+## 8. 第一期明确不做的部分
 - 多用户数据隔离
 - 旧知识图谱实现
 - 加密分享
 - 平台试运行评估
 - 以本地文件系统作为内容主存储
 
-## 8. 待 Phase 中细化的内容（写入 04_INTEGRATION.md）
+## 9. 待 Phase 中细化的内容（写入 04_INTEGRATION.md）
 - RAGFlow Dataset / Document 与业务 Asset/Work 的具体映射字段
 - 内容变更后如何触发 LightRAG 更新
-- 业务元数据存储的最终选型（SQLite / 其他）
+- 业务元数据存储的最终选型（SQLite / 其他）—— **已定案**：SQLite + better-sqlite3 + Drizzle（ADR-009，实现见第 5 节）
 - Logto 与 Next.js 的具体集成方式（SDK、回调、会话）
 - 各服务的端口、环境变量、网络连通方式
 
-## 9. 架构原则（必须遵守）
+## 10. 架构原则（必须遵守）
 1. **内容只认 RAGFlow**（ADR-005）
 2. **业务状态与内容分离**
 3. **LightRAG 与 RAGFlow 解耦存储，仅共用 Embedding**（ADR-001）

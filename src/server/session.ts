@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
+import { createLogtoConfig, LogtoSessionAdapter } from "./adapters/session/logto";
 import { MockSessionAdapter } from "./adapters/session/mock";
 import type { Session, SessionPort } from "./ports/session";
 
@@ -8,13 +9,13 @@ import type { Session, SessionPort } from "./ports/session";
  *
  * `AUTH_MODE`：
  * - `mock`：本地固定身份（开发环境默认）
- * - `logto`：接入 Logto 后启用
+ * - `logto`：接入 Logto 真实登录
  * - 其他或缺省：无身份
  */
 
 type AuthMode = "mock" | "logto" | "disabled";
 
-function resolveAuthMode(): AuthMode {
+export function resolveAuthMode(): AuthMode {
   const configured = process.env.AUTH_MODE?.trim().toLowerCase();
 
   if (configured === "mock" || configured === "logto") {
@@ -32,8 +33,8 @@ function createPort(): SessionPort | null {
   switch (resolveAuthMode()) {
     case "mock":
       return new MockSessionAdapter();
-    // Logto 适配器要等控制台建好应用、拿到应用 ID 与回调地址后才能实现。
     case "logto":
+      return new LogtoSessionAdapter(createLogtoConfig());
     case "disabled":
       return null;
   }

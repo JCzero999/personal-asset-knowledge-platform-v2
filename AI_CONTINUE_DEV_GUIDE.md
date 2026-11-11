@@ -2,8 +2,8 @@
 
 > 本文件供任意编码 Agent / DSH 环境直接阅读并执行。  
 > **生成日期**：2026-11-01 ｜ **最近同步**：2026-11-11  
-> **当前状态**：**Docker / WSL 已就绪**（2026-11-11 实测：Docker 29.9.2、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版）；Logto 与 RAGFlow **尚未部署、尚未验证**  
-> **原则**：Docker 阻塞已解除，后续工作不是「等 Docker」，而是按 **第 6 节** 的顺序执行。
+> **当前状态**（2026-11-11 复核，提交 `e95d154`）：Docker / WSL 就绪；**Logto 容器已启动并通过连通性实测**（1.46.0，服务 3001 / 控制台 3002），**但管理员账号尚未创建，应用与回调未配置**；**RAGFlow 尚未部署**；业务数据层（SQLite + Drizzle）已落地，API 路由与页面未接  
+> **原则**：Docker 阻塞已解除，后续工作按 **第 6 节** 的顺序执行：先建 Logto 管理员账号并完成控制台配置 → 再部署 RAGFlow。
 
 ---
 
@@ -16,7 +16,7 @@
 3. **禁止编造**未实现的 API / 端口 / 接口细节（写入 `04_INTEGRATION.md` 前必须真实可验证）
 4. **禁止**在未获用户确认时执行破坏性操作（删库、强制推送、覆盖已采纳 ADR）
 
-**当前阻塞**：无。Docker / WSL 已于 2026-11-11 实测就绪，当前无容器运行、端口 3000 / 3001 / 9380 空闲。Phase 0 剩余工作为**拉起并验证 Logto 与 RAGFlow**，直接按 **第 6 节** 顺序执行。
+**当前阻塞**：无硬阻塞。Logto 容器已在跑，剩下的是**只有人能做的一步**——在浏览器打开 `http://localhost:3002/console/welcome` 创建管理员账号，然后在控制台建应用、拿应用 ID / Secret 与回调地址。RAGFlow 仍未部署。两者完成前，Phase 1 的「接真 Logto」无法收尾。
 
 先读完本文件，再读 `docs/00_SCOPE.md` → `03_DECISIONS.md` → `02_PHASES.md` → `01_ARCHITECTURE.md`。
 
@@ -56,17 +56,22 @@
 - [x] lint、TypeScript、单元测试、生产构建与首页 / health HTTP 200 验证
 - [x] 本机检查：Docker 当时不可用；端口 3000 / 3001 / 9380 空闲（当时状态，已于 2026-11-11 复查，见 3.2）
 - [x] 仓库纳入 Git 版本控制，基线提交 `ebe32e6`（此前无版本控制）
+- [x] **业务数据层落地**（提交 `e95d154`，ADR-007~009）：`domain` / `server.ports` / `server.db` / `server.repositories` / `server.http` 分层；SQLite + better-sqlite3 + Drizzle；`objects` / `content_refs` / `library_events` / `sync_jobs` 四张表；两条 CHECK 约束钉死「资产无 status」「外库作品不得 practiced」；6 个测试文件 40 项用例通过（2026-11-11 实测）
+- [x] **Logto Docker 自托管启动并完成连通性实测**（1.46.0；服务 3001、控制台 3002；`/api/status` 204、OIDC discovery 正常），实测值已写入 `04_INTEGRATION.md`
+- [x] 修复 `drizzle` 迁移与 `04_INTEGRATION.md` 的 Logto 记录：迁移可重复执行，文档只写真值
 
-### 3.2 未完成清单与阻塞状态（截至 2026-11-11）
+### 3.2 未完成清单与阻塞状态（截至 2026-11-11，提交 `e95d154`）
 
-**环境阻塞已解除**，下列前两项为复查通过的记录，其余未勾选项才是待办：
+**环境阻塞已解除**，前四项为复查通过的记录，其余未勾选项才是待办：
 
 - [x] WSL + Docker 已就绪：Docker 29.9.2、Docker Compose v5.6.1、WSL 内有 Ubuntu 发行版（2026-11-11 实测）
-- [x] 端口复查：3000 / 3001 / 9380 均空闲，当前无容器运行；资源满足 RAGFlow 要求（31.5 GB 内存，D 盘可用 494 GB）
-- [ ] Logto Docker 启动并验证（**尚未部署**）
-- [ ] RAGFlow Docker 启动并验证（**尚未部署**）
-- [ ] `04_INTEGRATION.md` 填入**真实**端口、URL、环境变量（禁止虚构）
-- [ ] Phase 1：Next.js 对接 Logto（登录/注册/会话）
+- [x] 端口复查：3000 / 3001 / 9380 在部署前均空闲；资源满足 RAGFlow 要求（31.5 GB 内存，D 盘可用 494 GB）
+- [x] Logto 容器启动并实测连通（`logto` / `logto-postgres` 均 `Up (healthy)`，端口 3001 / 3002 已被占用）
+- [x] `04_INTEGRATION.md` 的 Logto 段已填入实测值（版本、端口、Base URL、控制台地址、健康检查接口）
+- [ ] **Logto 管理员账号创建与控制台应用配置**——需人工在浏览器打开 `http://localhost:3002/console/welcome` 完成；当前无应用 ID / Secret / 回调地址
+- [ ] **RAGFlow Docker 启动并验证**——**尚未部署**：仓库中无编排文件，复核时无 RAGFlow 容器运行
+- [ ] `04_INTEGRATION.md` 的 RAGFlow / LightRAG / Embedding 段仍为 `待实测`（禁止虚构）
+- [ ] **Phase 1 剩余：API 路由与页面**——截至提交 `e95d154`，`src/app/api` 只有 `/api/health`；需要补对象 CRUD 与库别迁移的路由、对应页面，并用真实 Logto 身份替换 Mock 身份。注：本文档同步时工作区已出现并行的 Phase 1 路由 / 页面改动（未提交），接手时以主程提交后的实际代码为准重新核对本节。
 - [ ] Phase 2~5：见 `02_PHASES.md`
 
 ### 3.3 仓库起点与当前内容（重要 · ADR-006）
@@ -83,7 +88,7 @@
 
 - 本项目起点是 **文档驱动的从零新建（greenfield）**，不是在旧前端上重构。
 - **禁止**查找或等待不存在的旧业务模块，也禁止把新骨架误当旧系统重复初始化。
-- Phase 1 的初始化部分已完成，剩余为：**接入真实 Logto** 并替换 Mock 身份。
+- Phase 1 的初始化部分已完成，剩余为：**补齐 `/api` 业务路由与页面**，并**接入真实 Logto** 替换 Mock 身份。
 - Phase 4 是 **新写** 资产与四阶段工作流，规则以 docs/ADR 为准。
 - 旧系统：**无业务数据，无需迁移**。
 
@@ -102,47 +107,59 @@
 
 ---
 
-## 5. 当前起点：Docker 已就绪（原「无 Docker 时」清单已失效）
+## 5. 当前起点（2026-11-11，提交 `e95d154`）
 
-Docker / WSL 已于 2026-11-11 实测就绪（Docker 29.9.2、Compose v5.6.1、WSL Ubuntu；无容器运行；端口 3000 / 3001 / 9380 空闲）。**不再需要「等 Docker 时做什么」的优先级排期**：当前工作就是 **按第 6 节顺序执行**，先拉起 Logto，再拉起 RAGFlow。
+本轮之后，仓库处于「**服务半就绪 + 数据层就绪 + 接口未接**」的状态。接手时不要重做已完成的部分。
 
-下列历史清单已全部完成，仅作记录，不要重复执行：
+### 5.1 已完成（不要重复做）
 
-- P0 文档与仓库卫生：docs 一致性核对、`04_INTEGRATION.md` 待实测模板、`02_PHASES.md` 任务分层 —— 已完成
-- P1 Next.js 骨架（App Router + TypeScript、`.env.example`、`/api/health`、Mock 登录态 UI）—— 已完成
-- P2 设计草案（Asset/Work ↔ RAGFlow 映射、四阶段状态机、Logto 接入清单）—— 已写入 DRAFT
+| 项 | 状态 | 位置 / 证据 |
+|----|------|-------------|
+| 业务数据层 | 已落地 | `src/domain/`、`src/server/{ports,db,repositories,http}/`；迁移 `drizzle/0000_military_wasp.sql`；见 `01_ARCHITECTURE.md` 第 5 节 |
+| 四张表与两条 CHECK | 已落地并测试 | `objects` / `content_refs` / `library_events` / `sync_jobs`；资产无 `status`、外库作品不得 `practiced` |
+| Logto 自托管部署 | 容器已跑、连通性已实测 | `infra/logto/docker-compose.yml`；`logto` / `logto-postgres` 均 `Up (healthy)`；服务 3001、控制台 3002 |
+| `04_INTEGRATION.md` 的 Logto 段 | 已填实测值 | 版本、端口、Base URL、控制台地址、健康检查接口 |
+| Next.js 骨架、`/api/health`、Mock 登录态 UI | 已完成 | 见 3.1 |
+| 测试 | 6 文件 40 项通过 | `npm test`（2026-11-11 实测） |
 
-**仍然有效的约束（与 Docker 是否就绪无关）**：
+### 5.2 未完成（下一步就是这些）
 
-1. **不要**把 Logto / RAGFlow 写成已部署、已连接；部署前两者一律表述为「未部署 / 未验证」。
-2. **不要**编造端口、URL、`content_ref`；只写实测值。
-3. **不要**实现「写死假 content_ref 当生产逻辑」。
-4. **不要**恢复已砍功能（加密分享、试运行评估、旧图谱、多用户隔离）。
-5. **不要**重复初始化 Next.js 骨架，也不要寻找不存在的旧业务代码（ADR-006）。
+1. **Logto 管理员账号（需人工）**：打开 `http://localhost:3002/console/welcome` → Create account。之后在控制台创建应用、拿应用 ID / Secret 与回调地址。这一步没有替代方案，必须由人在浏览器完成。
+2. **RAGFlow 部署**：尚未落地编排文件，也没有容器在运行。端口、地址、接口契约一律保持 `待实测`，不得先写进 `04_INTEGRATION.md`。
+3. **Phase 1 剩余：API 路由与页面**：截至 `e95d154`，`src/app/api` 只有 `/api/health`，`server.services` 与 `server.adapters.ragflow` 是占位 README。需要补 `objects` 的 CRUD、库别迁移路由与对应页面，并把 Mock 身份换成真实 Logto 会话。本文档同步时工作区已有并行的 Phase 1 改动（未提交），以提交后的代码为准再核对。
+4. **Phase 2~5**：见 `02_PHASES.md`。
+
+### 5.3 仍然有效的约束（与 Docker 是否就绪无关）
+
+1. **不要**把 Logto 写成「已接通应用侧」：容器与连通性实测通过 ≠ 应用能登录。管理员账号、应用 ID、回调地址都没配，Phase 1 的登录链路尚未打通。
+2. **不要**把 RAGFlow 写成已部署、已连接；也不要在没有实测值的情况下填 `04_INTEGRATION.md`。
+3. **不要**编造端口、URL、`content_ref`；只写实测值。
+4. **不要**实现「写死假 content_ref 当生产逻辑」。
+5. **不要**恢复已砍功能（加密分享、试运行评估、旧图谱、多用户隔离）。
+6. **不要**重复初始化 Next.js 骨架或数据层，也不要寻找不存在的旧业务代码（ADR-006）。
 
 ---
 
-## 6. Docker 就绪后的执行顺序（环境已就绪，从现在开始按序执行）
+## 6. 执行顺序（从当前起点继续，不要从第 1 步重来）
 
-严格按序：
+1. 环境核验 ✅ 已实测（2026-11-11）：Docker 29.9.2、`docker compose` v5.6.1、WSL 内有 Ubuntu 发行版。
+2. Infra：落地 **Logto** compose ✅ 已完成（`infra/logto/docker-compose.yml`；服务 3001、控制台 3002；实测值已写入 `04_INTEGRATION.md`）。
+3. 验证 Logto 控制台可打开 ✅ 已实测（`/api/status` → 204，控制台 302 → `/console/welcome`）；**但管理员账号尚未创建**。
+4. **【下一步 · 需人工】创建 Logto 管理员账号**：浏览器打开 `http://localhost:3002/console/welcome` → Create account；随后在控制台创建应用，记录应用 ID / Secret 与回调地址，填入 `04_INTEGRATION.md`。
+5. Infra：落地 **RAGFlow** compose（尚无编排文件）；验证 Web / API 可访问。
+6. 把 RAGFlow 的真实 baseURL、端口、版本、必要 env **只写真实值** 进 `04_INTEGRATION.md`。
+7. 更新 `02_PHASES.md`：勾选 Logto / RAGFlow Docker 项；Phase 0 关闭后进入 Phase 1 收尾。
+8. **Phase 1 收尾**：`server.services` 用例编排 + `/api` 业务路由（对象 CRUD、库别迁移）+ 页面；用真实 Logto 会话替换 Mock 身份。
+9. Phase 2：`server.adapters.ragflow` 适配层 + `content_refs` 映射与 outbox 投递。
+10. Phase 3 / 4 / 5 按 `02_PHASES.md`。
 
-1. 环境核验 ✅ 已实测（2026-11-11）：Docker 29.9.2、`docker compose` v5.6.1、WSL 内有 Ubuntu 发行版；当前无容器运行，端口 3000 / 3001 / 9380 空闲。启动前复核端口即可，无需重新搭建。
-2. Infra：给出并落地 **Logto** compose（端口避开已确认空闲的 3000 / 3001 / 9380 冲突；实测后写入 `04_INTEGRATION.md`）。
-3. 验证 Logto 控制台 / 登录页可打开。
-4. Infra：落地 **RAGFlow** compose；验证 Web/API 可访问。
-5. 把真实 baseURL、端口、版本、必要 env **只写真实值** 进 `04_INTEGRATION.md`。
-6. 更新 `02_PHASES.md`：勾选 Logto/RAGFlow Docker 项；Phase 0 关闭条件满足后进入 Phase 1。
-7. Phase 1：Next.js 正式接 Logto SDK/OIDC。
-8. Phase 2：RAGFlow API 封装 + content_ref 映射实现。
-9. Phase 3 / 4 / 5 按 PHASES。
+端口现状（**以实测为准**）：
 
-端口规划（历史建议，**以实测为准**）：
-
-| 服务 | 历史建议端口 | 说明 |
-|------|----------------|------|
-| Next.js | 3000 | 主应用 |
-| Logto | 3001 | 认证 |
-| RAGFlow | 9380 或官方默认 | 以官方 compose 为准 |
+| 服务 | 实测端口 | 说明 |
+|------|----------|------|
+| Next.js | 3000（规划值，未与 Logto 实测冲突） | 主应用 |
+| Logto | 3001（服务）/ 3002（控制台） | 已在运行 |
+| RAGFlow | 待实测 | 以官方 compose 为准，未部署 |
 
 ---
 
@@ -151,7 +168,7 @@ Docker / WSL 已于 2026-11-11 实测就绪（Docker 29.9.2、Compose v5.6.1、W
 ```
 浏览器 → Next.js (UI + API Routes)
            ├─ 认证 ──────────→ Logto
-           ├─ 元数据/状态 ───→ 轻量存储（SQLite/JSON/DB）
+           ├─ 元数据/状态 ───→ SQLite（Drizzle；ADR-009，仅业务数据）
            ├─ 内容主体 ──────→ RAGFlow（唯一内容真相）
            └─ 知识图谱 ──────→ LightRAG（独立向量/图；Embedding 可与 RAGFlow 同模型）
 ```
@@ -191,21 +208,22 @@ python agents/main.py
 
 ## 10. 建议你（AI）在本轮 DSH 的默认工作包
 
-本轮工作包已完成。后续 Agent 按以下状态接续：
+上一轮（提交 `e95d154`）已完成业务数据层与 Logto 自托管。后续 Agent 按以下状态接续：
 
-1. **确认工作区**：ADR-006 是 greenfield 起点记录；当前 Next.js 骨架已存在，不要找旧代码，也不要重复初始化。
-2. **文档卫生**：继续与 SCOPE/PHASES/ADR 保持一致；`04_INTEGRATION.md` 保持待实测模板，不编造端口。
-3. **当前状态**：Docker 已就绪、无容器运行；工作从第 6 节第 2 步（Logto compose）开始，不再有「等 Docker」的分支。
-4. **顺序**：Logto 起来并验证 → RAGFlow 起来并验证 → 实测值写入 `04_INTEGRATION.md` → 关闭 Phase 0 → 再进入 Phase 1 接真 Logto。
+1. **确认工作区**：ADR-006 是 greenfield 起点记录；Next.js 骨架与业务数据层均已存在，不要找旧代码，也不要重复初始化。
+2. **文档卫生**：继续与 SCOPE / PHASES / ADR 保持一致；`04_INTEGRATION.md` 只写实测值，RAGFlow 段保持 `待实测`。
+3. **当前状态**：Logto 容器在跑、连通性已实测，但管理员账号未创建；RAGFlow 未部署；Phase 1 缺 API 路由与页面。
+4. **顺序**：创建 Logto 管理员账号并配置应用 → RAGFlow 部署与实测 → 实测值写入 `04_INTEGRATION.md` → 关闭 Phase 0 → 补齐 Phase 1 的 `/api` 路由与页面。
 5. **输出**：简短《本轮完成》+《下一步命令清单》。
 
 ---
 
 ## 11. 给用户的同步点（你完成后告诉用户）
 
-- 本轮改了哪些文件  
-- 当前服务状态：Docker 已就绪；Logto / RAGFlow **未部署**  
-- 下一步：无需用户侧操作，直接按第 6 节从 Logto compose 开始
+- 本轮改了哪些文件
+- 当前服务状态：Docker 就绪；**Logto 容器在跑且连通性已实测，但管理员账号未创建、控制台未配置**；**RAGFlow 尚未部署**
+- 代码状态：业务数据层（四表 + 两条 CHECK）已落地并有测试覆盖；`/api` 业务路由与页面未实现
+- 下一步：需要用户本人在浏览器打开 `http://localhost:3002/console/welcome` 创建 Logto 管理员账号；之后才能继续 Phase 1 的应用侧接入
 
 ---
 
@@ -227,4 +245,4 @@ python agents/main.py
 
 **结束语给执行 Agent**：  
 方向已锁死在 RAGFlow 内容底座 + 资产/工作流业务层 + Logto + LightRAG。  
-原最大外部依赖（本机 Docker）已解除，文档、骨架与映射设计已完成。现在按第 6 节顺序推进 **Logto → RAGFlow**，不要跳步；两者部署完成前，任何文档都不得写成「已部署、已验证」。
+Docker 依赖已解除，文档、骨架、映射设计与业务数据层均已完成。下一步按第 6 节：**先让人建 Logto 管理员账号并配置应用，再部署 RAGFlow**，不要跳步。表述纪律：Logto 只能写到「容器已跑、连通性已实测」为止（应用侧未接通）；RAGFlow 在部署并实测前一律写「未部署」。

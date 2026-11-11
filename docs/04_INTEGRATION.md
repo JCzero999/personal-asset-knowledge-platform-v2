@@ -14,7 +14,7 @@
 ## Logto
 
 - 部署方式：Docker 自托管（ADR-003），编排文件 `infra/logto/docker-compose.yml`
-- 当前状态：容器已启动并通过连通性验证（2026-11-11 实测）；管理员账号与控制台侧配置未初始化
+- 当前状态：容器已启动并通过连通性验证（2026-11-11 实测）；管理员账号已创建，应用已配置，应用侧已接入（客户端流程待人工登录验证）
 
 | 字段 | 实测值 |
 |---|---|
@@ -27,15 +27,16 @@
 | 健康检查接口 | `GET /api/status` → 204 |
 | 验证结果 | `curl -o /dev/null -w '%{http_code}' http://localhost:3001` → 302（Location `/unknown-session`，无会话时的正常跳转）；`http://localhost:3002` → 302（`/console/welcome`）；`/oidc/.well-known/openid-configuration` 返回正常 JSON |
 | 已验证环境变量名 | 服务端（compose 传入）：`DB_URL`、`ENDPOINT`、`ADMIN_ENDPOINT`、`TRUST_PROXY_HEADER`；编排层：`POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`LOGTO_VERSION`、`LOGTO_PORT`、`LOGTO_ADMIN_PORT`（真实密码仅存在于 `infra/logto/.env`，不入库） |
-| 应用类型 / 应用 ID | 待控制台实际创建 |
-| OIDC 回调地址 | 待实现并验证 |
-| Next.js 接入方式 | 待选型并验证 |
-| 应用侧环境变量名 | 待实现并验证（`.env.example` 中的 `LOGTO_ENDPOINT` / `LOGTO_APP_ID` 等仍是草案） |
-| 登录 / 注册 / 会话验证结果 | 待 Phase 1 验证 |
+| 应用类型 / 应用 ID | 传统 Web 应用（Next.js App Router 指南创建），应用名「个人资产与知识平台」，App ID `9nyn3ox0u36w37qu2adab` |
+| OIDC 回调地址 | 登录回调 `http://localhost:3000/api/logto/sign-in-callback`；登出后回跳 `http://localhost:3000/`（控制台已保存） |
+| Next.js 接入方式 | `@logto/next` 4.2.11 的 server-actions：`signIn` / `handleSignIn` / `getLogtoContext` / `signOut` |
+| 应用侧路由 | `GET /api/logto/sign-in`（发起登录）、`GET /api/logto/sign-in-callback`（换码后进 `/workspace`）、`GET /api/logto/sign-out`（清会话并回首页） |
+| 应用侧环境变量名 | `AUTH_MODE=logto`、`APP_URL`、`LOGTO_ENDPOINT`、`LOGTO_APP_ID`、`LOGTO_APP_SECRET`、`LOGTO_COOKIE_SECRET`；真实值只写 `.env.local`（已 gitignore），本文档不记录 |
+| 登录 / 注册 / 会话验证结果 | `GET /api/logto/sign-in` → 307，`redirect_uri` 为已保存的回调地址；该 authorize URL 被 Logto 接受（303 → `/unknown-session`，非 `invalid_redirect_uri`）。浏览器内完整登录与回调换码待人工完成一次后补记 |
 
 **部署要点（实测）**：镜像只 `EXPOSE 3001`，但进程同时监听 3002（`ADMIN_PORT` 默认值）；控制台挂在 `ADMIN_ENDPOINT` 的 `/console` 路径下。默认 entrypoint 只跑 `npm start`，而启动时会校验数据库已 seed 且业务表已启用 RLS，因此 compose 中把入口覆盖为 `npm run cli db seed -- --swe && npm start`，`--swe` 保证已初始化时跳过、可重复执行。
 
-**待人工完成**：首次启动后需在浏览器打开 `http://localhost:3002/console/welcome`，点「Create account」创建管理员账号；随后在控制台创建应用、拿到应用 ID / Secret 与回调地址，才能继续 Phase 1 的应用侧接入。
+**待人工完成**：浏览器打开 `http://localhost:3000`，点「登录」用 Logto 账号完成一次登录；成功后 `requireSession()` 应放行 `/workspace`，记录写入的 `ownerSub` 为 Logto 用户 `sub`。
 
 ## RAGFlow
 
