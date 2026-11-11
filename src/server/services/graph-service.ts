@@ -90,6 +90,22 @@ export interface GraphDocumentRef {
 const MAX_SYNC_OBJECTS = 50;
 const DOC_PAGE_SIZE = 200;
 const MAX_DOC_PAGES = 25;
+const MAX_OWNED_OBJECTS = 2_000;
+const MAX_LABEL_PROBES = 200;
+const OWNED_LABEL_TTL_MS = 60_000;
+
+/** 图谱读侧按账号过滤（ADR-011）：某个 file_path 是否来自该账号的对象。 */
+function isOwnedPath(filePath: string, owned: Set<string>): boolean {
+  const parsed = parseGraphFileSource(filePath);
+  return parsed !== null && owned.has(parsed.objectId);
+}
+
+async function ownerObjectIdSet(db: AppDatabase, ownerSub: string): Promise<Set<string>> {
+  const objects = await listObjects(db, { ownerSub, limit: MAX_OWNED_OBJECTS });
+  return new Set(objects.map((object) => object.id));
+}
+
+const ownedLabelCache = new Map<string, { at: number; labels: string[] }>();
 
 const libraryLabel: Record<BusinessObject["library"], string> = {
   internal: "内库",
@@ -262,10 +278,38 @@ export async function syncGraph(
   return result;
 }
 
-export async function listGraphLabels(options: GraphOptions = {}): Promise<string[]> {
+export async function listGraphLabels(
+  db: AppDatabase,
+  ownerSub: string,
+  options: GraphOptions = {},
+): Promise<string[]> {
+  const cached = ownedLabelCache.get(ownerSub);
+  if (cached && Date.now() - cached.at < OWNED_LABEL_TTL_MS) {
+    return cached.labels;
+  }
+
   const client =
     options.client ?? (createLightragClientFromEnv(options.env ?? process.env) as GraphGateway);
-  return client.listLabels();
+  const owned = await ownerObjectIdSet(db, ownerSub);
+  const labels: string[] = [];
+
+  if (owned.size > 0) {
+    // 标签接口是全局的，只能逐个实体取一跳子图，看是否有本账号的文档参与（ADR-011）。
+    for (const label of (await client.listLabels()).slice(0, MAX_LABEL_PROBES)) {
+      try {
+        const graph = await client.getSubgraph({ label, maxDepth: 1, maxNodes: 60 });
+        const touched =
+          graph.nodes.some((node) => isOwnedPath(node.filePath, owned)) ||
+          graph.edges.some((edge) => isOwnedPath(edge.filePath, owned));
+        if (touched) labels.push(label);
+      } catch {
+        // 单个实体探测失败不影响其余标签
+      }
+    }
+  }
+
+  ownedLabelCache.set(ownerSub, { at: Date.now(), labels });
+  return labels;
 }
 
 export interface GraphStatus {
@@ -276,10 +320,17 @@ export interface GraphStatus {
   failed: Array<{ objectId: string; error: string }>;
 }
 
-export async function graphStatus(options: GraphOptions = {}): Promise<GraphStatus> {
+export async function graphStatus(
+  db: AppDatabase,
+  ownerSub: string,
+  options: GraphOptions = {},
+): Promise<GraphStatus> {
   const client =
     options.client ?? (createLightragClientFromEnv(options.env ?? process.env) as GraphGateway);
-  const documents = await loadGraphDocumentStatuses(client);
+  const owned = await ownerObjectIdSet(db, ownerSub);
+  const documents = (await loadGraphDocumentStatuses(client)).filter((doc) =>
+    owned.has(doc.objectId),
+  );
   const status: GraphStatus = { total: documents.length, byStatus: {}, objects: [], failed: [] };
 
   for (const doc of documents) {
@@ -323,6 +374,8 @@ async function loadGraphDocumentStatuses(client: GraphGateway): Promise<GraphDoc
 
 
 export async function getGraphNeighborhood(
+  db: AppDatabase,
+  ownerSub: string,
   label: string,
   options: GraphOptions & { depth?: number; maxNodes?: number } = {},
 ): Promise<LightragSubgraph> {
@@ -340,11 +393,21 @@ export async function getGraphNeighborhood(
 
   const client =
     options.client ?? (createLightragClientFromEnv(options.env ?? process.env) as GraphGateway);
-  return client.getSubgraph({
+  const graph = await client.getSubgraph({
     label: trimmed,
     maxDepth: depth,
     maxNodes: options.maxNodes ?? 150,
   });
+
+  const owned = await ownerObjectIdSet(db, ownerSub);
+  const nodes = graph.nodes.filter((node) => isOwnedPath(node.filePath, owned));
+  const kept = new Set(nodes.map((node) => node.id));
+  const edges = graph.edges.filter(
+    (edge) =>
+      kept.has(edge.source) && kept.has(edge.target) && isOwnedPath(edge.filePath, owned),
+  );
+
+  return { nodes, edges };
 }
 
 export async function queryGraph(
@@ -382,5 +445,10 @@ export async function queryGraph(
     });
   }
 
-  return { question: trimmed, response: answer.response, references };
+  return {
+    question: trimmed,
+    // 引用不到本账号文档时，回答可能整段来自他人内容；宁可返回空（ADR-011）。
+    response: references.length > 0 ? answer.response : "",
+    references,
+  };
 }

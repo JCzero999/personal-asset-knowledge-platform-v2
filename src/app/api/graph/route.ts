@@ -1,4 +1,5 @@
 import { fail, fromError, ok } from "@/server/http/respond";
+import { getDb } from "@/server/db/client";
 import { getSession } from "@/server/session";
 import { getGraphNeighborhood } from "@/server/services/graph-service";
 
@@ -17,7 +18,7 @@ export async function GET(request: Request) {
 
   try {
     return ok(
-      await getGraphNeighborhood(label, {
+      await getGraphNeighborhood(getDb(), session.sub, label, {
         ...(depth === undefined ? {} : { depth }),
       }),
     );

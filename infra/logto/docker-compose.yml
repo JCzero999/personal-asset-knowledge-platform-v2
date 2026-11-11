@@ -41,6 +41,8 @@ services:
       DB_URL: ${DB_URL}
       ENDPOINT: ${LOGTO_ENDPOINT}
       ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT}
+      # 本机无外网 DNS 时，注册/改密的 pwned-passwords 查询会 500（实测 EAI_AGAIN）
+      ENABLE_PWNED_PASSWORD_API: "false"
     ports:
       - "${LOGTO_PORT}:3001"
       - "${LOGTO_ADMIN_PORT}:3002"

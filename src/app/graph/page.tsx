@@ -7,6 +7,7 @@ import {
   type GraphSubgraphView,
 } from "@/components/graph-explorer";
 import { pickInitialLabel } from "@/lib/graph-labels";
+import { getDb } from "@/server/db/client";
 import {
   getGraphNeighborhood,
   graphStatus,
@@ -32,14 +33,14 @@ export default async function GraphPage() {
   let error: string | null = null;
 
   try {
-    labels = await listGraphLabels();
+    labels = await listGraphLabels(getDb(), session.sub);
   } catch (cause) {
     console.error("[graph] 读取实体失败", cause);
     error = "图谱服务暂时没有响应，请确认本机 LightRAG 已启动。";
   }
 
   try {
-    status = await graphStatus();
+    status = await graphStatus(getDb(), session.sub);
   } catch (cause) {
     console.error("[graph] 读取构图进度失败", cause);
     error ??= "图谱服务暂时没有响应，请确认本机 LightRAG 已启动。";
@@ -48,7 +49,7 @@ export default async function GraphPage() {
   const initialLabel = pickInitialLabel(labels);
   if (initialLabel) {
     try {
-      initialSubgraph = await getGraphNeighborhood(initialLabel);
+      initialSubgraph = await getGraphNeighborhood(getDb(), session.sub, initialLabel);
     } catch (cause) {
       console.error("[graph] 读取初始邻域失败", cause);
     }

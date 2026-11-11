@@ -42,12 +42,16 @@ export interface LightragNode {
   id: string;
   type: string;
   description: string;
+  /** 产生该节点的文档；用于按账号过滤（ADR-011）。 */
+  filePath: string;
 }
 
 export interface LightragEdge {
   source: string;
   target: string;
   description: string;
+  /** 产生该边的文档；用于按账号过滤（ADR-011）。 */
+  filePath: string;
 }
 
 export interface LightragSubgraph {
@@ -217,11 +221,13 @@ export class LightragClient {
         id: node.id ?? "",
         type: stringProp(node.properties, "entity_type", "type"),
         description: stringProp(node.properties, "description"),
+        filePath: stringProp(node.properties, "file_path"),
       })),
       edges: (data.edges ?? []).map((edge) => ({
         source: edge.source ?? "",
         target: edge.target ?? "",
         description: stringProp(edge.properties, "description"),
+        filePath: stringProp(edge.properties, "file_path"),
       })),
     };
   }
