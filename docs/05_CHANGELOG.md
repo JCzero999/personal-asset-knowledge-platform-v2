@@ -139,3 +139,22 @@
 - `meta_fields` 只镜像 `content_key` / `owner_type` / `owner_id` / `library` / `archived` / `format` / `source`；实测上传接口不接受 meta，需要上传后 `PUT` 整体替换
 - 适配器新增 `createDataset`、`renameDocument`、`updateDocumentMetaFields`；RAGFlow 同名重传行为不确定（列表出现 `(1)` 后缀），替换流程据此改用临时名 + 改名（改名接口实测可用）
 - 验证：typecheck、lint、9 个测试文件 117 项用例通过；mock 身份 + 真实 RAGFlow 端到端上传 201，落 1 条 `content_ref` 与 1 条 pending upsert；冒烟文档与测试残留已删除，内容库恢复 0 文档
+
+## 2026-11-11（文档：API 参考与工程手册）
+
+- 新增 `docs/06_API.md`：按 `src/app/api/**/route.ts` 与对应 service / repository 逐条核对后写成，覆盖当前 15 条路由（12 条业务 / 系统接口 + 3 条 Logto 跳转），含请求字段、查询参数、错误码映射与可复制的 curl 示例；未实现能力集中列在第 8 节，不当作契约
+- 记录本轮新增能力：`GET /api/objects/{id}`（对象详情，他人对象与不存在统一 404）、`GET /api/objects/{id}/library`（迁移审计，按 `createdAt` 正序）、`POST /api/objects/{id}/content`（multipart 上传，25 MB 上限、`role` / `documentName` 规则、单一 Dataset、`content_key` 与 `meta_fields` 镜像、替换顺序与各失败点的处理）、列表的 `q` / `category` / `tag` / `status` / `sort` / `limit` / `offset`、`POST /api/sync/run`（手动触发一轮 outbox 投递，含后台 worker 的启动条件与间隔）
+- 更正：列表 `limit` 的数据层默认值是 **100**（`sqlite-object-repository.ts` 的 `query.limit ?? 100`），上限 200；此前口头按 50 讨论，以代码为准
+- 新增 `docs/07_PLAYBOOK.md`：目标与阶段口径、分层与业务约定、按 `git log` 的 20 个提交与提交时测试项数、问题—根因—解决—预防 14 条、验证流程、协作分工、阻塞与待验证清单、提交索引
+- 明确标注未验证项：RAGFlow 解析 / 检索未接线、outbox 投递只在假网关单测下验证、生产构建在 `5b19bfe` 之后未复跑、Logto 浏览器内完整登录仍待人工
+- 文档侧未改动 `src/`、`drizzle/`、`infra/` 与 `04_INTEGRATION.md`；`docs/01_ARCHITECTURE.md` 的既有未提交改动保持原样（其「内容上传与同步投递尚未实现」一句已过时，待随该文件提交时修正）
+- 验证：`npm test` 10 个测试文件 127 项通过（文档仅核对代码与测试，未改实现）
+
+## 2026-11-11（工作台操作、outbox 消费端与归档视图）
+
+- `82d8d54` 工作台对象行内操作：状态推进按 `allowedTransitions` 计算（外库作品的 practiced 自动消失）、跨库迁移理由必填、编辑/归档/删除集中进展开面板，并抽出 `api-error` / `object-labels` 共用
+- `1ea0b86` outbox 消费端：`sync-service.runSyncOnce` 原子认领任务，`upsert` 重写 RAGFlow `meta_fields`、`delete` 删文档并软删引用；文档已不存在视为达到目标状态，其它失败走指数退避；新增 `POST /api/sync/run` 与进程内定时 worker（`SYNC_WORKER_ENABLED` / `SYNC_WORKER_INTERVAL_MS`）
+- `a7aa5f3` 列表新增 `archived=only`（只返回已归档），并校验 `true` / `false` / `only`，非法值 400；供归档视图与「取消归档」使用
+- 真实 RAGFlow v0.20.5 端到端验证投递：上传 → 迁移到外库 → `POST /api/sync/run`（claimed 2 / done 2）→ 文档 meta 回读 `library=external`、`archived=false`、无 `status` → 删除对象 → `POST /api/sync/run`（claimed 1 / done 1）→ 数据集文档数回到 0
+- 文档同步到当前 HEAD：`docs/06_API.md`、`docs/07_PLAYBOOK.md` 覆盖 15 条路由与 20 个提交；`docs/01_ARCHITECTURE.md` 修正「内容上传与同步投递尚未实现」等过时表述，新增 5.6 内容上传与 outbox 投递小节。上文「文档：API 参考与工程手册」条目中「outbox 投递只在假网关单测下验证」「01 待修」两点以本节实测结果为准
+- 验证：typecheck、lint、`npm run build` 通过；10 个测试文件 127 项用例通过（新增 outbox 投递 8 项、归档视图 2 项）

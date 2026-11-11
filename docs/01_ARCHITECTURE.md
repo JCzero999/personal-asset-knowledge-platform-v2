@@ -6,7 +6,7 @@
 ## 1. 项目一句话
 以 RAGFlow 为统一内容存储与检索底座，在其上实现资产管理和四阶段工作流，结合 LightRAG 提供知识图谱能力，通过 Logto 提供登录注册的个人知识工作台。
 
-> **实现状态（ADR-006）**：业务侧 Next.js 已从零创建本地骨架（App Router + TypeScript）；业务持久化的**数据层已落地**（SQLite + Drizzle，见第 5 节），但 API 路由与页面尚未接入。真实认证与内容服务（RAGFlow）仍未接入。当前 `src/` 是新建实现，不是旧系统代码。
+> **实现状态（ADR-006 / ADR-009）**：业务侧 Next.js 骨架已落地（App Router + TypeScript），**数据层与 HTTP 接口均已实现**：SQLite + Drizzle 持久化（见第 5 节）、`/api/objects` 系列的对象 CRUD、作品状态迁移、跨库迁移与归档、内容上传、`/api/health` 健康检查，以及 `/workspace` 工作台。登录态来自 `AUTH_MODE`：`mock`（开发默认）使用固定本地身份，`logto` 走 Logto 真实登录（三条 `/api/logto/*` 路由）。**RAGFlow 已接入**：内容上传与 `sync_jobs` outbox 投递（进程内 worker）均已实现并经真实服务端到端验证；**LightRAG 仍未接入**，解析状态轮询、检索问答与内容下载未实现。接口契约见 [06_API.md](06_API.md)。当前 `src/` 是新建实现，不是旧系统代码。
 
 ## 2. 逻辑架构（高层）
 
@@ -67,7 +67,7 @@ Knowledge Graph (LightRAG)
 
 ## 5. 业务数据层实现
 
-> 本节记录**已落地**的实现（提交 `e95d154`），依据 ADR-007（内容映射契约）、ADR-008（内外库字段拆分）、ADR-009（存储选型与分层）。表结构以 `src/server/db/schema.ts` 与迁移 `drizzle/0000_military_wasp.sql` 为准；两者不一致时以代码和迁移为准，并修文档。
+> 本节记录**已落地**的实现（随当前 HEAD 更新），依据 ADR-007（内容映射契约）、ADR-008（内外库字段拆分）、ADR-009（存储选型与分层）。表结构以 `src/server/db/schema.ts` 与 `drizzle/` 迁移为准；两者不一致时以代码和迁移为准，并修文档。
 
 ### 5.1 分层与职责
 
@@ -78,8 +78,8 @@ Knowledge Graph (LightRAG)
 | **server.db** | `src/server/db/` | 连接与表结构：`client.ts`（单例连接 + 迁移）、`schema.ts`（四张表）、`id.ts`（ULID） | 不写业务判断 |
 | **server.repositories** | `src/server/repositories/` | 端口的 SQLite 实现：`SqliteObjectRepository`、`SqliteContentStore`；负责把数据库约束错误翻译成领域错误 | 不调用 RAGFlow |
 | **server.http** | `src/server/http/` | 统一响应信封 `ok` / `created` / `empty` / `fail` / `fromError`，错误码→HTTP 状态映射 | 不写业务逻辑 |
-| **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009） | 本轮仅有占位 README，未实现 |
-| **server.services** | `src/server/services/` | 用例编排（创建对象、迁移库别、内容同步） | 本轮仅有占位 README，未实现 |
+| **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009）：dataset 查询/创建、文档上传/改名/删除、`meta_fields` 整体更新 | 不做业务映射、重试或 outbox |
+| **server.services** | `src/server/services/` | 用例编排：`object-service.ts`（请求解析、字段校验、归属校验）、`content-service.ts`（上传与替换）、`sync-service.ts`（outbox 投递） | 不直接拼 SQL，不绕过适配器调用 RAGFlow |
 
 调用方向是单向的：`route handler → services → ports ← repositories → db`。`domain` 被所有上层引用，自己不知道谁在用它。route handler 的厚度上限为 15 行（ADR-009）。
 
@@ -122,13 +122,26 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **失败不回滚外部**：跨服务失败不靠分布式事务，靠 `sync_jobs` 落队 + 后续对账修正（ADR-007）。
 - **状态与内容解耦**：状态流转与跨库迁移只改业务元数据，不移动内容、不换 `document_id`（ADR-005 / ADR-007）。
 
+### 5.5 HTTP 接口层
+
+- `src/app/api/objects/**` 的 route handler 只做四件事：取会话 → 解析 JSON → 调 `object-service` → 用统一信封返回；业务校验集中在服务层，路由不写业务规则（ADR-009 的「路由厚度上限」）。
+- 身份统一由 `src/server/session.ts` 解析：`AUTH_MODE=mock` 是固定本地身份，`logto` 读 Logto 会话，其他取值视为无身份（接口 401，页面跳回首页）。
+- 端点清单、请求字段、错误码映射与 curl 示例见 [06_API.md](06_API.md)。该文档只写代码中真实存在的路由；未实现能力单独列出。
+
+### 5.6 内容上传与 outbox 投递
+
+- **上传**：`content-service.uploadObjectContent` 先校验归属与 multipart，再写 RAGFlow（单一 Dataset，按 `RAGFLOW_DATASET_ID` 或名称解析），最后落 `content_refs` 并入队 `sync_jobs`。替换主内容采用「临时名上传 → 写 meta → 落库 → 删旧文档 → 改回原名」，新上传失败时旧内容保持可用。
+- **投递**：`sync-service.runSyncOnce` 原子认领到期任务；`upsert` 按 `content_key` 认回文档并整体重写 `meta_fields`，`delete` 删除文档并软删本地引用；文档已不存在视为达到目标状态，其它失败按指数退避重试，达上限置 `failed`。
+- **触发**：`POST /api/sync/run` 可手动跑一轮；`src/instrumentation.ts` 在配置了 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY` 时挂进程内定时 worker（默认 30 秒，`SYNC_WORKER_ENABLED=false` 可关闭）。
+- **实测边界**：上传/迁移/删除三段已在真实 RAGFlow v0.20.5 上端到端验证（meta 读回与文档删除均核对）；生产模式下 `instrumentation` 的实际挂载未单独验证；解析状态仍恒为 `pending`（未接轮询）。
+
 ## 6. 主要数据流
 
 1. **用户登录** → Logto 完成认证，前端获得身份。
-2. **创建/更新资产或作品**  
-   - 业务侧写入元数据 + 状态  
-   - 内容提交至 RAGFlow（创建或更新 Document）  
-   - 保存两者之间的映射关系
+2. **创建/更新资产或作品**
+   - 业务侧写入元数据 + 状态，并在同一事务里入队 `sync_jobs`
+   - 内容经 `POST /api/objects/{id}/content` 提交至 RAGFlow（单一 Dataset），并保存 `content_refs` 映射
+   - worker 消费 `sync_jobs`，把库别、归档等元数据同步进 RAGFlow `meta_fields`；删除对象时删除对应文档
 3. **检索 / 问答** → 直接请求 RAGFlow。
 4. **知识图谱构建 / 查询** → LightRAG 基于内容（可从 RAGFlow 获取或同步）进行。
 5. **四阶段流转** → 仅更新业务侧状态；内容仍留在 RAGFlow，不随状态物理移动文件。
@@ -150,10 +163,10 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - 以本地文件系统作为内容主存储
 
 ## 9. 待 Phase 中细化的内容（写入 04_INTEGRATION.md）
-- RAGFlow Dataset / Document 与业务 Asset/Work 的具体映射字段
+- RAGFlow Dataset / Document 与业务 Asset/Work 的具体映射字段 —— **已定案并落地**：单一 Dataset（ADR-007），`content_refs` 保存映射，`meta_fields` 只镜像过滤字段（见 5.6 与 04_INTEGRATION.md）
 - 内容变更后如何触发 LightRAG 更新
 - 业务元数据存储的最终选型（SQLite / 其他）—— **已定案**：SQLite + better-sqlite3 + Drizzle（ADR-009，实现见第 5 节）
-- Logto 与 Next.js 的具体集成方式（SDK、回调、会话）
+- Logto 与 Next.js 的具体集成方式（SDK、回调、会话）—— **已落地**：`@logto/next`，`/api/logto/sign-in`、`sign-in-callback`、`sign-out` 三条路由，会话由 `src/server/session.ts` 统一解析（见 06_API.md 第 6 节）
 - 各服务的端口、环境变量、网络连通方式
 
 ## 10. 架构原则（必须遵守）
