@@ -25,6 +25,17 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import type { GraphViewModel } from "@/lib/graph-model";
 import type { GalaxyLayoutResult } from "@/lib/graph-layout-3d";
+import {
+  GALAXY_CAMERA_DIRECTION,
+  GALAXY_CAMERA_FALLBACK_DISTANCE,
+  GALAXY_CAMERA_HARD_MAX_DISTANCE,
+  GALAXY_CAMERA_MAX_DISTANCE,
+  GALAXY_CAMERA_MIN_DISTANCE,
+  GALAXY_FOV_DEGREES,
+  fitGalaxyCamera,
+  rescaleForViewport,
+  type GalaxyFraming,
+} from "@/lib/graph-camera";
 import type { QualityTier } from "@/lib/graph-quality";
 import type { GraphHighlight } from "@/lib/graph-selectors";
 import {
@@ -72,8 +83,16 @@ export interface GalaxyCanvas3DProps {
 // ADR-022 的初始机位是 [0,160,620]；验收要求「星系主体占舞台 75–85%」，
 // 620 的机位实测亮部包围盒只有 ~66%×70%，按同一视线方向推近 1.13 倍（620 → 550）。
 // fov / near / far、OrbitControls 的 120–1100 距离范围均未改动。
-const CAMERA_POSITION: readonly [number, number, number] = [0, 142, 550];
-const FOV = 45;
+//
+// 2026-11-13：画布从固定卡片改为铺满内容区后，宽高比随容器变化，写死的距离不再成立
+// （宽屏显得小、窄屏两翼被裁）。视线方向（俯角 14.48°）和上面这次 1.13 倍的观感保留为
+// **兜底机位** 568；真正的距离在布局算完后由 `CameraFraming` 按容器宽高比求值。
+const FOV = GALAXY_FOV_DEGREES;
+const CAMERA_POSITION: readonly [number, number, number] = [
+  GALAXY_CAMERA_DIRECTION[0] * GALAXY_CAMERA_FALLBACK_DISTANCE,
+  GALAXY_CAMERA_DIRECTION[1] * GALAXY_CAMERA_FALLBACK_DISTANCE,
+  GALAXY_CAMERA_DIRECTION[2] * GALAXY_CAMERA_FALLBACK_DISTANCE,
+];
 /** 0.55°/s ≈ 0.0096 rad/s；按 delta 积分，和帧率无关。 */
 const AUTO_ROTATE_RADS_PER_SECOND = 0.0096;
 
@@ -184,6 +203,20 @@ function SceneRoot({
 }) {
   const rotorRef = useRef<Group>(null);
   const labelCountRef = useRef(0);
+  const size = useThree((state) => state.size);
+
+  // 取景只依赖「布局 + 画布尺寸」：在根节点算一次，相机与控制器共用同一份。
+  const framing = useMemo(
+    () =>
+      fitGalaxyCamera({
+        positions: layout.positions,
+        count: layout.ids.length,
+        aspect: size.height > 0 ? size.width / size.height : 16 / 9,
+        // 竖长条画布（移动端）允许退过 ADR 的 1100，否则外环会被左右裁掉。
+        maxDistance: GALAXY_CAMERA_HARD_MAX_DISTANCE,
+      }),
+    [layout, size.width, size.height],
+  );
 
   return (
     <>
@@ -211,7 +244,8 @@ function SceneRoot({
           labelCountRef={labelCountRef}
         />
       </group>
-      <Controls />
+      <Controls framing={framing} />
+      <CameraFraming layout={layout} framing={framing} />
       <PointerBridge
         view={view}
         layout={layout}
@@ -262,19 +296,27 @@ function Starfield({ palette }: { palette: GraphPalette }) {
  * 相机
  * ------------------------------------------------------------------ */
 
-function Controls() {
+function Controls({ framing }: { framing: GalaxyFraming }) {
   const camera = useThree((state) => state.camera);
   const gl = useThree((state) => state.gl);
   const invalidate = useThree((state) => state.invalidate);
   const controlsRef = useRef<OrbitControls | null>(null);
 
+  /**
+   * 最远距离：宽屏沿用 ADR 的 1100；画布窄到装不下时放到取景距离的 1.15 倍，
+   * 让用户还能再退一点看全，同时不至于飘到星场外面。
+   */
+  const maxDistance = Math.max(
+    GALAXY_CAMERA_MAX_DISTANCE,
+    Math.min(GALAXY_CAMERA_HARD_MAX_DISTANCE, framing.distance * 1.15),
+  );
+
   useEffect(() => {
     const controls = new OrbitControls(camera, gl.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    // ADR-022 A3.1 / A8：最近 260（再近会穿进中心节点）、最远 1100。
-    controls.minDistance = 260;
-    controls.maxDistance = 1100;
+    // ADR-022 A3.1 / A8：最近 260（再近会穿进中心节点）；最远由下面那个 effect 按取景设置。
+    controls.minDistance = GALAXY_CAMERA_MIN_DISTANCE;
     controls.rotateSpeed = 0.55;
     controls.zoomSpeed = 0.8;
     controls.enablePan = false;
@@ -290,9 +332,62 @@ function Controls() {
     };
   }, [camera, gl, invalidate]);
 
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    controls.maxDistance = maxDistance;
+    // 之前的距离可能超出新上限（例如从竖屏切回宽屏），夹一次并排帧。
+    controls.update();
+    invalidate();
+  }, [maxDistance, invalidate]);
+
   useFrame(() => {
     controlsRef.current?.update();
   });
+
+  return null;
+}
+
+/**
+ * 取景：按画布宽高比 + 当前布局的实际投影求相机距离，视线方向保持不变。
+ * - 换布局（换中心 / 改深度 / 节点数变化）：重新取景，新星系重新铺满；
+ * - 只换画布尺寸（窗口拉伸、侧栏折叠）：保留用户此前的手动缩放倍数，
+ *   不把「用户放大看细节」这一步重置掉；
+ * - 自转不改变取景：`fitGalaxyCamera` 扫一整圈，任何转角都不会裁切。
+ */
+function CameraFraming({
+  layout,
+  framing,
+}: {
+  layout: GalaxyLayoutResult;
+  framing: GalaxyFraming;
+}) {
+  const camera = useThree((state) => state.camera);
+  const invalidate = useThree((state) => state.invalidate);
+  const applied = useRef<{ distance: number; layout: GalaxyLayoutResult } | null>(null);
+
+  useEffect(() => {
+    const previous = applied.current;
+    const distance =
+      previous && previous.layout === layout
+        ? rescaleForViewport({
+            nextFitDistance: framing.distance,
+            previousFitDistance: previous.distance,
+            currentDistance: camera.position.length(),
+            maxDistance: Math.max(
+              GALAXY_CAMERA_MAX_DISTANCE,
+              Math.min(GALAXY_CAMERA_HARD_MAX_DISTANCE, framing.distance * 1.15),
+            ),
+          })
+        : framing.distance;
+
+    const [dx, dy, dz] = framing.direction;
+    camera.position.set(dx * distance, dy * distance, dz * distance);
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+    applied.current = { distance: framing.distance, layout };
+    invalidate(2);
+  }, [camera, invalidate, layout, framing]);
 
   return null;
 }
@@ -303,8 +398,7 @@ function Rotator({
 }: {
   rotorRef: { readonly current: Group | null };
   autoRotate: boolean;
-}) {
-  const invalidate = useThree((state) => state.invalidate);
+}) {  const invalidate = useThree((state) => state.invalidate);
 
   useFrame((_state, delta) => {
     if (!autoRotate) return;

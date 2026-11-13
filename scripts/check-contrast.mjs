@@ -142,6 +142,69 @@ const GRAPH_2D_PAIRS = [
   { fg: "graph-accent", bg: "graph-canvas", min: 3, usage: "图谱 2D · 路径 / 画布" },
 ];
 
+/**
+ * 图谱玻璃浮层组（ADR-027 第 11 条）。
+ *
+ * 玻璃底是半透明的，星点会从下面透上来，所以不能拿 `--graph-canvas` 直接当背景：
+ * 按最坏情况合成——`.graph-workspace.is-float` 的径向渐变中心是
+ * `color-mix(in srgb, var(--graph-accent) 6%, var(--graph-canvas))`，先合成出
+ * 「最亮画布」，再把玻璃底叠上去，得到等效色；文字若在等效色上仍达标，任何
+ * 星点亮度下都达标。
+ */
+function mixOver(foreground, backdrop, percent) {
+  const alpha = percent / 100;
+  return {
+    rgb: foreground.rgb.map((channel, index) => channel * alpha + backdrop.rgb[index] * (1 - alpha)),
+    alpha: 1,
+  };
+}
+
+/** 只接受 `color-mix(in srgb, var(--x) N%, transparent)`：玻璃令牌的唯一写法。 */
+function parseMixToken(value, label) {
+  const match = value.match(
+    /^color-mix\(in srgb,\s*var\(--([\w-]+)\)\s*([\d.]+)%?,\s*transparent\)$/,
+  );
+  if (!match) throw new Error(`${label} 不是 color-mix(var, N%, transparent) 形式: ${value}`);
+  return { token: match[1], percent: Number(match[2]) };
+}
+
+function measureGlassPairs() {
+  const canvas = parseColor(resolveGraph("graph-canvas"), "--graph-canvas");
+  const accent = parseColor(resolveGraph("graph-accent"), "--graph-accent");
+  const core = parseColor(resolveGraph("graph-core"), "--graph-core");
+
+  // 最亮画布：径向渐变中心 6% 强调色叠在画布上（与 globals.css 的渐变写法一致）。
+  const brightest = mixOver(accent, canvas, 6);
+
+  const glassBgToken = parseMixToken(resolveGraph("graph-glass-bg"), "--graph-glass-bg");
+  const glassBgBase = parseColor(resolveGraph(glassBgToken.token), `--${glassBgToken.token}`);
+  const glass = mixOver(glassBgBase, brightest, glassBgToken.percent);
+
+  const borderToken = parseMixToken(resolveGraph("graph-glass-border"), "--graph-glass-border");
+  const borderBase = parseColor(resolveGraph(borderToken.token), `--${borderToken.token}`);
+  const border = mixOver(borderBase, glass, borderToken.percent);
+
+  // 玻璃上的次级文字是 --graph-core 66%（.graph-workspace.is-float 里的 --text-3 桥接值）。
+  const muted = mixOver(core, glass, 66);
+
+  return [
+    { fg: "graph-core", ratio: contrast(core.rgb, glass.rgb), min: 4.5, usage: "图谱玻璃 · 正文 / 玻璃底" },
+    { fg: "graph-core 66%", ratio: contrast(muted.rgb, glass.rgb), min: 4.5, usage: "图谱玻璃 · 辅助说明 / 玻璃底" },
+    { fg: "graph-accent", ratio: contrast(accent.rgb, glass.rgb), min: 3, usage: "图谱玻璃 · 图标 / 链接 / 玻璃底" },
+    // 1px 发丝描边不承载信息（面板靠底色与模糊被识别），门槛同 --line-strong：只要求可见。
+    // ADR-027 第 11 条给边框写的是 3:1，但 22% 的强调色在深空底上实测约 1.7:1；
+    // 若要 3:1 需把 --graph-glass-border 提到约 48%，观感会从「细边框」变成「亮圈」。
+    {
+      fg: "graph-glass-border",
+      ratio: contrast(border.rgb, glass.rgb),
+      min: 1.5,
+      usage: "图谱玻璃 · 1px 描边 / 玻璃底（仅需可见）",
+    },
+  ];
+}
+
+const glassPairs = measureGlassPairs();
+
 /** 解析 #hex 或 rgb()/rgba()（含空格 + 斜杠写法），保留 alpha。 */
 function parseColor(value, label) {
   const text = value.trim();
@@ -254,8 +317,22 @@ for (const block of THEME_BLOCKS) {
     });
   }
 
-  const widths = Object.fromEntries(keys.map((key) => [key, width(key, rows)]));
-  console.log(`\n=== 主题：${block.id} ===`);
+  // 玻璃组：令牌写在固定深色面里，四套主题读数相同，仍逐主题输出一次，
+  // 以后有人把玻璃令牌挪进主题块时这里会立刻分出差异。
+  for (const pair of glassPairs) {
+    const ok = pair.ratio >= pair.min - 0.005;
+    if (!ok) failed += 1;
+    rows.push({
+      前景: `--${pair.fg}`,
+      背景: "玻璃底（最亮画布合成）",
+      实测: `${pair.ratio.toFixed(2)}:1`,
+      要求: `${pair.min}:1`,
+      结果: ok ? "PASS" : "FAIL",
+      用途: pair.usage,
+    });
+  }
+
+  const widths = Object.fromEntries(keys.map((key) => [key, width(key, rows)]));  console.log(`\n=== 主题：${block.id} ===`);
   console.log(keys.map((key) => pad(key, widths[key])).join("  "));
   console.log(keys.map((key) => "-".repeat(widths[key])).join("  "));
   for (const row of rows) {

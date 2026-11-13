@@ -567,3 +567,27 @@
 - **失败可诊断**：新增 `src/server/services/model-endpoint-probe.ts`（只读）：按当前生效配置直连 `GET {base}/models`（Ollama 原生走 `/api/tags`），3 秒超时、30 秒内存缓存、密钥只进请求头、永不抛错；`GET /api/graph/status` 在存在失败对象时附带 `diagnosis`（`checkedAt` / `ok` / `latencyMs` / `message`），图谱页在失败面板与进度区用 `DiagnosisNote` 展示；接口契约同步写入 `06_API.md` §9.4
 - **测试与门禁**：新增 `tests/server/model-endpoint-probe.test.ts`；`llm-apply.test.ts` 补「查不到进程必须失败并回滚」与「脚本必须含分号」两项；`tsc --noEmit` 退出 0；`eslint .` 0 error / 14 warning（既有）；`vitest run --maxWorkers=2` **51 文件 757 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` 37/37
 - **未做 / 未验证**：浏览器后退关闭弹窗、移动端预览全屏未复测；`diagnosis` 的文案只在注入场景下验过，未在真实断网下复现；抽取耗时未重新统计
+
+## 2026-11-13（ADR-027：/graph 全屏星图画布 + 液态玻璃浮层）
+
+- **起因**：用户实测 `/graph` 页面「布局别扭、星图太小」，希望整页背景都是星图，头部控制区与右侧实体详情改成不挡星图的透明液态玻璃板
+- **ADR**：新增 **ADR-027**（决策索引表已加行）；只写决策与边界。同时按代码事实校正 ADR-025——应用密钥是专用 `SETTINGS_ENC_KEY`（**不存在** `AUTH_SECRET` 回退链），HKDF salt 为 `pakp.settings.salt.v1`、info 为 `pakp.settings.aes-256-gcm`，**没有 AAD**，解密失败给固定文案且不得自动清空该行
+- **布局边界**：作用域是图谱模块内容区（含页头），左侧导航不动；`.graph-page` 去掉 `max-width: 1180px`，画布 `position: absolute; inset: 0` 铺满作背景层；控制条并为顶部玻璃条，详情改为右侧玻璃浮层，**画布不再为其让位**（显式覆盖 `16_GRAPH_DESIGN.md` §3.2 的避让规则，需设计稿回改）
+- **玻璃令牌**：新增 3 个令牌写在既有 `[data-surface="graph"]` 块内——底色 `color-mix(in srgb, var(--graph-canvas) 72%, transparent)`、边框 22% accent、1px 内高光 6% 白；`backdrop-filter: blur(14px) saturate(130%)`，模糊上限 18px。因此 `check:theme` 名字总数与字面量基线 26 均不变
+- **可读性硬约束**：玻璃内的文字与图标只能用 graph 面令牌，禁止用主题 `--text-*` / `--surface-*`（pine / sand 是浅色主题，混用会出现深底深字）；`check-contrast.mjs` 增加 `graph.glass` 分组（文字 4.5:1、图标与边框 3:1）
+- **降级链**：不支持 `backdrop-filter` → 92% 实色；`prefers-reduced-transparency` → 同上；`low` 档 → 同上；无 WebGL → 沿用现有 2D 规则。2D 聚焦模式同样铺满 + 玻璃，列表模式保持文档流且不挂 WebGL
+- **交互与可访问性**：浮层容器 `pointer-events: none`、每块浮层 `auto`，禁止整屏透明遮罩吞掉画布交互；焦点顺序 控制 → 画布 → 详情；浮层可折叠但不整体消失；`prefers-reduced-motion` 契约不变
+- **性能口径**：画布变大意味着像素更多，但 ADR-022 的 150 / 300 / 600 节点预算、2 / 1.5 / 1 的 DPR、8 个 draw call、Worker 抽取与 `__graphStats` 全部不变，不得用缩小预算换帧率
+- **未做（当轮）**：只改 `docs/`，未跑 `check:theme` / `check:contrast`，未实测任何帧率或节点读数——实现与实测见同日下一条
+
+## 2026-11-13（ADR-027 v1.1 实施：左上控制卡 + 右上详情卡 + 液态玻璃三层）
+
+- **起因**：用户看过第一版实机效果后提出——顶部绿色框选的整条控制区往左收缩到左上角、按键区随之调整；红色框选的实体详情上移到右上角，与收缩后的控制区保持水平；所有浮在星图上的方框都做成参考代码那种「会动的高光 + 边缘不均匀」的液态玻璃
+- **版式**：控制区改为 `position:absolute; top/left:16px; width:max-content; max-width:min(880px, 100% − 356px − 48px)` 的紧凑玻璃卡，控件允许两行；实体详情改 `top/right:16px`、宽 356（≤1000px 为 300）、最高 60%、内部滚动；两卡顶边同线、中间留 16px；问图谱仍贴右下；画布层保持 `inset:0`，选中实体不再改变画布尺寸
+- **液态玻璃**：`[data-surface="graph"]` 新增 6 个令牌（指针高光 core 30% / mid 12%，斜向反光四段 18/3/8/14% 白），`.graph-glass` 增加 `::before` 径向高光（`--mx/--my`）、`::after` 160° 反光（`mix-blend-mode: screen` + `isolation: isolate`）与 `perspective(1200px)` 下 ≤3° 倾斜；坐标用 ref + `style.setProperty` 写入、`requestAnimationFrame` 合并，`pointermove` 挂在每张卡自身；`prefers-reduced-motion` / 触屏只保留静态层；`low` 档与不支持模糊时回 92% 实色
+- **取景**：新增 `src/lib/graph-camera.ts`（45° FOV、仰角约 14.5°、94% 填充率、24 步求方位角），`starfield.tsx` 按视口宽高比重新取景并同步 `controls.maxDistance`；配套 `tests/lib/graph-camera.test.ts` 18 例
+- **列表点击语义**：`record-list.tsx` 标题补 ⌘/Ctrl 分支（跳过预览直接进详情），与行内其余位置一致
+- **实测读数**：1440 控制卡 736×249 @ (316,16)、详情卡 356×183 @ (1068,16)、顶边差 0、间距 16、画布 1140×900；1920 控制卡 880×201、间距 352、画布 1620×1080；390 控制条 298×63、抽屉 436px（55dvh）、选中实体下沿 304 < 抽屉顶 400；指针移入 `--mx` 82%、移出后变量移除、倾斜回正
+- **质量门**：`tsc` 0；`eslint` 0 error / 14 warning（既有）；`vitest` **51 文件 774 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` **41/41**
+- **独立验收**：临时库 + 假 LightRAG + 无头 Chromium，对 **生产构建（`next start`）** 跑 34 项断言全过——含两卡顶边差 0、间距 16、画布 1140×900 全幅、指针高光/倾斜、每卡各自监听 `pointermove`（工作区与 window 无监听）、四主题文字色、1920 与 390 断点、列表模式不套玻璃；截图见 `docs/screenshots/graph-glass-*.png`
+- **未验证**：真实 Logto 身份下的三栏截图未重拍；低端集显帧率与触屏真机手势未实测

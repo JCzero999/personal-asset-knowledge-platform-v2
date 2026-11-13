@@ -1158,6 +1158,16 @@ async function captureDefaultView(page, problems) {
   // 等第一轮布局/标签稳定；demand 渲染下这里没有持续动画，睡眠只是给 React/GL 尾巴。
   await sleep(1500);
   const ready = await statsOf(page);
+  // 全幅改版后画布尺寸随容器变化：把真实画布宽高比记进读数，取景就是按它求的。
+  const canvasBox = await page.evaluate(`(() => {
+    const canvas = document.querySelector('.graph-stage-wrap[data-mode="3d"] canvas');
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return { width: Math.round(rect.width), height: Math.round(rect.height) };
+  })()`);
+  if (canvasBox) {
+    console.log(`[note] 3D 画布 ${canvasBox.width}×${canvasBox.height}（宽高比 ${(canvasBox.width / canvasBox.height).toFixed(2)}）`);
+  }
   const labelBoxes = await page.evaluate(
     "window.__graphLabelBoxes ? JSON.parse(JSON.stringify(window.__graphLabelBoxes)) : []",
   );
@@ -1185,7 +1195,7 @@ async function captureDefaultView(page, problems) {
   if (idleFrames > 6) {
     problems.push(`3D 桌面空闲 2s 仍在出帧：${idleFrames}`);
   }
-  return { ready, idle, idleFrames, labelBoxes, labelOverlaps };
+  return { ready, idle, idleFrames, labelBoxes, labelOverlaps, canvasBox };
 }
 
 async function measureAutoRotate(page, problems) {
@@ -1290,12 +1300,22 @@ async function captureLowTier(page, problems) {
     problems.push(`低档 DPR 应为 1（预算上限），实际 ${stats?.dpr}`);
   }
 
+  const canvasBox = await page.evaluate(`(() => {
+    const canvas = document.querySelector('.graph-stage-wrap[data-mode="3d"] canvas');
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return { width: Math.round(rect.width), height: Math.round(rect.height) };
+  })()`);
+  if (canvasBox) {
+    console.log(`[note] 窄屏 3D 画布 ${canvasBox.width}×${canvasBox.height}（宽高比 ${(canvasBox.width / canvasBox.height).toFixed(2)}）`);
+  }
+
   await hideDevOverlay(page);
   await checkOverflow(page, "3D 低档", problems);
   await page.screenshot("phase6d-3d-low");
   flushErrors(page, "3D 低档", problems);
   checkBudgets(stats, "3D 低档", problems);
-  return { stats, samples };
+  return { stats, samples, canvasBox };
 }
 
 /**

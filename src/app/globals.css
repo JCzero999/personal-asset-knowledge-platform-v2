@@ -3209,6 +3209,23 @@ a.object-main:hover small {
   --graph-edge: rgb(243 239 231 / 14%);
   --graph-edge-strong: rgb(243 239 231 / 20%);
   --graph-accent: #f6e3c6;
+  /* ADR-027 第 9 条：液态玻璃的唯一配方。规则体只引用这三个令牌，不写裸色值。 */
+  --graph-glass-bg: color-mix(in srgb, var(--graph-canvas) 72%, transparent);
+  --graph-glass-border: color-mix(in srgb, var(--graph-accent) 22%, transparent);
+  --graph-glass-highlight: rgb(255 255 255 / 6%);
+  /* 液态玻璃的三层光：跟随指针的径向高光、160° 斜向反光（白 18→3→8→14%）。
+     颜色只在这里写一次，规则体一律引用令牌（check:theme 字面量基线不变）。 */
+  --graph-glass-pointer-core: rgb(255 255 255 / 30%);
+  --graph-glass-pointer-mid: rgb(255 255 255 / 12%);
+  --graph-glass-sheen-1: rgb(255 255 255 / 18%);
+  --graph-glass-sheen-2: rgb(255 255 255 / 3%);
+  --graph-glass-sheen-3: rgb(255 255 255 / 8%);
+  --graph-glass-sheen-4: rgb(255 255 255 / 14%);
+  /* 玻璃浮层上的状态色：主题的 --danger-fg / --warn-fg 是为浅色面板配的，
+     压在深空底上会糊成一团，这里给舞台单独一套提亮值。 */
+  --graph-danger: #eaa28e;
+  --graph-warn: #e8c083;
+  --graph-ok: #a9c9a3;
 }
 
 /* 2D 是阅读面，边本身就是信息载体：普通边与强边都必须满足非文本 UI 的 3:1，
@@ -3219,12 +3236,13 @@ a.object-main:hover small {
   --graph-edge-strong: rgb(243 239 231 / 62%);
 }
 
+/* 图谱页整块交给内部布局：3D / 2D 时画布要铺满、不留页边距，
+   列表模式的内边距由 `.graph-workspace:not(.is-float)` 自己补。 */
 .graph-page {
-  max-width: 1180px;
-}
-
-.graph-page-header {
-  margin-bottom: var(--sp-4);
+  height: 100%;
+  max-width: none;
+  min-height: 0;
+  padding: 0;
 }
 
 .graph-workspace {
@@ -3232,6 +3250,600 @@ a.object-main:hover small {
   flex-direction: column;
   gap: var(--sp-3);
 }
+
+/* 列表模式的文档流内边距：浮层模式下这一圈留白会让画布四边露底。 */
+.graph-workspace:not(.is-float) {
+  padding: var(--sp-5) var(--sp-6) var(--sp-8);
+}
+
+/* ---------- 顶部标题（两种模式共用） ---------- */
+
+.graph-bar-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.graph-bar-eyebrow {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+
+.graph-bar-title {
+  font-size: var(--fs-20);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+.graph-workspace.is-float .graph-status {
+  margin-top: 6px;
+}
+
+/*
+  控制区开关（ADR-027 第 8 条）：控制条可以收成「标题 + 状态 + 展开按钮」的摘要行，
+  收起只是视觉偏好，不进 URL。桌面默认展开，窄屏默认收起（由组件在挂载后判定）。
+*/
+.graph-bar-toggle {
+  align-items: center;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--fs-12);
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 12px;
+}
+
+.graph-bar-toggle:hover {
+  border-color: var(--green-300);
+  color: var(--text-1);
+}
+
+/* ---------- 全幅星图 + 液态玻璃浮层（3D / 2D） ---------- */
+
+/*
+  内容区就是一张铺满的星图：3D 画布 / 2D 舞台绝对定位铺满，控制条、实体详情、
+  问图谱与提示条是浮在它上面的玻璃板；列表模式回到普通文档流（表格不套浮层）。
+
+  浮层里的文字不能读主题的 --text-*：松林绿主题下那是深灰，压在深空底上看不见。
+  这里把文字 / 分隔线 / 表面三层 token 就地重映射成舞台自己的米白系，透明度换对比度；
+  四套主题因此共用同一套浮层观感，与「舞台固定深色」的既有口径一致。
+*/
+.graph-workspace.is-float {
+  /* 右侧浮层宽度：详情卡、问图谱卡、画布控件定位共用。 */
+  --graph-rail-w: 356px;
+  --danger-bg: color-mix(in srgb, var(--graph-danger) 16%, transparent);
+  --danger-fg: var(--graph-danger);
+  --gold-700: var(--graph-node-concept);
+  /* 聚焦环用浅底铺色；在深色玻璃上要换成低透明度的强调色，否则是一圈白雾。 */
+  --green-050: color-mix(in srgb, var(--graph-accent) 18%, transparent);
+  --green-300: color-mix(in srgb, var(--graph-accent) 55%, transparent);
+  --green-700: var(--graph-accent);
+  --line: color-mix(in srgb, var(--graph-core) 18%, transparent);
+  --line-soft: color-mix(in srgb, var(--graph-core) 10%, transparent);
+  --line-strong: color-mix(in srgb, var(--graph-core) 28%, transparent);
+  --ok-fg: var(--graph-ok);
+  --surface: color-mix(in srgb, var(--graph-canvas) 58%, transparent);
+  --surface-2: color-mix(in srgb, var(--graph-core) 10%, transparent);
+  --text-1: var(--graph-core);
+  --text-2: color-mix(in srgb, var(--graph-core) 78%, transparent);
+  --text-3: color-mix(in srgb, var(--graph-core) 66%, transparent);
+  --warn-bg: color-mix(in srgb, var(--graph-warn) 14%, transparent);
+  --warn-fg: var(--graph-warn);
+
+  background: radial-gradient(
+    120% 95% at 50% 42%,
+    color-mix(in srgb, var(--graph-accent) 6%, var(--graph-canvas)) 0%,
+    var(--graph-canvas) 64%
+  );
+  box-sizing: border-box;
+  display: block;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  position: relative;
+}
+
+/* 背景层：不吃鼠标事件（画布自己收手势），也不参与 grid 排版。 */
+.graph-workspace.is-float .graph-stage-layer {
+  inset: 0;
+  position: absolute;
+  transition: opacity 160ms ease;
+  z-index: 0;
+}
+
+.graph-workspace.is-float .graph-stage-layer.is-stale {
+  opacity: 0.55;
+}
+
+.graph-workspace.is-float .graph-stage-layer > .graph-stage-wrap,
+.graph-workspace.is-float .graph-stage-layer > .g3-stub {
+  border: 0;
+  border-radius: 0;
+  height: 100%;
+}
+
+.graph-workspace.is-float .graph-stage-layer .g2-stage {
+  height: 100%;
+}
+
+/* 画布自己的缩放按钮：舞台现在是整幅背景，默认的右下角正好压在「问图谱」玻璃板下面。
+   收到画布列的右下角，既不被挡，也不挤占右栏。 */
+.graph-workspace.is-float .g2-zoom {
+  bottom: var(--sp-4);
+  right: calc(var(--graph-rail-w) + var(--sp-6));
+}
+
+/* 顶部控制条：整行、贴顶，宽度自适应。 */
+.graph-workspace.is-float > .graph-bar {
+  align-items: flex-start;
+  grid-column: 1 / -1;
+  grid-row: 1;
+  padding: 14px 18px;
+  z-index: 3;
+}
+
+/* 收起后只剩摘要行（ADR-027 第 8 条）；状态由按钮的 aria-expanded 表达。 */
+.graph-workspace.is-float .graph-toolbar-actions[data-open="false"] {
+  display: none;
+}
+
+/* .graph-layout 在浮层模式下只是包装：让 main / inspector 直接落进 grid。 */
+.graph-workspace.is-float .graph-layout {
+  display: contents;
+}
+
+.graph-workspace.is-float .graph-main {
+  align-self: stretch;
+  background: none;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  grid-column: 1;
+  grid-row: 2;
+  min-height: 0;
+  padding: 0;
+  /* 只让浮层自己接手势：空白处的手势要落到底下的画布。 */
+  pointer-events: none;
+  z-index: 2;
+}
+
+.graph-workspace.is-float .graph-main > * {
+  pointer-events: auto;
+}
+
+.graph-workspace.is-float .graph-stage-head {
+  align-self: flex-start;
+  display: inline-flex;
+  gap: var(--sp-3);
+  max-width: 100%;
+}
+
+.graph-workspace.is-float .graph-stage-head h2 {
+  font-size: var(--fs-13);
+}
+
+.graph-workspace.is-float .graph-stage-head p {
+  font-size: var(--fs-11);
+  margin-top: 2px;
+}
+
+/* 空态卡片浮在星图中央，不再占一整条。 */
+.graph-workspace.is-float .graph-state-card {
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
+  background: var(--graph-glass-fill, var(--graph-glass-bg));
+  border: 1px solid var(--graph-glass-border);
+  border-radius: var(--r-md);
+  box-shadow: inset 0 1px 0 var(--graph-glass-highlight);
+  margin: auto;
+  max-width: 560px;
+  width: 100%;
+}
+
+.graph-workspace.is-float .graph-orphan-note {
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
+  align-self: flex-start;
+  background: var(--graph-glass-fill, var(--graph-glass-bg));
+  border: 1px solid var(--graph-glass-border);
+  border-radius: var(--r-pill);
+  box-shadow: inset 0 1px 0 var(--graph-glass-highlight);
+  padding: 6px 14px;
+}
+
+/*
+  玻璃卡是「外壳 + 内部滚动」：外壳不滚，跟随指针的高光才不会跟着内容一起滚走。
+  外壳留 40px 顶边给「收起」把手，正文区自己滚。
+*/
+.graph-workspace.is-float .graph-inspector {
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  grid-column: 2;
+  grid-row: 2;
+  max-height: 60%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 40px 0 0;
+  position: relative;
+  top: auto;
+  z-index: 2;
+}
+
+.graph-workspace.is-float #graph-inspector-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 18px 16px;
+}
+
+.graph-workspace.is-float .graph-qa {
+  align-self: end;
+  display: flex;
+  flex-direction: column;
+  grid-column: 2;
+  grid-row: 2;
+  max-height: 36%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 6px 0 var(--sp-3);
+  z-index: 2;
+}
+
+.graph-workspace.is-float .graph-qa-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 玻璃里不用 .panel-heading（ADR-027 第 10 条：浮层内不出现主题面板类）。 */
+.graph-qa-head {
+  display: flex;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  padding: 8px var(--sp-6) 6px;
+}
+
+.graph-qa-head h2 {
+  font-size: var(--fs-15);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+  margin: 0;
+}
+
+.graph-qa-head p {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  margin: var(--sp-1) 0 0;
+}
+
+/* 详情收起后的把手：浮层可折叠但不可消失（ADR-027 第 8 条）。 */
+.graph-inspector-handle {
+  align-items: center;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: var(--fs-12);
+  gap: 4px;
+  justify-content: center;
+  min-height: 26px;
+  padding: 0 10px;
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  z-index: 1;
+}
+
+.graph-inspector-handle:hover {
+  border-color: var(--green-300);
+  color: var(--text-1);
+}
+
+.graph-workspace.is-float .graph-inspector.is-collapsed {
+  align-self: start;
+  justify-self: end;
+  max-height: none;
+  overflow: visible;
+  padding: 4px;
+  width: auto;
+}
+
+.graph-workspace.is-float .graph-inspector.is-collapsed .graph-inspector-handle {
+  position: static;
+}
+
+/* 提示条 / 失败明细：主区左下角，最多占一半高度，超了自己滚。 */
+.graph-workspace.is-float .graph-notes {
+  align-self: end;
+  grid-column: 1;
+  grid-row: 2;
+  max-height: 52%;
+  max-width: min(520px, 100%);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 提示条之间的空隙也要把手势让给画布（ADR-027 第 7 条）。 */
+  pointer-events: none;
+  z-index: 3;
+}
+
+.graph-workspace.is-float .graph-notes > * {
+  pointer-events: auto;
+}
+
+/*
+  桌面 / 平板：控制卡贴左上、实体详情卡贴右上，两张卡顶边同一条线；画布仍是整幅背景。
+  控制卡宽度按内容自适应，上限留出右卡（--graph-rail-w）与 16px 空隙，两卡不会相撞。
+  邻域 chip 排在控制卡下方，高度从卡的实际高度（--graph-bar-h）推出来。
+*/
+@media (min-width: 768px) {
+  .graph-workspace.is-float > .graph-bar {
+    align-items: flex-start;
+    left: 16px;
+    max-width: min(880px, calc(100% - var(--graph-rail-w) - 48px));
+    padding: 16px 18px;
+    position: absolute;
+    right: auto;
+    top: 16px;
+    width: max-content;
+    z-index: 3;
+  }
+
+  /* 摘要行：标题在左、收起在右；控件整行排到下面，不为了塞进一行去删功能。 */
+  .graph-workspace.is-float .graph-bar-head {
+    flex: 1 1 auto;
+  }
+
+  .graph-workspace.is-float .graph-bar-toggle {
+    order: 2;
+  }
+
+  .graph-workspace.is-float .graph-toolbar-actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    order: 3;
+  }
+
+  /* 画布层仍铺满整幅（inset: 0），内边距只作用于浮在上面的 chip / 空态卡：
+     顶边让开控制卡的实际高度，右边让开右栏，浮层不互相压。 */
+  .graph-workspace.is-float .graph-main {
+    align-self: auto;
+    inset: 0;
+    padding: calc(16px + var(--graph-bar-h, 200px) + 8px) calc(var(--graph-rail-w) + 16px) 16px
+      16px;
+    position: absolute;
+  }
+
+  .graph-workspace.is-float .graph-inspector {
+    align-self: auto;
+    left: auto;
+    max-height: 60%;
+    position: absolute;
+    right: 16px;
+    top: 16px;
+    width: var(--graph-rail-w);
+  }
+
+  .graph-workspace.is-float .graph-qa {
+    align-self: auto;
+    bottom: 16px;
+    left: auto;
+    /* 详情卡最多 60%，留 40% 减去上下留白给问图谱，两块永不重叠。 */
+    max-height: min(36%, calc(40% - 40px));
+    position: absolute;
+    right: 16px;
+    top: auto;
+    width: var(--graph-rail-w);
+  }
+
+  .graph-workspace.is-float .graph-notes {
+    align-self: auto;
+    bottom: 16px;
+    left: 16px;
+    max-width: min(520px, calc(100% - var(--graph-rail-w) - 48px));
+    position: absolute;
+    right: auto;
+    top: auto;
+  }
+
+  /* 详情卡收起后只剩把手，贴在右上角，不再占一整条宽度。 */
+  .graph-workspace.is-float .graph-inspector.is-collapsed {
+    max-height: none;
+    overflow: visible;
+    padding: 4px;
+    width: auto;
+  }
+}
+
+.graph-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+/* 提示条与路径条用同一份玻璃材质（ADR-027 第 9 条配方，半径 14px 封顶 18px）。 */
+.graph-workspace.is-float .graph-notes > *,
+.graph-workspace.is-float .graph-path-bar {
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
+  background: var(--graph-glass-fill, var(--graph-glass-bg));
+  border: 1px solid var(--graph-glass-border);
+  box-shadow: inset 0 1px 0 var(--graph-glass-highlight);
+}
+
+.graph-workspace.is-float .graph-notes > .graph-note-error,
+.graph-workspace.is-float .graph-path-bar.is-missing {
+  background: color-mix(in srgb, var(--graph-danger) 16%, color-mix(in srgb, var(--graph-canvas) 80%, transparent));
+  border-color: color-mix(in srgb, var(--graph-danger) 34%, transparent);
+}
+
+.graph-workspace.is-float .graph-path-bar {
+  border-radius: var(--r-pill);
+  padding: 7px 14px;
+}
+
+/* ---------- 液态玻璃材质（ADR-027 第 9 条，唯一配方） ---------- */
+
+.graph-glass {
+  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  backdrop-filter: blur(14px) saturate(130%);
+  background: var(--graph-glass-fill, var(--graph-glass-bg));
+  border: 1px solid var(--graph-glass-border);
+  border-radius: var(--r-md);
+  box-shadow: inset 0 1px 0 var(--graph-glass-highlight);
+  color: var(--graph-core);
+  isolation: isolate;
+  position: relative;
+}
+
+/*
+  液态玻璃的三层：底色（72% 画布）之上，先跟指针走的径向高光，再一层 160° 斜向反光，
+  最后靠 transform 的 3° 倾斜给一点厚度。两层伪元素都不吃指针事件。
+  高光坐标 --mx/--my 与 --rx/--ry 由组件按帧写入，不经过 React 渲染。
+*/
+/* 两层光只加在三张大卡上；小的邻域 chip 保持扁平，一个胶囊不需要反光。 */
+.graph-glass:not(.is-chip)::before,
+.graph-glass:not(.is-chip)::after {
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  /* 负层：压在自己的底色之上、内容之下，不必给每个子元素加定位。 */
+  z-index: -1;
+}
+
+.graph-glass:not(.is-chip)::before {
+  background: radial-gradient(
+    circle at var(--mx, 50%) var(--my, 50%),
+    var(--graph-glass-pointer-core) 0%,
+    var(--graph-glass-pointer-mid) 16%,
+    transparent 42%
+  );
+}
+
+.graph-glass:not(.is-chip)::after {
+  background: linear-gradient(
+    160deg,
+    var(--graph-glass-sheen-1) 0%,
+    var(--graph-glass-sheen-2) 22%,
+    var(--graph-glass-sheen-3) 55%,
+    var(--graph-glass-sheen-4) 100%
+  );
+  mix-blend-mode: screen;
+}
+
+/* 倾斜只给三张大卡；小的邻域 chip 跟着歪会很怪。3° 是上限，控制卡在视线边缘。 */
+.graph-glass:not(.is-chip) {
+  transform: perspective(1200px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transform-origin: center;
+  transition: transform 220ms ease-out;
+}
+
+/* 减少动态效果时不留倾斜与跟随高光，只保留静态反光。 */
+@media (prefers-reduced-motion: reduce) {
+  .graph-glass:not(.is-chip) {
+    transform: none;
+  }
+
+  .graph-glass::before {
+    opacity: 0;
+  }
+}
+
+/*
+  ADR-027 第 12 条降级链，按顺序短路：
+  1. 不支持背景模糊 → 92% 实色；
+  2. prefers-reduced-transparency → 同上；
+  3. low 档 / 运行时降档（`data-glass="solid"`）→ 关掉模糊，只留 92% 底。
+  三条都只改 --graph-glass-fill，玻璃板自身的规则不用重写。
+*/
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .graph-workspace.is-float {
+    --graph-glass-fill: color-mix(in srgb, var(--graph-canvas) 92%, transparent);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .graph-workspace.is-float {
+    --graph-glass-fill: color-mix(in srgb, var(--graph-canvas) 92%, transparent);
+  }
+
+  .graph-workspace.is-float .graph-glass,
+  .graph-workspace.is-float .graph-notes > *,
+  .graph-workspace.is-float .graph-path-bar,
+  .graph-workspace.is-float .graph-state-card,
+  .graph-workspace.is-float .graph-orphan-note {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+.graph-workspace[data-glass="solid"] {
+  --graph-glass-fill: color-mix(in srgb, var(--graph-canvas) 92%, transparent);
+}
+
+.graph-workspace[data-glass="solid"] .graph-glass,
+.graph-workspace[data-glass="solid"] .graph-notes > *,
+.graph-workspace[data-glass="solid"] .graph-path-bar,
+.graph-workspace[data-glass="solid"] .graph-state-card,
+.graph-workspace[data-glass="solid"] .graph-orphan-note {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* 玻璃上的控件：下拉与分段切换不能再用浅色面板的底色，否则像挖了三个白洞。 */
+.graph-workspace.is-float .graph-toolbar-field select {
+  background: color-mix(in srgb, var(--graph-canvas) 55%, transparent);
+  border-color: color-mix(in srgb, var(--graph-core) 18%, transparent);
+  color: var(--graph-core);
+}
+
+.graph-workspace.is-float .graph-toolbar-field select option {
+  background: var(--graph-canvas);
+  color: var(--graph-core);
+}
+
+.graph-workspace.is-float .graph-mode-switch {
+  background: color-mix(in srgb, var(--graph-canvas) 45%, transparent);
+  border-color: color-mix(in srgb, var(--graph-core) 16%, transparent);
+}
+
+.graph-workspace.is-float .graph-mode-button.is-active {
+  background: color-mix(in srgb, var(--graph-core) 18%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--graph-core) 22%, transparent);
+  color: var(--graph-core);
+}
+
+/* 小尺寸的玻璃片（标题胶囊）：圆角收成 pill，去掉外阴影。 */
+.graph-glass.is-chip {
+  border-radius: var(--r-pill);
+  box-shadow: inset 0 1px 0 var(--graph-glass-highlight);
+  padding: 7px 14px;
+}
+
 
 /* ---------- 工具条 ---------- */
 
@@ -3289,6 +3901,13 @@ a.object-main:hover small {
   flex-wrap: wrap;
   gap: var(--sp-2);
   justify-content: flex-end;
+}
+
+/* 刷新 / 同步成组换行，避免单个按钮被挤到下一行。 */
+.graph-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
 }
 
 .graph-toolbar-field {
@@ -4352,6 +4971,155 @@ a.object-main:hover small {
   .graph-list-degree,
   .graph-list-hop {
     display: none;
+  }
+}
+
+/* 浮层模式的收窄：侧栏先变窄，再整列改成「顶部一条 + 底部抽屉」。 */
+@media (max-width: 1000px) {
+  .graph-workspace.is-float {
+    --graph-rail-w: 300px;
+  }
+}
+
+/* 窄屏回到「顶部一条 + 画布 + 底部问图谱」的网格，详情卡是覆盖在画布上的抽屉。 */
+@media (max-width: 767px) {
+  .graph-workspace.is-float {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    padding: 8px;
+  }
+
+  /* 控制条压成一条：标题 + 状态点 + 展开按钮（ADR-027 第 14 条）。 */
+  .graph-workspace.is-float > .graph-bar {
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    grid-column: 1;
+    grid-row: 1;
+    padding: 10px 12px;
+  }
+
+  /* 摘要行真正压成一行：标题 + 状态 + 控制按钮，不再让按钮掉到第三行。 */
+  .graph-workspace.is-float .graph-bar-head {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .graph-workspace.is-float .graph-bar-eyebrow,
+  .graph-workspace.is-float .graph-status p {
+    display: none;
+  }
+
+  .graph-workspace.is-float .graph-bar-title {
+    font-size: var(--fs-16);
+  }
+
+  .graph-workspace.is-float .graph-status {
+    margin-top: 2px;
+  }
+
+  .graph-workspace.is-float .graph-status strong {
+    display: block;
+    font-size: var(--fs-12);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .graph-workspace.is-float .graph-status-counts {
+    display: none;
+  }
+
+  .graph-workspace.is-float .graph-toolbar-actions[data-open="true"] {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    padding-top: 4px;
+  }
+
+  .graph-workspace.is-float .graph-toolbar-actions[data-open="true"] .graph-toolbar-field select {
+    max-width: 132px;
+  }
+
+  /* 上半屏留给星图：画布至少 45dvh 不被任何浮层覆盖。 */
+  .graph-workspace.is-float .graph-main {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 45dvh;
+  }
+
+  .graph-workspace.is-float .graph-notes {
+    align-self: end;
+    grid-column: 1;
+    grid-row: 2;
+    max-height: 40%;
+    max-width: none;
+  }
+
+  /* 实体详情：底部抽屉，浮在画布上，不占行高；没选中实体时整块不出现。 */
+  .graph-workspace.is-float .graph-inspector {
+    align-self: auto;
+    bottom: 8px;
+    grid-column: 1;
+    grid-row: auto;
+    left: 8px;
+    max-height: 55dvh;
+    padding: 40px 14px 14px;
+    position: absolute;
+    right: 8px;
+    top: auto;
+    z-index: 5;
+    /* 这一块压在「问图谱」的文字上而不是纯星图上，92% 会让底下的字透上来，
+       只有抽屉单独提到 96%，把文字透字挡掉。 */
+    --graph-glass-fill: color-mix(in srgb, var(--graph-canvas) 96%, transparent);
+  }
+
+  .graph-workspace.is-float .graph-inspector:has(.graph-inspector-empty) {
+    display: none;
+  }
+
+  /* 抽屉的左右留白由外壳给，正文区不再重复一遍。 */
+  .graph-workspace.is-float #graph-inspector-body {
+    padding: 0;
+  }
+
+  .graph-workspace.is-float .graph-inspector.is-collapsed {
+    bottom: 8px;
+    left: auto;
+    max-height: none;
+    padding: 4px;
+    right: 8px;
+  }
+
+  /* 抽屉打开时，把 2D 舞台的盒子收进抽屉上方的安全区：画布层仍然 inset: 0 全幅，
+     只改舞台盒子的位置与高度，舞台按新尺寸重排，选中实体与 1 跳邻居不再被抽屉压住。
+     两个变量由组件按实际栏高 / 抽屉高写入（ADR-027 第 14 条）。 */
+  .graph-workspace.is-float[data-drawer="true"] .graph-stage-layer .g2-stage {
+    height: var(--graph-stage-h, 100%);
+    position: absolute;
+    top: var(--graph-stage-top, 0px);
+    width: 100%;
+  }
+
+  /* 问图谱在文档流最底部，抽屉打开时会被盖住，收起抽屉即可回到它。 */
+  .graph-workspace.is-float .graph-qa {
+    grid-column: 1;
+    grid-row: 3;
+    max-height: 30dvh;
+  }
+
+  /* 390 宽下缩放按钮只会落在抽屉和问图谱之间，触摸端本来就有双指缩放，收掉。 */
+  .graph-workspace.is-float .g2-zoom {
+    display: none;
+  }
+
+  .graph-workspace.is-float .graph-stage-head .meta-chip {
+    display: none;
+  }
+
+  .graph-workspace:not(.is-float) {
+    padding: var(--sp-4) var(--sp-4) var(--sp-8);
   }
 }
 
@@ -6094,9 +6862,14 @@ a.object-main:hover small {
 }
 
 .record-detail .workspace.search-workspace,
-.record-detail .workspace.graph-page,
 .record-detail .workspace.admin-workspace {
   max-width: 1180px;
+}
+
+/* 图谱页铺满内容区（画布要全幅），宽度与内边距由 .graph-page 自己决定。 */
+.record-detail .workspace.graph-page {
+  max-width: none;
+  padding: 0;
 }
 
 .pane-back {
@@ -6211,7 +6984,6 @@ a.object-main:hover small {
   }
 
   .record-detail .workspace.search-workspace,
-  .record-detail .workspace.graph-page,
   .record-detail .workspace.admin-workspace {
     padding: var(--sp-5) var(--sp-4) var(--sp-8);
   }

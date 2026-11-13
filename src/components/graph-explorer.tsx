@@ -19,6 +19,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -327,6 +328,10 @@ export function GraphExplorer({
   const [sceneError, setSceneError] = useState<string | null>(null);
   // ADR-022 A8：默认不转；只有用户点开关才动，reduced-motion 下开关不出现。
   const [autoRotate, setAutoRotate] = useState(false);
+  // ADR-027 第 8 条：控制条可收成摘要行、详情可收成把手。两者都只是视觉偏好，不进 URL。
+  // 窄屏默认收起，但用户点过之后以点了的为准：这里只存「用户的选择」，默认值由 isMobile 推出来。
+  const [barOverride, setBarOverride] = useState<boolean | null>(null);
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
 
   const requestRef = useRef(0);
   const readyRef = useRef<{ layoutMs: number; layoutTicks: number; truncated: boolean; drawCalls: number } | null>(null);
@@ -358,6 +363,8 @@ export function GraphExplorer({
   const { webgl, softwareRenderer, hardwareConcurrency } = device;
   const reducedMotion = useSyncExternalStore(subscribeReducedMotion, readReducedMotion, () => false);
   const isMobile = useSyncExternalStore(subscribeMobile, readIsMobile, () => false);
+  // 窄屏默认把控制条收成一条；水合前按桌面处理，水合后由 isMobile 换过来（无 effect、无首帧断言漂移）。
+  const barOpen = barOverride ?? !isMobile;
 
   // 取数状态由「目标 key / 已加载 key / 该 key 的错误」推导，不在 effect 里同步 setState。
   const pendingKey = focus ? focusKey(focus, depth, maxNodes) : "";
@@ -938,37 +945,240 @@ export function GraphExplorer({
             ? "列表适合逐条核对；Enter 选中，再点「设为中心」展开邻域。"
             : "单击选中，双击设为中心；Shift + 单击另一个实体可直接看路径。";
 
+  // 3D / 2D 是铺满内容区的背景层；列表保持常规文档流（表格与浮层不混排）。
+  const floating = mode !== "list";
+  const workspaceRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 窄屏选中实体后，抽屉会盖住星图下半部分。画布层保持 inset: 0 全幅不变，
+   * 只把 2D 舞台的盒子收进「顶栏以下、抽屉以上」的安全区；舞台按新尺寸重排，
+   * 选中实体与 1 跳邻居就落在抽屉上方（ADR-027 第 14 条）。尺寸写进 CSS 变量，不靠改画布。
+   */
+  const drawerVisible = isMobile && floating && selectedId !== null && !inspectorCollapsed;
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    if (!drawerVisible) {
+      delete workspace.dataset.drawer;
+      workspace.style.removeProperty("--graph-stage-top");
+      workspace.style.removeProperty("--graph-stage-h");
+      return;
+    }
+    const apply = () => {
+      const bar = workspace.querySelector(".graph-bar");
+      const head = workspace.querySelector(".graph-stage-head");
+      const drawer = workspace.querySelector(".graph-inspector");
+      if (!drawer) return;
+      const base = workspace.getBoundingClientRect();
+      const chromeBottom = Math.max(
+        bar?.getBoundingClientRect().bottom ?? base.top,
+        head?.getBoundingClientRect().bottom ?? base.top,
+      );
+      const top = Math.round(chromeBottom - base.top) + 8;
+      const height = Math.round(drawer.getBoundingClientRect().top - 8 - (base.top + top));
+      // 剩余空间太窄就别折腾了：抽屉本身已经占掉大半屏，保持整幅更可用。
+      if (height < 120) return;
+      workspace.dataset.drawer = "true";
+      workspace.style.setProperty("--graph-stage-top", `${top}px`);
+      workspace.style.setProperty("--graph-stage-h", `${height}px`);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    for (const selector of [".graph-bar", ".graph-inspector", ".graph-stage-head"]) {
+      const element = workspace.querySelector(selector);
+      if (element) observer.observe(element);
+    }
+    window.addEventListener("resize", apply);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", apply);
+    };
+  }, [drawerVisible]);
+
+  /**
+   * 控制卡现在是贴左上的紧凑卡，下沿高度随内容与收起状态变化。
+   * 把它的实际高度写进 `--graph-bar-h`，下面一排 chip 与空态卡据此让位（不靠写死数值）。
+   */
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace || !floating) return;
+    const bar = workspace.querySelector<HTMLElement>(".graph-bar");
+    if (!bar) return;
+    const apply = () => {
+      workspace.style.setProperty(
+        "--graph-bar-h",
+        `${Math.round(bar.getBoundingClientRect().height)}px`,
+      );
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [floating, barOpen]);
+
+  /**
+   * 液态玻璃的三层光：跟随指针的径向高光 + 最多 3° 的厚度倾斜。
+   * 直接写 CSS 变量，pointermove 不进 React 渲染；用 requestAnimationFrame 合并，
+   * 一帧最多提交一次。触屏与「减少动态效果」下不跟随，光停在中间（原样交给 CSS 默认值）。
+   */
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace || !floating || reducedMotion || isMobile) return;
+    // 监听挂在每张玻璃卡自身（ADR-027 第 9 条），工作区与 window 上不挂 pointermove。
+    // 三张卡（控制、详情、问答）常驻不换节点，收起/切换模式/选中实体只改类名与内容，
+    // 所以取一次即可；指针只可能停在其中一张上，各卡各算自己的帧。
+    const cards = Array.from(
+      workspace.querySelectorAll<HTMLElement>(".graph-glass:not(.is-chip)"),
+    );
+    const props = ["--mx", "--my", "--rx", "--ry"];
+
+    const teardowns = cards.map((card) => {
+      let frame = 0;
+      let pending: { x: number; y: number } | null = null;
+
+      const commit = () => {
+        frame = 0;
+        if (!pending) return;
+        card.style.setProperty("--mx", `${pending.x.toFixed(2)}%`);
+        card.style.setProperty("--my", `${pending.y.toFixed(2)}%`);
+        // 边缘最多 3°：再多就像在抖，而不是一块有厚度的玻璃。
+        card.style.setProperty("--ry", `${((pending.x - 50) * 0.06).toFixed(2)}deg`);
+        card.style.setProperty("--rx", `${((50 - pending.y) * 0.06).toFixed(2)}deg`);
+      };
+
+      const onMove = (event: PointerEvent) => {
+        if (event.pointerType === "touch") return;
+        const rect = card.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        pending = {
+          x: Math.min(100, Math.max(0, ((event.clientX - rect.left) / rect.width) * 100)),
+          y: Math.min(100, Math.max(0, ((event.clientY - rect.top) / rect.height) * 100)),
+        };
+        if (!frame) frame = requestAnimationFrame(commit);
+      };
+
+      const onLeave = () => {
+        if (frame) {
+          cancelAnimationFrame(frame);
+          frame = 0;
+        }
+        pending = null;
+        for (const name of props) card.style.removeProperty(name);
+      };
+
+      card.addEventListener("pointermove", onMove, { passive: true });
+      card.addEventListener("pointerleave", onLeave);
+
+      return () => {
+        card.removeEventListener("pointermove", onMove);
+        card.removeEventListener("pointerleave", onLeave);
+        if (frame) cancelAnimationFrame(frame);
+        for (const name of props) card.style.removeProperty(name);
+      };
+    });
+
+    return () => {
+      for (const teardown of teardowns) teardown();
+    };
+  }, [floating, reducedMotion, isMobile]);
+
+  // ADR-027 第 12 条：low 档（含运行时降档的结果）关掉背景模糊，只留 92% 实色底。
+  const glassMode = tier === "low" ? "solid" : "live";
+  // 空态与错误态不画舞台：玻璃卡片直接落在静态深空底上，避免卡片和「空星系」提示条叠两层。
+  const stageCardVisible =
+    (graphLoading && !subgraph) ||
+    Boolean(graphError && !subgraph) ||
+    statusUnknown ||
+    zeroContent ||
+    noEntities ||
+    noNeighborhood;
+
+  /**
+   * 舞台节点：抽出来单独渲染在背景层里，浮层（顶部控制条、右侧详情、底部提示）
+   * 全部是它的兄弟节点。不改 `data-mode` / `?mode` / 降档与抽稀的既有契约，只改摆放。
+   */
+  const stage =
+    floating && !stageCardVisible ? (
+      mode === "3d" ? (
+        // 3D 只读抽稀后的视图；2D / 列表 / 详情栏仍用完整 view。
+        <GraphScene3D
+          view={renderView}
+          highlight={highlight}
+          tier={tier}
+          autoRotate={autoRotate && !reducedMotion}
+          onIntent={handleIntent}
+          onReady={handleReady}
+          onStats={handleStats}
+          onError={handleSceneError}
+        />
+      ) : (
+        <>
+          <GraphStage2D
+            view={view}
+            highlight={highlight}
+            selectedId={activeSelectedId}
+            focusId={displayCenter}
+            onSelect={handleSelect}
+            onFocus={handleFocus}
+            onHover={handleHover}
+          />
+          {graphLoading ? (
+            <div className="graph-stage-loading" role="status">
+              正在载入 {labelOf(focus) || focus} 的邻域…
+            </div>
+          ) : null}
+        </>
+      )
+    ) : null;
+
   return (
-    <div className="graph-workspace" data-surface="graph" data-mode={mode}>
-      <section className="panel graph-toolbar" aria-label="图谱状态与视图">
-        <div className="graph-status">
-          <span className={`graph-dot${working ? " is-working" : ""}`} aria-hidden="true" />
-          <div>
-            <strong>
-              {status
-                ? `${status.total} 个内容已进图谱${
-                    counts.processed ? ` · ${counts.processed} 个完成抽取` : ""
-                  }`
-                : "图谱服务未连接"}
-            </strong>
-            <p>
-              {working
-                ? `抽取中 ${counts.extracting} 个，排队 ${counts.queued} 个；本机模型较慢，完成后点「刷新」。`
-                : counts.failed > 0
-                  ? `有 ${counts.failed} 个内容抽取失败，展开下面的进度明细查看原因。`
-                  : modeHint}
-            </p>
-            {status && status.total > 0 ? (
+    <div
+      ref={workspaceRef}
+      className={`graph-workspace${floating ? " is-float" : ""}`}
+      data-surface="graph"
+      data-mode={mode}
+      data-glass={floating ? glassMode : undefined}
+    >
+      {stage ? (
+        <div className={`graph-stage-layer${graphError ? " is-stale" : ""}`}>{stage}</div>
+      ) : null}
+
+      <header
+        className={`graph-toolbar graph-bar${floating ? " graph-glass" : " panel"}`}
+        aria-label="图谱状态与视图"
+      >
+        <div className="graph-bar-head">
+          <p className="graph-bar-eyebrow">知识索引 · 实体关系</p>
+          <h1 className="graph-bar-title">知识图谱</h1>
+          <div className="graph-status">
+            <span className={`graph-dot${working ? " is-working" : ""}`} aria-hidden="true" />
+            <div>
+              <strong>
+                {status
+                  ? `${status.total} 个内容已进图谱${
+                      counts.processed ? ` · ${counts.processed} 个完成抽取` : ""
+                    }`
+                  : "图谱服务未连接"}
+              </strong>
               <p>
-                已完成 {counts.processed} · 抽取中 {counts.extracting} · 排队 {counts.queued} ·
-                失败 {counts.failed}
-                {counts.unknown > 0 ? ` · 状态未知 ${counts.unknown}` : ""}
+                {working
+                  ? `抽取中 ${counts.extracting} 个，排队 ${counts.queued} 个；本机模型较慢，完成后点「刷新」。`
+                  : counts.failed > 0
+                    ? `有 ${counts.failed} 个内容抽取失败，展开下面的进度明细查看原因。`
+                    : modeHint}
               </p>
-            ) : null}
+              {status && status.total > 0 ? (
+                <p className="graph-status-counts">
+                  已完成 {counts.processed} · 抽取中 {counts.extracting} · 排队 {counts.queued} ·
+                  失败 {counts.failed}
+                  {counts.unknown > 0 ? ` · 状态未知 ${counts.unknown}` : ""}
+                </p>
+              ) : null}
+            </div>
           </div>
         </div>
 
-        <div className="graph-toolbar-actions">
+        <div className="graph-toolbar-actions" id="graph-controls" data-open={barOpen ? "true" : "false"}>
           <label className="graph-toolbar-field">
             <span>中心</span>
             <select
@@ -1036,27 +1246,45 @@ export function GraphExplorer({
             </button>
           ) : null}
 
-          <button
-            className="btn btn-ghost graph-refresh"
-            type="button"
-            onClick={() => void refreshAll()}
-            aria-label="刷新进度"
-          >
-            <Icon name="refresh" size={16} />
-            刷新
-          </button>
-          <button
-            className="btn btn-primary"
-            type="button"
-            onClick={() => void handleSync()}
-            disabled={syncing}
-          >
-            <Icon name="sparkles" size={16} />
-            {syncing ? "正在同步…" : "同步内容"}
-          </button>
+          {/* 数据操作（刷新 / 同步）成组：窄一点的卡里换行时整组一起走，
+              不会只剩一个按钮掉在第二行。 */}
+          <div className="graph-toolbar-group">
+            <button
+              className="btn btn-ghost graph-refresh"
+              type="button"
+              onClick={() => void refreshAll()}
+              aria-label="刷新进度"
+            >
+              <Icon name="refresh" size={16} />
+              刷新
+            </button>
+            <button
+              className="btn btn-primary"
+              type="button"
+              onClick={() => void handleSync()}
+              disabled={syncing}
+            >
+              <Icon name="sparkles" size={16} />
+              {syncing ? "正在同步…" : "同步内容"}
+            </button>
+          </div>
         </div>
-      </section>
 
+        <button
+          className="graph-bar-toggle"
+          type="button"
+          aria-expanded={barOpen}
+          aria-controls="graph-controls"
+          onClick={() => {
+            setBarOverride(!barOpen);
+          }}
+        >
+          <Icon name="settings" size={15} />
+          {barOpen ? "收起" : "控制"}
+        </button>
+      </header>
+
+      <div className="graph-notes">
       {syncNote ? (
         <p className="graph-note" role="status">
           {syncNote}
@@ -1176,10 +1404,11 @@ export function GraphExplorer({
           ) : null}
         </details>
       ) : null}
+      </div>
 
       <div className="graph-layout">
-        <section className="panel graph-main" aria-label="图谱视图">
-          <div className="graph-stage-head">
+        <section className={`graph-main${floating ? "" : " panel"}`} aria-label="图谱视图">
+          <div className={`graph-stage-head${floating ? " graph-glass is-chip" : ""}`}>
             <div>
               <h2>
                 {displayCenter ? `${labelOf(displayCenter) || displayCenter} 的邻域` : "图谱视图"}
@@ -1382,6 +1611,7 @@ export function GraphExplorer({
               </div>
             </div>
           ) : mode === "list" ? (
+            // 3D / 2D 已经渲染在背景层里（.graph-stage-layer）；列表模式才需要在文档流里铺开。
             <GraphListView
               view={view}
               selectedId={activeSelectedId}
@@ -1389,56 +1619,45 @@ export function GraphExplorer({
               onSelect={selectEntity}
               onFocus={focusEntity}
             />
-          ) : mode === "3d" ? (
-            // 3D 只读抽稀后的视图；2D / 列表 / 详情栏仍用完整 view。
-            <GraphScene3D
-              view={renderView}
-              highlight={highlight}
-              tier={tier}
-              autoRotate={autoRotate && !reducedMotion}
-              onIntent={handleIntent}
-              onReady={handleReady}
-              onStats={handleStats}
-              onError={handleSceneError}
-            />
-          ) : (
-            <>
-              <div className={`graph-stage-wrap${graphError ? " is-stale" : ""}`}>
-                <GraphStage2D
-                  view={view}
-                  highlight={highlight}
-                  selectedId={activeSelectedId}
-                  focusId={displayCenter}
-                  onSelect={handleSelect}
-                  onFocus={handleFocus}
-                  onHover={handleHover}
-                />
-                {graphLoading ? (
-                  <div className="graph-stage-loading" role="status">
-                    正在载入 {labelOf(focus) || focus} 的邻域…
-                  </div>
-                ) : null}
-              </div>
-              {orphanFocused ? (
-                <p className="graph-orphan-note">
-                  这个实体还没有已抽取的关系，先把相关内容同步完整再来看看。
-                  {otherLabel ? (
-                    <button className="text-link" type="button" onClick={() => setView({ focus: otherLabel })}>
-                      换一个实体
-                    </button>
-                  ) : null}
-                </p>
+          ) : null}
+
+          {orphanFocused ? (
+            <p className="graph-orphan-note">
+              这个实体还没有已抽取的关系，先把相关内容同步完整再来看看。
+              {otherLabel ? (
+                <button className="text-link" type="button" onClick={() => setView({ focus: otherLabel })}>
+                  换一个实体
+                </button>
               ) : null}
-            </>
-          )}
+            </p>
+          ) : null}
 
           <p className="sr-only" role="status" aria-live="polite">
             {announcement}
           </p>
         </section>
 
-        <aside className="panel graph-inspector" aria-label="实体详情">
-          {selectedNode ? (
+        <aside
+          className={`graph-inspector${floating ? " graph-glass" : " panel"}${
+            floating && inspectorCollapsed ? " is-collapsed" : ""
+          }`}
+          aria-label="实体详情"
+        >
+          {floating ? (
+            <button
+              className="graph-inspector-handle"
+              type="button"
+              aria-expanded={!inspectorCollapsed}
+              aria-controls="graph-inspector-body"
+              onClick={() => setInspectorCollapsed((current) => !current)}
+            >
+              <Icon name={inspectorCollapsed ? "arrow-left" : "arrow-right"} size={14} />
+              {inspectorCollapsed ? "详情" : "收起"}
+            </button>
+          ) : null}
+
+          <div id="graph-inspector-body" hidden={floating && inspectorCollapsed}>
+            {selectedNode ? (
             <div className="graph-inspector-body">
               <div className="graph-inspector-head">
                 <span
@@ -1582,75 +1801,82 @@ export function GraphExplorer({
               </ul>
             </div>
           )}
+          </div>
         </aside>
       </div>
 
-      <section className="panel graph-qa" id="graph-qa" aria-label="图谱问答">
-        <div className="panel-heading">
+      <section
+        className={`graph-qa${floating ? " graph-glass" : " panel"}`}
+        id="graph-qa"
+        aria-label="图谱问答"
+      >
+        <div className="graph-qa-head">
           <div>
             <h2>问图谱</h2>
             <p>回答会同时参考图谱关系与内容片段，并标出来源对象；点实体胶囊可以直接定位。</p>
           </div>
         </div>
-        <form className="graph-qa-form" onSubmit={(event) => void ask(event)}>
-          <textarea
-            value={question}
-            onChange={(event) => setQuestion(event.target.value)}
-            placeholder="例如：设计系统里品牌色是怎么定义的？"
-            rows={2}
-            maxLength={200}
-            aria-label="图谱问题"
-            disabled={asking}
-          />
-          <button className="btn btn-primary" type="submit" disabled={asking || !question.trim()}>
-            {asking ? "思考中…" : "提问"}
-          </button>
-        </form>
+        <div className="graph-qa-body">
+          <form className="graph-qa-form" onSubmit={(event) => void ask(event)}>
+            <textarea
+              value={question}
+              onChange={(event) => setQuestion(event.target.value)}
+              placeholder="例如：设计系统里品牌色是怎么定义的？"
+              rows={2}
+              maxLength={200}
+              aria-label="图谱问题"
+              disabled={asking}
+            />
+            <button className="btn btn-primary" type="submit" disabled={asking || !question.trim()}>
+              {asking ? "思考中…" : "提问"}
+            </button>
+          </form>
 
-        {asking ? (
-          <p className="graph-qa-hint">本机模型逐字生成答案，通常需要十几秒到一分多钟。</p>
-        ) : null}
+          {asking ? (
+            <p className="graph-qa-hint">本机模型逐字生成答案，通常需要十几秒到一分多钟。</p>
+          ) : null}
 
-        {answerError ? (
-          <p className="graph-note graph-note-error" role="alert">
-            {answerError}
-          </p>
-        ) : null}
+          {answerError ? (
+            <p className="graph-note graph-note-error" role="alert">
+              {answerError}
+            </p>
+          ) : null}
 
-        {answer ? (
-          <div className="graph-answer">
-            <p className="graph-answer-question">{answer.question}</p>
-            <div className="graph-answer-text">
-              {answer.response ? (
-                <AnswerText
-                  text={answer.response}
-                  view={view}
-                  onPick={(id) => {
-                    setSelectedId(id);
-                    handleFocus(id);
-                  }}
-                />
-              ) : (
-                "图谱没有给出回答。"
-              )}
-            </div>
-            {answer.references.length > 0 ? (
-              <div className="graph-answer-refs">
-                <p className="graph-answer-refs-title">来源对象</p>
-                <ul>
-                  {answer.references.map((ref) => (
-                    <li key={ref.objectId}>
-                      <Link className="text-link" href={`/workspace/${ref.objectId}`}>
-                        {ref.title}
-                        <Icon name="arrow-right" size={13} />
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
+          {answer ? (
+            <div className="graph-answer">
+              <p className="graph-answer-question">{answer.question}</p>
+              <div className="graph-answer-text">
+                {answer.response ? (
+                  <AnswerText
+                    text={answer.response}
+                    view={view}
+                    onPick={(id) => {
+                      setSelectedId(id);
+                      handleFocus(id);
+                    }}
+                  />
+                ) : (
+                  "图谱没有给出回答。"
+                )}
               </div>
-            ) : null}
-          </div>
-        ) : null}
+              {answer.references.length > 0 ? (
+                <div className="graph-answer-refs">
+                  <p className="graph-answer-refs-title">来源对象</p>
+                  <ul>
+                    {answer.references.map((ref) => (
+                      <li key={ref.objectId}>
+                        <Link className="text-link" href={`/workspace/${ref.objectId}`}>
+                          {ref.title}
+                          <Icon name="arrow-right" size={13} />
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </section>
     </div>
   );

@@ -117,17 +117,11 @@ export default async function GraphPage({ searchParams }: GraphPageProps) {
 
       <main className="record-detail">
         <div className="detail-scroll">
+          {/*
+            页头标题与说明并进 GraphExplorer 的顶部玻璃条：星系画布要铺满整个内容区，
+            这里再放一块不透明页头就会把画布从中间截断。
+          */}
           <div className="workspace graph-page">
-            <header className="workspace-header graph-page-header">
-              <div className="workspace-greeting">
-                <p className="workspace-date">知识索引 · 实体关系</p>
-                <h1>知识图谱</h1>
-                <p className="workspace-subtitle">
-                  把散落在资料里的概念连起来：先同步内容，再按实体浏览，或直接问图谱。
-                </p>
-              </div>
-            </header>
-
             <GraphExplorer
               initialLabels={labels}
               initialStatus={status}

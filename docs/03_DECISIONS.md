@@ -2061,7 +2061,7 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 
 - **状态**：已采纳·已实施（2026-11-13）
 - **日期**：2026-11-13
-- **实施说明（2026-11-13）**：表名最终定为 **`settings`**（列 `key` / `value_encrypted` / `updated_at` / `updated_by`，`updated_by` 非空、存操作者 sub 快照）；下文 `app_settings(value_enc …)` 是最初草稿的形状，其余决策（AES-256-GCM + HKDF、独立 `SETTINGS_ENC_KEY`、权限 13 → 15、`test` / `apply` 分离、60 秒健康检查与回滚）均按原文落地。
+- **实施说明（2026-11-13）**：表名最终定为 **`settings`**（列 `key` / `value_encrypted` / `updated_at` / `updated_by`，`updated_by` 非空、存操作者 sub 快照）；下文 `app_settings(value_enc …)` 是最初草稿的形状。其余决策（AES-256-GCM + HKDF、独立 `SETTINGS_ENC_KEY`、权限 13 → 15、`test` / `apply` 分离、60 秒健康检查与回滚）均按原文落地。
 - **背景**：图谱页 0 实体，实测根因在模型侧太慢，不是链路接错：
   - `infra/lightrag/.env` 当前是 `LLM_BINDING=ollama`、`LLM_MODEL=deepseek-r1:7b`、`LLM_BINDING_HOST=http://127.0.0.1:11434`、`LLM_TIMEOUT=300`；本机无 GPU，实测生成约 **7 tokens/s**，一篇中等长度内容的分块实体抽取远超 300 秒。
   - `infra/lightrag/lightrag.err.log` 里 `ReadTimeout` 命中 **16 次**，4 篇内容全部抽取失败；报错串只剩 `C[1/4]: doc-…-chunk-000:`，页面的失败卡片因此没有可读原因（该问题由图谱线另行修复，本 ADR 不重复设计）。
@@ -2079,16 +2079,16 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
      - 一 key 存一整组，而不是一字段一行：`test` 与 `apply` 天然需要一组彼此一致的值，按行拆开会出现「`provider` 已改成 openai、`apiKey` 还是 ollama 的默认占位」这种半更新态，而它只能靠额外的事务约束来防。
      - 迁移 **`drizzle/0009_settings.sql`**（编号理由见背景表）。
   2. **密钥加密：AES-256-GCM，密钥来自专用环境变量 `SETTINGS_ENC_KEY`**（32 字节随机值，base64 或 hex 写进 `.env.local`；生成命令 `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`）。
-     - 派生：`HKDF-SHA256(SETTINGS_ENC_KEY, salt="pakp.settings", info="llm")` → 32 字节密钥；存储格式 `v1.<iv-b64>.<tag-b64>.<cipher-b64>`，**AAD 固定为 key 名 `"llm"`**，使一行密文不能被搬到另一 key 下解开。
-     - **不沿用任务书的 `AUTH_SECRET`**：这个变量在本仓库不存在。**也不复用 `LOGTO_COOKIE_SECRET`**：轮换 Logto cookie secret 会让库里所有已存 API key 当场解不开（密文还在、解密密钥变了），而且 cookie secret 的暴露面比一个只用于设置的密钥大得多。
+     - 派生：`HKDF-SHA256(SETTINGS_ENC_KEY, salt="pakp.settings.salt.v1", info="pakp.settings.aes-256-gcm")` → 32 字节密钥；IV 每次随机 12 字节，存储格式 `v1.<iv-b64url>.<tag-b64url>.<ciphertext-b64url>`。**没有 AAD**：草稿设想的「AAD 绑定 key 名」未实现，防串行的责任因此落在调用侧（`key` 与密文一起读出，不允许跨 key 复用）；将来真出现多 key 时再升 `v2` 补 AAD，版本前缀已留出升级位。
+     - **不沿用任务书的 `AUTH_SECRET`**：这个变量在本仓库不存在。**也不复用 `LOGTO_COOKIE_SECRET`**：轮换 Logto cookie secret 会让库里所有已存 API key 当场解不开（密文还在、解密密钥变了），而且 cookie secret 的暴露面比一个只用于设置的密钥大得多。轮换 `SETTINGS_ENC_KEY` 同理：解不开时 `SecretBoxError` 给固定文案「应用密钥已更换或密文被篡改，请重新录入 API Key」，**解密失败不得自动清空该行**，步骤写进 `07_PLAYBOOK`。
      - `SETTINGS_ENC_KEY` 缺失或格式错误时：**读接口返回 `hasKey=false` 并带 `keyError: "未配置加密密钥"`，写接口 503 `SETTINGS_KEY_MISSING`**。绝不静默回落到默认密钥——默认密钥等于明文。
      - **诚实边界（必须写进文档，防止误解）**：`apply` 之后明文 API key 仍会落在 `infra/lightrag/.env`，因为 LightRAG 只从环境变量读模型配置。这层加密保护的是**业务库、数据库备份、导出产物、接口与日志**，不是「本机磁盘上的全部副本」。该文件已在 `.gitignore`（`/infra/lightrag/.env`）里，不入库。
   3. **权限：新增 `settings:read` / `settings:write`，权限清单由 13 项变为 15 项**（修订 ADR-019 第 3 条）：owner / admin 全有，editor / viewer 皆无。`requirePermission` 仍是唯一强制层；`authz.ts` 的 `PERMISSIONS`、`ROLE_PERMISSIONS` 与 `permissions` 表随迁移同批更新，ADR-019 第 2 条的启动一致性校验会守住「代码加了、库里没有」。
      - 只授管理员：这份配置是**全局**的——同一个 LightRAG 实例、同一个图库（ADR-011），editor 改它等于改所有人的抽取行为。
   4. **接口四件套**（`src/app/api/settings/llm/**`），任何响应都不含明文：
-     - `GET /api/settings/llm` → `{ provider, baseUrl, model, timeoutMs, hasKey, keyMasked, appliedToLightrag, updatedAt, updatedBy }`。
+     - `GET /api/settings/llm` → `{ provider, baseUrl, model, timeoutMs, hasKey, keyMasked, appliedToLightrag, updatedAt }`（实现未返回 `updatedBy`；操作者信息只在审计里，符合「接口不回多余凭据线索」）。
        - `keyMasked` 取前 4 + 后 4（`sk-…abcd`），短于 12 位只给 `••••`，空则 `null`。
-       - `appliedToLightrag` 是**现算的**，不是存下来的标记：把 DB 配置与 `infra/lightrag/.env` 的 `LLM_BINDING / LLM_MODEL / LLM_BINDING_HOST / LLM_TIMEOUT` 逐项比对，得出 `in-sync | drift | unknown`；`.env` 不可读时为 `unknown`，不猜。
+       - `appliedToLightrag` 是**现算的布尔**，不是存下来的标记：把 DB 配置与 `infra/lightrag/.env` 的 `LLM_BINDING / LLM_MODEL / LLM_BINDING_HOST / LLM_TIMEOUT` 逐项比对，全等为 `true`；读不到 `.env` 或任一项不同为 `false`。页面只呈现「已生效 / 未生效（需应用）」两态，不编第三态。
      - `PUT /api/settings/llm` → 校验：`provider ∈ {openai, deepseek, qwen, custom, ollama}`；`baseUrl` 必须 `https://`，或 `http://` 且主机为 `localhost / 127.0.0.1 / ::1 / RFC1918`；`model` 非空、≤ 100 字符；`timeoutMs ∈ [30000, 1800000]`。**`apiKey` 省略 = 保持原值，显式空串 = 清除**——否则「只想改超时」的请求会把密钥抹掉，这是这类表单最常见的坑。保存**不重启、不自动 apply**，返回与 GET 同形。
      - `POST /api/settings/llm/test` → 向 `{baseUrl}/chat/completions` 发最小请求（`max_tokens: 8`、内容 `ping`、客户端超时 10s），返回 `{ ok, latencyMs, model, error? }`。错误只归四类：`401 密钥无效` / `404 路径或模型不存在` / `超时` / `网络不可达`，**不透传上游响应体**（它可能回显请求头）。
      - `POST /api/settings/llm/apply` → 写 `infra/lightrag/.env` 并重启 `lightrag-server`，六步：
@@ -2107,7 +2107,7 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
      | `ollama` | `ollama` | `http://127.0.0.1:11434`（固定，忽略 `baseUrl`） | 占位 `ollama`，不写用户 key |
 
      `LLM_TIMEOUT` 取 `timeoutMs / 1000` 的整数秒。`EMBEDDING_*` 一行都不动（ADR-001：共用 bge，不共用向量库）。
-  6. **可测性**：服务 `src/server/services/settings-service.ts` 收 `env` 与 `spawn` 依赖（与 `content-service` 的 `options.client` 同一手法），单测用临时目录 + 假 spawn，**测试里绝不启动真实进程**。
+  6. **可测性**：`src/server/services/llm-settings-service.ts` 收 `env`、`spawn`、`envPath` 等依赖，单测用临时目录 + 假 spawn，**测试里绝不启动真实进程**。
   7. **生效语义**：保存 ≠ 生效。页面必须同时显示「已保存」与「生效中（`appliedToLightrag`）」两件事；`apply` 是唯一让配置落到 LightRAG 的动作，且必须提示「重启会打断正在进行的抽取」。
 
 - **备选方案与取舍**：
@@ -2123,9 +2123,9 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 - **对 ADR-010 的修订**：LLM 从「固定 Ollama `deepseek-r1:7b`」改为**可配置的 OpenAI 兼容供应商**，默认值不变（仍指向本机 Ollama，未配置时行为与今天一致）。Embedding（bge-large-zh-v1.5 @ 9381）与文件存储两条**不变**。ADR-010 的「本机无 GPU，7B 是唯一可用 LLM」作为事实保留，不再作为约束。
 
 - **影响**：
-  - 新增迁移 `drizzle/0009_settings.sql` 与 `app_settings` 表；`src/server/db/schema.ts` 加定义。
+  - 新增迁移 `drizzle/0009_settings.sql` 与 `settings` 表（列名见「实施说明」）；`src/server/db/schema.ts` 加定义。
   - `src/server/authz.ts`：`PERMISSIONS` 13 → 15，矩阵随之更新；迁移灌入两个新 key。
-  - 新增 `src/server/services/settings-service.ts`、`src/server/crypto/settings-cipher.ts`、`src/app/api/settings/llm/{route.ts,test/route.ts,apply/route.ts}`、`src/app/admin/settings/llm/page.tsx`。
+  - 新增 `src/server/security/secret-box.ts`（加解密 / 掩码 / 取密钥）、`src/server/services/llm-settings-service.ts`（读写 / test / apply）、`src/app/api/settings/llm/{route.ts,test/route.ts,apply/route.ts}`、`src/app/admin/settings/llm/page.tsx`。
   - 导航：第一列「系统」（`NavRail` 的 `adminItem`）进入后，第二列 `AdminDirectory` 的**「系统」分组**新增「大模型」，与「系统状态 / 审计日志」同级；非管理员整项不渲染（与 ADR-019 第 9 条同一做法）。
   - 设计稿：`docs/19_DESIGN_LLM_PREVIEW.md` 的 A 部分；本 ADR 只定契约，不定视觉。
 
@@ -2236,6 +2236,136 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 
 ---
 
+## ADR-027：/graph 全屏星图画布 + 液态玻璃浮层
+
+- **状态**：已采纳·已实施（2026-11-13）
+- **日期**：2026-11-13（v1.1 修订：2026-11-13，见文末修订行）
+- **背景**：ADR-022 落地后图谱功能可用，但使用者反馈「布局别扭，星图太小」。根因是**布局层把画布当成了一个卡片**：
+  - `.graph-page` 固定 `max-width: 1180px`，内容区再扣掉目录栏与内边距，画布实际只有约 1100×800 中的一部分。
+  - `.graph-toolbar` 是普通主题面板，`.graph-layout` 是 `1fr + 336px` 的网格，详情栏**参与布局**——选中实体后画布从 1108 缩到 756（`16_GRAPH_DESIGN.md` §3.2 原设计如此）。星图作为「看整体结构」的视图，反而被面板挤到最小。
+  - 结果是：功能都在，但星空没有成为页面的主角；使用者要的是「这一整页的背景都做成星图，玻璃板不挡着星图」。
+- **决策**：把 `/graph` 内容区从「卡片里的画布」改为「**画布即背景，控件浮在上面**」。
+  1. **范围**：只覆盖内容区（右侧主区域，含页头），**不含**最左侧导航栏与第二列模块目录（ADR-013 的三栏结构不变）。列表模式例外，见第 6 条。
+  2. **坐标与尺寸**：`.graph-page` 取消 `max-width: 1180px`，改为填满内容区；`.graph-workspace` 成为定位容器——`position: relative`，高度 `calc(100dvh - <页头>)`，最小 560px。画布层 `position: absolute; inset: 0; z-index: 0`，铺满且不参与文档流；浮层全部 `z-index: 1` 以上。
+  3. **控制区（左上角紧凑玻璃卡，v1.1 改写）**：原 `.graph-toolbar` 面板（标题、实体计数、同步状态、中心/邻域、深度、2D 聚焦、星系、列表、自动旋转、刷新、同步内容）改为**贴左上角的紧凑玻璃卡**：`position: absolute; top: 16px; left: 16px`，宽度按内容自适应，**上限 `min(880px, calc(100% - var(--graph-rail-w) - 48px))`**。其中 `--graph-rail-w` 就是右栏宽度（默认 `356px`，`max-width: 1000px` 断点内为 `300px`——按实现取 1000：更宽时 356 的右栏仍放得下，1024 宽下再扩到 356 会把控制卡压到 320px 以内），`48px` = 左 16 + 两卡间距 16 + 右 16。标题、状态、原有一排控件全部在卡内，**允许控件折成两行排列**（宽度更窄时可再增行），**不压缩控件命中区、不删功能**；原 `.graph-page-header` 的标题与说明并入这张卡，不再单独占一块。收起态只保留**标题 + 状态 + 展开按钮**。
+     - **理由（实机反馈）**：横贯整条在 1440×900 上压掉了星图顶部约 230px，而且与右侧详情卡形成**两条互不相干、顶边还不对齐**的横带——视觉上像两排工具栏而不是两个浮件。收到左上角后，星图中上部完整露出，两张卡在同一水平线上成对出现（一左一右各守一个角）。
+     - **定位基准**：绝对定位的包含块是 `.graph-workspace` 的 **padding box**；浮层模式下 `.graph-workspace` 的内边距必须归零，否则现有的 `padding: 10px` 会让视觉边距变成 26px。
+     - **顶部标签胶囊**：`.graph-stage-head`（「…的邻域 / N 个实体 · M 条关系 / 星系 · high」）原本就在左上角，控制条脱离文档流后它会与控制卡重叠。**首选并入控制卡**（成为标题行下方的元信息行，不再单独一个药丸）；若保留独立胶囊，其 `top` 必须由控制卡实测高度驱动（`top: calc(16px + var(--graph-bar-h) + 8px)`，变量由组件写入），不允许写死。
+     - 原表述「`top/left/right` 各 16px 的**顶部一整条**、宽度不足时换行而不是压缩控件」**作废**，由本条取代。
+  4. **实体详情（右上角玻璃卡，v1.1 改写）**：`.graph-inspector` 从网格列改为**贴右上角的玻璃浮层**：`position: absolute; top: 16px; right: 16px`，宽 `var(--graph-rail-w)`（默认 **356px**，`max-width: 1000px` 为 300px），最高 `60%`（相对 `.graph-workspace` 高度）、内部独立滚动 + `overscroll-behavior: contain`。**顶边与左上控制卡是同一条水平线**（实测差 ≤1px），**不再从控制条底部起算**，也不再 `bottom: 16px` 拉满整列。未选中时显示引导文案（「点击星图里的实体查看详情」），选中后切换为详情。**画布尺寸与相机不因详情打开而改变**——这与设计稿 §3.2「详情栏参与布局、选中时画布 1108→756」**相反**，本条取代该行。
+     - **横向关系**：两卡之间至少 **16px**，1440 与 1920 下均不得重叠；间距由第 3 条的上限公式保证（上限里已经扣掉 48px，见验收第 8 条）。
+     - **右栏剩下的位置**：`.graph-workspace` 的第二列网格行继续留给「问图谱」卡（贴右下、同宽 `var(--graph-rail-w)`、`align-self: end`）；详情卡浮在它上方，两者不互相挤压，画布中心不被覆盖。
+     - 原表述「宽 336px、`top: calc(控制条实际高度 + 12px)`、`bottom: 16px`」**作废**——336 是浮层模式之前的旧网格值，实际令牌已是 356。
+  5. **2D 聚焦模式同样全幅**：`.graph-stage-wrap` 去掉边框与圆角，SVG 铺满画布层，浮层位置与控制区一致；`[data-surface="graph"][data-mode="2d"]` 的边对比度令牌不变。
+  6. **列表模式保持常规文档流**：`mode=list` 不挂载画布、不使用玻璃，回到主题面板与普通排版；这样既不浪费一个 WebGL context，也保证长列表的可读性与无障碍语义。
+  7. **指针分层（硬约束）**：浮层的**容器** `pointer-events: none`，每个玻璃板自身 `pointer-events: auto`；画布接收其余全部指针事件。**禁止**用全屏透明遮罩承载点击或滚动——那会吞掉星图的拖拽、滚轮与双击。
+  8. **浮层可折叠但不可消失**：控制条可收到「摘要行」（标题 + 计数 + 展开按钮），详情可收到右侧把手；折叠状态不进 URL（属纯视觉偏好，与 ADR-022「URL 是视图状态源」不冲突，因为 `mode / focus / depth` 仍只在 URL 里）。
+  9. **液态玻璃配方（唯一实现，v1.1 扩写）**：在既有固定深色面 `[data-surface="graph"]` 里新增令牌，规则体一律引用令牌，**不写裸色值**：
+
+     | 令牌 | 值 | 用途 |
+     |---|---|---|
+     | `--graph-glass-bg` | `color-mix(in srgb, var(--graph-canvas) 72%, transparent)` | 玻璃底色（72% 是文字可读与「看得见星」的折中点） |
+     | `--graph-glass-border` | `color-mix(in srgb, var(--graph-accent) 22%, transparent)` | 1px 外框 |
+     | `--graph-glass-highlight` | `rgb(255 255 255 / 6%)` | `inset 0 1px 0` 内高光 |
+     | `--graph-glass-pointer-core` | `rgb(255 255 255 / 30%)` | `::before` 指针径向高光的最亮色 |
+     | `--graph-glass-pointer-mid` | `rgb(255 255 255 / 12%)` | 同上，中段衰减色 |
+     | `--graph-glass-sheen-1` | `rgb(255 255 255 / 18%)` | `::after` 斜向反光的 0% 停止点 |
+     | `--graph-glass-sheen-2` | `rgb(255 255 255 / 3%)` | 22% 停止点（最暗） |
+     | `--graph-glass-sheen-3` | `rgb(255 255 255 / 8%)` | 55% 停止点 |
+     | `--graph-glass-sheen-4` | `rgb(255 255 255 / 14%)` | 100% 停止点（另一侧亮边） |
+
+     > 以上九项全部写在 `[data-surface="graph"]` 令牌块内（含白 30% / 12% / 18% / 3% / 8% / 14% 六个字面量）。E7 只统计「主题块与 cosmic / graph 块之外」的字面量，因此基线仍是 26；规则体（含伪元素）只写 `var(--graph-glass-*)`。
+
+     **基础层（不变）**：`background: var(--graph-glass-bg)`、`backdrop-filter: blur(14px) saturate(130%)`（`-webkit-` 前缀同写）、`border: 1px solid var(--graph-glass-border)`、`border-radius: var(--r-md)`、`box-shadow: inset 0 1px 0 var(--graph-glass-highlight)`。模糊半径上限 **18px**：再大只是 GPU 开销，视觉上已无差别。
+
+     **三层质感（v1.1 新增，这是「塑料感」与「液态玻璃」的分界）**——`backdrop-filter` 只负责「糊」，**厚度与湿度来自这三层**：
+     - **① 跟随指针的径向高光**（`::before`）：`position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: -1;`，`background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), var(--graph-glass-pointer-core) 0%, var(--graph-glass-pointer-mid) 16%, transparent 42%)`——即中心 30% 白、16% 处 12%、**42% 处收敛为透明**，再往外只剩底与星空；指针离开即删掉 `--mx/--my`，回到 50% / 50%。
+     - **② 160° 斜向反光**（`::after`）：同上定位与 `pointer-events: none`，`background: linear-gradient(160deg, --graph-glass-sheen-1 0%, -2 22%, -3 55%, -4 100%)`，`mix-blend-mode: screen`（白 18% → 3% → 8% → 14%，两边亮中间暗，模拟一块玻璃的斜面厚度）。卡片自身加 `isolation: isolate`，让 `screen` 只与玻璃底混合、**不与背后的星图混合**。
+     - **③ 轻微厚度倾斜**：卡片 `transform: perspective(1200px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg))`，**最大 3°**（系数 0.06：`(x% − 50) × 0.06`，超过就变成「会动的卡片」，不再像玻璃）。倾斜只在指针位于卡内时生效，离开即删变量回零，`transition: transform 220ms ease-out`。
+     - **实现约束（硬性）**：
+       - 两层伪元素必须 `pointer-events: none`；实现用 `z-index: -1` 把光层放在卡片自身底色之上、内容之下，子元素因此不必逐个加定位（细节卡的折叠把手仍按普通子元素排版）。
+       - `--mx / --my / --rx / --ry` 用 **ref + `style.setProperty`** 写到卡片元素上（不走 React state，避免每帧重渲染），`pointermove` 监听挂在**卡片自身**、`{ passive: true }`，并用 **`requestAnimationFrame` 合并**一帧内多次事件；`pointerleave` 删除变量复位；卸载时移除监听与 rAF。**不在 `workspace` / `document` / `window` 上挂指针监听。**
+       - **`prefers-reduced-motion: reduce`**：`transform: none`（不倾斜）、`::before` 设 `opacity: 0`（不跟随），保留 `::after` 静态斜向反光。
+       - `data-glass="solid"`（`low` 档 / 运行时降档）与 `prefers-reduced-transparency: reduce` 下：底色提高到 92%、关掉 `backdrop-filter`；倾斜与两层光仍按上一档规则运行（它们不产生背景采样开销）。
+       - 触屏：`pointerType === "touch"` 的移动直接忽略；宽度 < 768px 时整段跟随/倾斜逻辑不挂载，只渲染静态两层。
+     - **统一材质**：控制卡、详情卡、问图谱卡，以及左上角标题胶囊（`.graph-stage-head.is-chip`）用的是**同一套** `.graph-glass` 规则；不允许某一块单独调底或单独加边框色。
+     - **字面量基线仍是 26**：新增的高光 / 反光写成白 30% / 12% / 18% / 3% / 8% / 14% 六个字面量，且**只出现在 `[data-surface="graph"]` 令牌块内**（该块不在 E7 的统计范围内），规则体与伪元素不新增裸色值。
+  10. **玻璃内的文字与控件一律用** **graph 面令牌**（`--graph-core` / `--graph-accent` / `--graph-edge-strong`），**禁止使用主题的 `--text-*` / `--surface-*`**。原因很具体：舞台固定深色，而 `pine` / `sand` 是浅色主题，`--text-1` 在浅色主题下是深色——照搬会得到「深字压深玻璃」，四个主题里有两个直接不可读。这条同时意味着：**玻璃浮层里不要再出现 `.panel` 这类主题面板类**。
+     - **实施说明（2026-11-13，按实现修正）**：落地手法是**作用域内重映射**——在 `.graph-workspace.is-float` 上把 `--text-*` / `--surface-*` / `--line*` / `--danger-*` / `--warn-*` 等主题变量重新定义为 graph 面令牌的取值，共用规则里仍写 `var(--text-1)`，但解析出来就是星图色。四主题实测标题计算色相同（`rgb(246 227 198)`），对玻璃底 16.17:1，条款目的已达成，因此不要求逐条改写选择器。判定口径不变：**只要在玻璃里出现主题的浅色/深色实际取值就算违规**，以四主题计算色一致为验收。
+  11. **对比度**：扩展 `scripts/check-contrast.mjs` 增加 `graph.glass` 组——正文/正文级文字对**玻璃底与最亮画布合成后的等效色** ≥ 4.5:1，图标与链接 ≥ 3:1；**1px 玻璃描边按装饰性边界 ≥ 1.5:1**。`npm run check:contrast` 与 `npm run check:theme` 都必须继续绿；后者 E7 的**字面量基线仍是 26**（新令牌写在 `[data-surface="graph"]` 块内，规则体不新增字面量，所以基线不动；若将来在别处写裸色值，照旧按「只允许减少」失败）。
+     - **描边为何不按 3:1（2026-11-13 裁决）**：22% 强调色的描边对玻璃底实测 1.73:1，要够 3:1 需提到约 48%，观感会从「细边框」变成「亮圈」，与液态玻璃的目标相反。面板的辨认并不依赖这条描边——72% 的玻璃底本身与星图有明确亮度差，描边只是层次提示；因此按 WCAG 1.4.11「非必需的装饰性边界」处理，门禁按 1.5:1。文字与可交互控件不受此豁免。
+  12. **降级链（按顺序短路）**：
+      - `@supports not (backdrop-filter: blur(1px))` → 玻璃底色提高到 `color-mix(in srgb, var(--graph-canvas) 92%, transparent)`，仍是深色面板；
+      - `prefers-reduced-transparency: reduce` → 同上（92%）；
+      - 档位为 `low`，或运行时连续掉帧触发降档 → **关闭 `backdrop-filter`**，只留 92% 底；
+      - 无 WebGL → 既有 2D 回落不变（ADR-022），2D 玻璃同规则；
+      - `prefers-reduced-motion` → 既有约定不变：星图不自动旋转，玻璃不加入场动画。
+  13. **性能边界（不新增数字，沿用 ADR-022）**：画布变大只增加填充率，**不改**节点 / 边 / 标签 / DPR 预算（150 / 300 / 600 与 DPR 2 / 1.5 / 1），也不改 2000 节点输入抽稀与 Worker 的验收口径。`backdrop-filter` 只作用于**尺寸固定的浮层**，不得挂在随帧变化或随滚动重排的元素上；画布尺寸变化按既有路径处理——2D 用 `graph-stage-2d.tsx` 已有的 `ResizeObserver`（已按 32px 分档防抖），3D 用 `@react-three/fiber` 的画布尺寸与相机 aspect 自动更新；**不在每帧改 canvas 尺寸**，也不为改布局新增第二套尺寸监听。
+  14. **移动端（≤ 767px，v1.1 按实现校准）**：3D 入口本就隐藏（ADR-022），2D 全幅铺满；**控制条仍为单行**（标题 + 状态点 + `⋯` 展开按钮，展开后才出控件），**实体详情仍为底部抽屉玻璃板**（`max-height: 55dvh`、内容超出时内部滚动，未选中实体时整块不出现；收起走抽屉上的「收起」把手，**本轮没有实现上下滑动手势**），「问图谱」在文档流最底部。
+      - **抽屉打开时的画布语义（原条款没写清，此处钉死）**：**画布层 `.graph-stage-layer` 仍 `inset: 0` 全幅**（背景/星点铺满到抽屉底下，不出白边）；**只把 2D 舞台盒子 `.g2-stage` 缩进安全区**——`top: var(--graph-stage-top)`、`height: var(--graph-stage-h)`，两个变量由组件按「栏底 / 抽屉顶」实测写入，舞台按新尺寸重排。
+      - **可读性底线**：选中实体与它的 1 跳邻居，**底边必须高于抽屉顶边至少 8px**（`--graph-stage-h` 就按「抽屉 `getBoundingClientRect().top - 8 - 舞台起点`」计算）；抽屉不得盖住星核与 1 跳环。
+      - 桌面宽度下的鼠标跟随高光与倾斜在触摸端不启用（`pointer: coarse`），只保留静态两层。
+      - 原表述「画布上半（≥ 45dvh）必须始终可拖拽」保留，但**以本条的安全区缩放为准**：拖拽区域是缩进后的舞台，不是被抽屉压着的整层画布。
+  15. **空态与错误态**：沿用现有 `graph-state-card` 文案与分支（加载中 / 加载失败 / 状态读不到 / 图谱为空 / 无邻居 / 抽取失败列表），只把它们放进玻璃浮层并居中；**不新增状态**，也不因为改布局重写文案。
+
+- **与既有 ADR 的关系（结论：只改容器层，不动渲染层）**：
+  - **ADR-022**：3D 渲染、档位（`low / balanced / high`）、`frameloop="demand"`、8 个 draw call、Worker、两个时钟、`onStats` 契约**全部不变**。本 ADR 只改「舞台放在哪、多大、上面盖什么」。
+  - **ADR-021**：`[data-surface="graph"]` 是既有固定面，新增 6 个玻璃令牌（底 / 边 / 内高光 / 指针高光两段 / 斜向反光）写在同一个块里，**不新增第四个主题块、不改 129 名契约**；`check-theme` 的 E1–E8 不受影响。
+  - **ADR-013**：三栏结构、URL 单一状态不变；第二列目录仍是普通主题面板，不玻璃化。
+  - **ADR-026**：实体详情里的「打开内容预览」入口位置不变，预览弹窗层级高于玻璃浮层。
+  - **16_GRAPH_DESIGN.md**：§3.2 / §3.3 中与「详情栏参与布局、画布 1108→756」「按视口分档改浮层位置」相关的条款由本 ADR 取代，统一为「画布恒定全幅 + 左上角控制卡 + 右上角详情卡（顶边同线）」；相机、避让中心 40% 圆区、问答 dock、小地图等其余条款不变。设计稿由 Designer 按本条修订。
+
+- **备选方案与取舍**：
+
+  | 方案 | 做法 | 取舍 |
+  |------|------|------|
+  | **A（采纳）** | 画布铺满内容区，控制条与详情做成玻璃浮层 | 星图真正成为页面主体，功能不丢；代价是浮层对比度与指针层级要单独验收 |
+  | B | 保留卡片，只把卡片与画布放大到 1440 | 改动最小；但达不到「整页背景」，只是把同一块画布放大一点 |
+  | C | 全屏半透明暗色遮罩（不做模糊） | 便宜、稳；但「玻璃」的层次感没有，且遮罩一厚就挡住星图，与需求相反 |
+  | D | 用磨砂 PNG / SVG 纹理贴图模拟玻璃 | 不依赖 `backdrop-filter`；但每种尺寸与 DPR 都要多套资源，且背景是动态星图，贴图无法跟随 |
+  | E | 画布全幅、浮层保持普通主题面板 | 实现最省；但浅色主题下会在星空上出现亮色面板，割裂感比现在更强，且主题文本令牌在固定深色面上本就不可读 |
+
+- **影响**：
+  - `src/app/globals.css`：`.graph-page` 去掉 `max-width`；`.graph-toolbar` / `.graph-inspector` 改为浮层；**v1.1：两张卡从网格列改为绝对定位（`top: 16px` + 左/右 16），`padding` 归零，控制卡宽度上限改为 `min(880px, 100% - var(--graph-rail-w) - 48px)`，详情卡顶边与它同线、去掉 `bottom: 16px`**；新增 6 个高光 / 反光令牌（`--graph-glass-pointer-core` / `-mid`、`--graph-glass-sheen-1..4`）与 `@supports` / `prefers-reduced-transparency` / `data-glass="solid"` 分支；触屏与 <768px 由组件不挂跟随逻辑。
+  - `src/components/graph-explorer.tsx`：DOM 层级从「工具条 → 网格（主 + 详情）」改为「canvas 层 → 浮层（控制条 / 详情）」，`data-surface="graph"` 保持在最外层容器上；`pointer-events` 分层。**v1.1 追加**：玻璃统一由 `.graph-glass` 承担；新增指针跟随与倾斜——`ref` + 每张卡自身的 `pointermove`（`passive`）+ `requestAnimationFrame` 合并写 `--mx/--my/--rx/--ry`，`pointerleave` 复位，卸载清理；`prefers-reduced-motion` 与触屏 / 窄屏下不挂监听。左上角标题胶囊按第 3 条并入控制卡（或由 `--graph-bar-h` 驱动下移）。
+  - `src/components/graph/graph-scene-3d.tsx` 与 2D 舞台：容器从卡片改为 `inset: 0`，尺寸变化交给 `ResizeObserver`。
+  - `scripts/check-contrast.mjs`：新增 `graph.glass` 组。
+  - `docs/16_GRAPH_DESIGN.md`：§3.2 / §3.3 两处由 Designer 回改（本 ADR 登记分歧，不代改设计稿）。
+
+- **风险**：
+
+  | # | 风险 | 应对 |
+  |---|------|------|
+  | G1 | 画布面积变大后填充率上升，1440 或 1920 下掉帧 | 预算与档位不变，先按 ADR-022 的次序砍标签 → 降 DPR → 回落 2D；验收在 1440×900 与 1920×1080 各采一次 `__graphStats`，读数不设新阈值 |
+  | G2 | `backdrop-filter` 在弱 GPU / 远程桌面下很贵 | 模糊半径 ≤18px、只作用于固定尺寸浮层；`low` 档与 reduced-transparency 下直接关闭，退到 92% 实色 |
+  | G3 | 玻璃里误用主题文本令牌，浅色主题下深字压深底 | 第 10 条写成硬规则；`grep -n "text-1\|text-2\|text-3\|surface-" src/components/graph-explorer.tsx` 作为提交前自检；四主题逐一截图 |
+  | G4 | 玻璃上的文字对比度随星点亮度波动 | 玻璃底不透明度 ≥72% + 模糊把星点摊平；对比度按「玻璃底与最亮画布合成」计算并按 WCAG 2.1 判定，读数进 `check:contrast` |
+  | G5 | 浮层吞掉画布交互（拖拽、滚轮、双击聚焦） | 容器 `pointer-events: none` + 面板 `auto`；用真实指针 e2e 验收，不只看截图 |
+  | G6 | 详情浮层盖住星核或 1 跳环 | 沿用设计稿的「中心 40% 圆区不被覆盖」避让规则；1920 宽下浮层只占右 356px，仍满足 |
+  | G7 | 列表模式误挂 WebGL，或退出列表后 context 泄漏 | `mode=list` 条件挂载画布；切回时新建、切走时卸载，沿用 ADR-022 的上下文生命周期 |
+  | G8 | 窗口缩放或浮层折叠时布局抖动、画布反复重排 | 沿用两条既有路径（2D 的 `ResizeObserver` 32px 分档、3D 的 fiber 画布尺寸），浮层折叠用固定宽高过渡，不触发每帧尺寸变化 |
+  | G9 | **v1.1 新增**：控制卡与详情卡在窄内容区相撞（`≤1000px` 时内容区约 700px，右栏 300、控制卡上限约 352） | 上限公式统一用 `var(--graph-rail-w)` 表达而不是写死 356；公式里扣的 48px 就是三段间距，按验收第 8 条在 1440 / 1920 各测一次 `getBoundingClientRect`；`≤1000px` 断点（详情卡退为 300px 宽）同样适用 |
+  | G10 | **v1.1 新增**：控制卡收窄后控件折行，卡片变高，重新压住星图顶部 | 允许折行但**不许压缩命中区**；确认两行内的排布（1440 下预期两行）；卡片加 `max-height` 与内部滚动兜底，折叠入口保留在卡头 |
+  | G11 | **v1.1 新增**：`transform` 倾斜 + `backdrop-filter` 叠加导致玻璃内文字发虚、或引入新的合成层吃显存 | 倾斜上限 3°、`perspective(1200px)`；只在指针位于卡内时才写 `--rx/--ry`（静止时变量被删除，回 0deg，不创建持久合成层）；不用 `will-change` 常驻；验收时逐卡检查文字清晰度（1440 与 2×DPR 各一次） |
+
+- **验收要点**：
+  1. 1440×900 与 1920×1080：画布铺满内容区（不再有 1180 上限与卡片边框），**控制卡贴左上、详情卡贴右上，均为玻璃浮层**；`document.querySelector(".graph-page").scrollWidth` 不超出内容区。
+  2. 四套主题（`galaxy / pine / sand / midnight`）逐一切换：玻璃内文字、图标、边框全部可读，无深字压深底；玻璃浮层里不再出现 `.panel` 类。
+  3. `node scripts/check-theme.mjs`：129 名契约通过、字面量仍为 **26**；`node scripts/check-contrast.mjs`：新增 `graph.glass` 组通过，其余组读数不回退。
+  4. 关闭 `backdrop-filter` 支持（或强制 `low` 档）时，玻璃退为 92% 实色板，文字仍达标，星图仍可见。
+  5. 指针与键盘：星图拖拽 / 滚轮缩放 / 双击聚焦在浮层之外全部可用；Tab 顺序为「控制条 → 画布 → 详情」；控制条可折叠并用键盘展开。
+  6. 390×844：控制条一行、详情为底部抽屉、画布上半仍可拖拽；列表模式无画布、无玻璃。
+  7. `__graphStats` 在 150 / 300 / 600 三档下读数与 ADR-022 一致（`drawCalls ≤ 8`、`dpr ≤ 档位上限`、空闲 `frames` 不增长）。
+  8. **两卡几何（v1.1）**：1440×900 与 1920×1080 下，控制卡与详情卡 `getBoundingClientRect().top` **差 ≤1px**；控制卡 `right` 与详情卡 `left` 的**间距 ≥16px**；两卡均不越出 `.graph-workspace`，页面无横向滚动；`≤1000px` 断点（右栏 300）下同样成立。
+  9. **指针高光与画布手势（v1.1）**：鼠标移过任一玻璃卡，`--mx / --my` 连续变化、`::before` 高光跟着走，移出后平滑复位；倾斜角始终 ≤3° 且文字不发虚；在卡片之间的空隙、卡片上方的星图区域，**拖拽 / 滚轮缩放 / 双击设为中心照常**；`prefers-reduced-motion: reduce` 下无倾斜、`::before` 隐藏（`opacity: 0`），`::after` 静态反光保留。
+  10. **主题与对比度门禁（v1.1）**：`node scripts/check-theme.mjs` 129 名契约通过、字面量仍 **26**；`node scripts/check-contrast.mjs` **41/41 通过**，四主题（`galaxy / pine / sand / midnight`）读数均**不回退**（`--graph-core` 对玻璃底 ≥15.92:1、`--graph-glass-border` 1.73:1）。
+
+- **影响范围**：01_ARCHITECTURE（图谱容器层）、13_DESIGN_V3、16_GRAPH_DESIGN（§3.2 / §3.3 由 Designer 回改）、globals.css、check-contrast.mjs、05_CHANGELOG
+
+> **v1.1 修订（2026-11-13）：按实机反馈调整几何与材质。** 第 3、4 条由「横贯顶部一条 + 从条底起算的右侧栏」改为「左上角紧凑控制卡 + 右上角同线详情卡」；第 9 条在原有 72% 底 + 模糊 + 22% 描边 + 1px 内高光之上，补指针径向高光、160° 斜向反光与 ≤3° 倾斜三层质感，令牌由 3 个增至 9 个（新增的 6 个是白 30/12/18/3/8/14% 字面量，全部写在 `[data-surface="graph"]` 块内，字面量基线仍 26）；第 14 条按实现补写「画布层 `inset: 0`、只缩进 2D 舞台盒子、选中实体与 1 跳邻居底边高于抽屉 ≥8px」；验收补第 8、9、10 条。第 10、11 条的既有裁决（玻璃作用域内重映射主题变量、描边按装饰性边界 1.5:1）不变。
+
+---
+
 ## ADR-016 ~ 018 实施风险清单
 
 > 按严重程度排序。前 3 条必须在动手前处理完，其余随实现跟进。
@@ -2301,8 +2431,9 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 | ADR-022 | 知识图谱 3D 渲染与 2D 降级 | 已采纳·已实施（生产运行时已复验；真机 GPU 帧时序、2000 节点、真实 Logto / LightRAG 未测） | `/graph` 主视图改 three.js + @react-three/fiber 的 3D 银河、选中后可切 2D 聚焦；两套渲染器共用一个 `GraphViewModel`；不引 drei / postprocessing；`frameloop="demand"` 空闲零帧；150 节点 60fps、2000 节点抽稀可用；舞台固定深空不随主题；补 `maxNodes` 透传与 `failed` 渲染 |
 | ADR-023 | 分类词表统一与迁移 | 已采纳·已实施 | 废止「作品形态 / 自由文本分类」双轨：`work_formats` 升级为 `categories`、`objects.format` → `category_code`、自由值折叠进同一词表（多余值转标签）；分类单选、标签多选；全站文案 / 路由 / 权限 / API 统一为「分类」，含迁移 SQL、命名矩阵与回滚留档 |
 | ADR-024 | 检索的模糊查询与语义混合 | 已采纳·已实施 | SQLite `instr` 元数据子串匹配（标题 / 描述 / 分类 / 标签）+ RAGFlow 语义并行混合；对象级六级权重排序、3s 超时降级；`/api/search` 增量扩展 `mode` 与 `lexical`；首页 200ms 防抖预览 8 条 |
-| ADR-025 | 大模型供应商配置与凭据存储 | 已采纳·已实施（2026-11-13） | 配置落 `settings` 单行加密 JSON（AES-256-GCM，密钥来自新变量 `SETTINGS_ENC_KEY`，非 `AUTH_SECRET`）；接口只回掩码与 `hasKey`；`settings:read/write`（权限 13 → 15，仅 owner/admin）；`test` 最小请求、`apply` 逐键改 `infra/lightrag/.env` + 只重启 `lightrag-server` + 60s 健康检查 + 失败回滚；迁移编号 `0009`；修订 ADR-010 的 LLM 固定条款 |
+| ADR-025 | 大模型供应商配置与凭据存储 | 已采纳·已实施（2026-11-13） | 配置落 `settings` 单行加密 JSON（AES-256-GCM，密钥来自专用变量 `SETTINGS_ENC_KEY`，非 `AUTH_SECRET`，也不复用 Logto 密钥）；接口只回掩码与 `hasKey`；`settings:read/write`（权限 13 → 15，仅 owner/admin）；`test` 最小请求、`apply` 逐键改 `infra/lightrag/.env` + 只重启 `lightrag-server` + 60s 健康检查 + 失败回滚；迁移编号 `0009`；修订 ADR-010 的 LLM 固定条款 |
 | ADR-026 | 知识内容预览（弹窗） | 已采纳·已实施（2026-11-13，工作台与详情两入口） | 统一 `ContentPreviewDialog`（原生 `<dialog>`），工作台 / 检索 / 图谱 / 首页四入口；打开状态 `?preview=<id>` 进 URL；复用现有三接口，仅新增 `?inline=1` 切换 `Content-Disposition`；Markdown 走 ADR-014 的零依赖解析器，PDF 同源 iframe（>20MB 降级下载），文本 512KB 上限；仅需 `object:read` |
+| ADR-027 | /graph 全屏星图画布 + 液态玻璃浮层 | 已采纳·已实施（2026-11-13） | 内容区取消 1180 上限，画布铺满作背景层；**控制卡贴左上（`min(880px, 100% − rail − 48px)`）+ 详情卡贴右上（356/60%）顶边同线、间距 ≥16px**；玻璃 = 72% 底 + `blur(14px) saturate(130%)` + 22% 边框 + 1px 内高光 + **指针径向高光 + 160° 斜向反光 + ≤3° 倾斜**（9 令牌，新增 6 个写在 `[data-surface="graph"]` 块内，字面量基线仍 26）；玻璃内禁用主题 `--text-*`；不支持模糊 / `low` / reduced-transparency 退 92% 实色；移动端单行控制条 + 底部抽屉，画布层 `inset: 0` 只缩进 2D 舞台盒子；`check:theme` 基线 26 与 ADR-022 的档位、DPR、draw call 预算均不变 |
 
 ---
 

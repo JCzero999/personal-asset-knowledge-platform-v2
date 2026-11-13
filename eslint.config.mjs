@@ -15,6 +15,9 @@ export default defineConfig([
     ".next-failtest/**",
     // 大模型配置 / 预览验收的隔离实例构建产物
     ".next-verify/**",
+    // /graph 液态玻璃与 ego 安全区验收的隔离实例构建产物
+    ".next-glass/**",
+    ".next-glass-ego/**",
     ".venv/**",
     "**/.venv/**",
     "agents/**",

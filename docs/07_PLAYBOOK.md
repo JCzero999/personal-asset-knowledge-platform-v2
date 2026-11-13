@@ -228,6 +228,10 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 55 | 管理页删除被引用项时拿不到引用数量，弹不出「迁移到… / 合并到…」 | `src/lib/api-error.ts` 的 `apiRequest` 只把 `{error:{code,message}}` 拼成一句人话，`details`（含 `usage`）在解析时被丢掉，客户端无从判断是 409 还是普通失败 | 词表管理页不再走 `apiRequest`，自写 `request<T>()` 保留 `code` 与 `details`，`isConflict()` 按 `code === "CONFLICT"` 判定后再读 `usage` | 统一错误信封的价值在于 `details` 能被消费端读到；凡是需要按错误码分支的页面，先确认手里的客户端没把结构化信息压平成字符串 |
 | 56 | 词表管理页的验收必须用管理员，但 `ADMIN_SUBS` 里只有用户本人的 `sub`，且其账号从未在应用内登录过 | 管理员判定读环境变量；测试账号 `pakp_test` 不在名单里，进 `/admin/vocabulary/*` 只能看到 403 兜底 | 备份 `.env.local`，临时把测试账号 `sub` 加入 `ADMIN_SUBS` 并重启开发服务，用无头 Chromium 跑完整实测；结束后从备份还原、再重启一次并访问 `/workspace` 确认 200 | 后台功能的自动化验收需要一个可登录的管理员身份，这件事要提前规划；临时提权必须「备份 → 改 → 重启 → 验 → 还原 → 再重启」，并在报告里写明，不能让它变成永久配置 |
 | 57 | 实测脚本判定「控制台无报错」，实际控制台里有两条 409 | 删除被引用项的 409 是**预期业务冲突**，浏览器会把失败的 fetch 记成 `console error` | 断言时把这些 URL / 状态码排除，只对剩余条目判定为 0；报告里单独说明「两条预期 409」 | 「无报错」这类断言要写清口径：网络层的 4xx 与真正的 JS 异常不是一回事，先分类再计数 |
+| 58 | 代码已改、测试也过，用户打开 3000 端口仍说「还是修复之前的样子」 | 3000 上跑的是几小时前的生产构建，开发服务器改的代码没有进生产包 | 汇报前执行 `npm run build` 并重启 3000；验收也在生产包上做 | 交付口径固定为「用户只看生产包」：预览与验收前先确认端口上的构建时间，不拿 dev 的临时效果当已交付 |
+| 59 | 液态玻璃的跟随高光做出来了，但 `pointermove` 挂在整块内容区上，每个指针移动都进一次 handler 再 `closest` 过滤 | 按「一个容器统一处理」的惯性写，违背参考实现「mousemove 别顺手往整个页面绑」 | 把 `pointermove` / `pointerleave` 分别挂到每张 `.graph-glass` 卡自身，回调直接用 `currentTarget`；仍用 rAF 合并、直接写 CSS 变量 | 交互事件按「受影响的最小元素」绑定；验收时用 `DOMDebugger.getEventListeners` 检查监听到底挂在谁身上，而不是只看效果 |
+| 60 | ADR-027 里写的令牌名、断点与实现对不上（`--graph-glass-spot` vs `--graph-glass-pointer-core`、`≤1279px` vs `≤1000px`） | 决策先于实现写，实现时改了命名与断点，文档没有回改 | 实施落地后按 CSS / TSX 逐项核对 ADR，把令牌表、梯度参数、变量名、断点改成代码事实 | ADR 定稿前必须对照实现；令牌名、断点、间距这类可计算的数字以实现为准，不凭记忆 |
+| 61 | 用 `NEXT_DIST_DIR` 起隔离实例后，`tsconfig.json` / `next-env.d.ts` 被 Next 改写 | Next 16 会按 distDir 重写生成的类型路径 | 验完 `git checkout -- tsconfig.json next-env.d.ts`，再跑一次 typecheck | 隔离构建前记录这两个文件的原始状态，收尾一并还原；提交前 `git status` 不得出现它们 |
 
 | 58 | 升级到「本地六表授权」后，所有人第一次登录都只拿到只读，后台没有人能进 | 原实现把 `ADMIN_SUBS` 当管理员名单（环境变量即授权）；改成表驱动后，老账号在 `users` 里还不存在，若引导只在「已有 owner」时补角色，第一登录者会落到默认 `viewer` | `resolveSessionAccess` 在 `countActiveOwners() === 0` 且 `sub` 在 `ADMIN_SUBS` 里时授予 `owner` 并写 `user.bootstrap`；owner 落库后环境变量退出授权；另留 `npm run admin:grant -- <sub> [role]` 离线恢复。实测：真实库迁移后本人成为 owner，清空 `ADMIN_SUBS` 再登录仍是 owner | 换授权模型时必须设计「空库 / 老库第一次登录」路径，并单独验证「清空环境变量后老 owner 仍能进」；演练在真实库副本上跑一次引导，不只看测试库 |
 | 59 | 迁移演练时用户建出来了，却没有 `user.bootstrap` 审计；后台显示「无审计记录」 | 新建分支写成「插入用户与角色后 `return`」，drizzle 的同步事务回调提前结束，末尾统一写审计的代码被跳过 | 去掉分支里的 `return`：新建时只插入目标角色，已有用户走 `onConflictDoNothing` 追加，审计固定放在事务末尾 | 事务回调保持单出口；分支里不要 `return`，否则后续语句（审计、关联、计数）会被静默跳过，而且业务写已经成功，很难从结果反推 |
@@ -313,7 +317,7 @@ npm run check:contrast  # 四套主题的对比度；改图谱 / 主题色时必
 npm run build        # 改动涉及构建配置或路由时执行
 ```
 
-通过标准：typecheck / lint 无输出、测试全绿、`check:theme` 打印四行 `98 tokens PASS` 且退出 0、`check:contrast` 37/37。当前基线是 **46 个测试文件 675 项**（672 通过 + 3 项基准默认跳过，2026-11-13 Phase 6D 收尾复跑确认）。
+通过标准：typecheck / lint 无输出、测试全绿、`check:theme` 打印四行 `98 tokens PASS` 且退出 0、`check:contrast` 41/41。当前基线是 **51 个测试文件 774 项**（774 通过 + 3 项基准默认跳过，2026-11-13 Phase 6G 复跑确认）。
 
 > 本机（Windows，内存偏紧）直接 `npm test` 会因 Vitest 默认 worker 池占满内存而崩（`FATAL ERROR: Committing semi space failed`，Exit 134，多个 worker "exited unexpectedly"）。门禁与本地复跑一律用 `node ./node_modules/vitest/vitest.mjs run --maxWorkers=2`；这不是测试失败，别去改代码。
 

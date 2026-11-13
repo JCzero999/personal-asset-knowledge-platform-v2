@@ -335,7 +335,15 @@ export function RecordList({
                           className="record-title-button"
                           aria-label={`预览「${object.title}」`}
                           title="打开预览"
-                          onClick={() => preview.open(object.id, null, href)}
+                          onClick={(event) => {
+                            // ⌘/Ctrl + 点标题跳过预览，直接进详情（与行内其余位置一致）。
+                            if (event.metaKey || event.ctrlKey) {
+                              event.preventDefault();
+                              router.push(href);
+                              return;
+                            }
+                            preview.open(object.id, null, href);
+                          }}
                         >
                           {object.title}
                         </button>
