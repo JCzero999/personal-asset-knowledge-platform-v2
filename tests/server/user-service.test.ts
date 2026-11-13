@@ -239,7 +239,7 @@ describe("离线恢复与目录一致性", () => {
     }
   });
 
-  it("库里的权限清单与代码常量一致（13 项）", () => {
+  it("库里的权限清单与代码常量一致（15 项）", () => {
     const permissions = listPermissionCatalog(handle.db);
     expect(permissions.map((item) => item.key)).toEqual([...PERMISSION_KEYS]);
   });

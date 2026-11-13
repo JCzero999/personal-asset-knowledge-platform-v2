@@ -331,6 +331,10 @@ export function AdminDirectory({
   if (hasPermission(session, "system:read")) {
     system.push({ label: "系统状态", href: "/admin/system", active: active === "/admin/system" });
   }
+  // 大模型配置只决定图谱抽取用哪个服务，和「系统状态」同属运维，不新开分组。
+  if (hasPermission(session, "settings:read")) {
+    system.push({ label: "大模型", href: "/admin/llm", active: active === "/admin/llm" });
+  }
   if (hasPermission(session, "audit:read")) {
     system.push({ label: "审计日志", href: "/admin/audit", active: active === "/admin/audit" });
   }

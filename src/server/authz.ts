@@ -4,7 +4,7 @@ import { recordDeniedAudit } from "./services/audit-service";
 import type { Session } from "./ports/session";
 
 /**
- * 授权模型（ADR-019）——13 项权限 × 4 个系统角色。
+ * 授权模型（ADR-019）——15 项权限 × 4 个系统角色。
  *
  * 这里是权限的**唯一代码来源**：迁移把同一份清单灌进 `permissions` 表，
  * 启动与测试各校验一次两边一致（ADR-019 风险 A7）。
@@ -34,6 +34,9 @@ export const PERMISSIONS = [
   { key: "user:read", label: "查看用户与角色", groupKey: "账号", sortOrder: 110 },
   { key: "user:write", label: "修改用户角色与状态", groupKey: "账号", sortOrder: 120 },
   { key: "role:write", label: "修改角色定义（预留）", groupKey: "账号", sortOrder: 130 },
+  // 系统设置（ADR-025）：只有所有者与管理员能读写；API Key 只在服务端解密。
+  { key: "settings:read", label: "查看系统设置", groupKey: "系统", sortOrder: 140 },
+  { key: "settings:write", label: "修改系统设置", groupKey: "系统", sortOrder: 150 },
 ] as const satisfies readonly PermissionDefinition[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];

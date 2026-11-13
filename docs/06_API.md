@@ -1,7 +1,7 @@
 # HTTP API 参考
 
 > **适用对象**：调用本服务接口的前端 / 脚本开发者，以及需要核对接口契约的后端开发者。
-> **文档范围**：只记录 `src/app/api/` 下**当前已实现**的路由。未实现的能力统一列在第 11 节，避免把规划当成契约。
+> **文档范围**：只记录 `src/app/api/` 下**当前已实现**的路由。未实现的能力统一列在第 12 节，避免把规划当成契约。
 > **核对依据**（2026-11-13）：`src/app/api/**/route.ts`、`src/server/http/respond.ts`、`src/server/http/guard.ts`、`src/server/authz.ts`、`src/server/services/{object,content,sync,parse,search,graph,vocabulary,user,audit}-service.ts`、`src/server/sync-worker-runtime.ts`、`src/server/adapters/ragflow/client.ts`、`src/server/adapters/lightrag/client.ts`、`src/server/session.ts`、`src/domain/{errors,objects,workflow,content-ref}.ts`、`src/server/repositories/{sqlite-object-repository,sqlite-content-store}.ts`。代码与本文不一致时以代码为准，并回头修本文。
 
 ---
@@ -17,7 +17,7 @@
 | 路由运行时 | 全部为 `runtime = "nodejs"`、`dynamic = "force-dynamic"`，响应不做静态缓存 |
 | 启动 | `npm run dev`（Next.js 16） |
 
-除三条 Logto 登录路由（浏览器跳转，见第 9 节）与两条词表旧路径（308 跳转，见 6.9）外，所有接口返回 JSON；另有两点形状差异：内容上传收 `multipart/form-data` 请求体（见 4.10），内容下载成功时返回二进制文件流而非 JSON（见 4.12）。
+除三条 Logto 登录路由（浏览器跳转，见第 10 节）与两条词表旧路径（308 跳转，见 6.9）外，所有接口返回 JSON；另有两点形状差异：内容上传收 `multipart/form-data` 请求体（见 4.10），内容下载成功时返回二进制文件流而非 JSON（见 4.12）。
 
 ### 1.2 数据格式
 
@@ -40,7 +40,7 @@
 
 - **开发时无需登录即可调接口**：`AUTH_MODE=mock`（开发默认）下，所有 `/api/objects*` 请求都按 `mock-local-user` 执行。
 - **归属隔离**：所有对象读写都按当前会话的 `sub` 过滤。访问不属于自己的对象时返回 `404 NOT_FOUND`（与「不存在」不区分，避免用 id 探测他人数据）。该规则对详情、编辑、删除、状态迁移、跨库迁移、归档、迁移审计、内容上传、内容列表、内容下载与内容检索**全部生效**。
-- **权限判定（ADR-019）**：授权来自本地 `users` / `roles` / `permissions` / `role_permissions` / `user_roles` 五张表，**13 项权限 × 4 个系统角色**（`owner` / `admin` / `editor` / `viewer`）。每个接口在 route 层调用 `requirePermission()`（`src/server/authz.ts`，唯一强制层）；缺权限返回 `403 FORBIDDEN`，`details.permission` 指出缺哪一项。矩阵见 7.4，账号与审计接口见 7.5–7.8。
+- **权限判定（ADR-019）**：授权来自本地 `users` / `roles` / `permissions` / `role_permissions` / `user_roles` 五张表，**15 项权限 × 4 个系统角色**（`owner` / `admin` / `editor` / `viewer`）。每个接口在 route 层调用 `requirePermission()`（`src/server/authz.ts`，唯一强制层）；缺权限返回 `403 FORBIDDEN`，`details.permission` 指出缺哪一项。矩阵见 7.4，账号与审计接口见 7.5–7.8。
 - **`ADMIN_SUBS` 只剩引导作用**：仅当库中没有任何 `active` 的 `owner` 时，白名单命中的 `sub` 首次登录会被写入 `users` 并授予 `owner`；一旦存在 active owner，它不再参与任何授权判断。`AUTH_MODE=mock` 的固定身份恒为 `owner`（`src/server/roles.ts`、`src/server/services/user-service.ts`）。
 - **未登录**：业务接口返回 `401`，响应体 `message` 为「请先登录」。页面侧由 `requireSession()` 重定向到 `/`。
 - **配置缺失不降级**：`AUTH_MODE=logto` 但 `LOGTO_*` 环境变量不全时，会话解析直接抛错，请求以 500 失败——不会静默当成「未登录」，避免把配置问题藏起来。
@@ -193,14 +193,19 @@
 | GET | `/api/graph` | 实体邻域子图 | 200 |
 | POST | `/api/graph/sync` | 把对象内容同步进 LightRAG（最多 50 个） | 200 |
 | GET | `/api/graph/status` | 本系统图文档的抽取状态 | 200 |
+| POST | `/api/graph/retry` | 重新抽取失败对象（1–20 个） | 200 |
 | POST | `/api/graph/query` | 图增强问答（`mix`，可能约 90 秒） | 200 |
+| GET | `/api/settings/llm` | 大模型配置（密钥掩码） | 200 |
+| PUT | `/api/settings/llm` | 保存大模型配置 | 200 |
+| POST | `/api/settings/llm/test` | 测试与模型服务的连通性 | 200 |
+| POST | `/api/settings/llm/apply` | 写入 .env 并重启 LightRAG | 200 |
 | GET | `/api/logto/sign-in` | 跳转 Logto 登录（浏览器） | 307 |
 | GET | `/api/logto/sign-in-callback` | 登录回调（浏览器） | 307 |
 | GET | `/api/logto/sign-out` | 退出并清会话（浏览器） | 307 |
 
-合计 **36 条**「方法 × 路径」接口：**33 条业务 / 系统** + **3 条 Logto 跳转**，分布在 **31 个 `route.ts` 文件**（31 条路径）上。36 与 31 的差额来自 4 个挂了多个方法的文件：`/api/objects`（GET + POST）、`/api/objects/{id}`（GET + PATCH + DELETE）、`/api/objects/{id}/content`（GET + POST）、`/api/objects/{id}/library`（GET + POST）。
+合计 **43 条**「方法 × 路径」接口：**40 条业务 / 系统** + **3 条 Logto 跳转**，分布在 **35 个 `route.ts` 文件**（35 条路径）上。43 与 35 的差额来自 7 个挂了多个方法的文件（多出 8 条）：`/api/objects`（GET + POST）、`/api/objects/{id}`（GET + PATCH + DELETE）、`/api/objects/{id}/content`（GET + POST）、`/api/objects/{id}/library`（GET + POST）、`/api/vocabulary/categories/{code}`（PATCH + DELETE）、`/api/vocabulary/tags/{id}`（PATCH + DELETE）、`/api/settings/llm`（GET + PUT）。
 
-另有 2 条**只做 308 跳转**的旧路径（`/api/vocabulary/formats`、`/api/vocabulary/formats/{code}`，见 6.9）：它们各接受 5 个方法，但语义只是跳到 `/api/vocabulary/categories*`，表中单列、**不计入** 36 条能力数。
+另有 2 条**只做 308 跳转**的旧路径（`/api/vocabulary/formats`、`/api/vocabulary/formats/{code}`，见 6.9）：它们各接受 5 个方法，但语义只是跳到 `/api/vocabulary/categories*`，表中单列、**不计入** 43 条能力数。
 
 权限：除 `/api/health` 与 `/api/logto/*` 外，每个接口都先过 `requirePermission()`，所需权限键写在各行说明里，矩阵见 7.4；`/api/graph/*` 在 LightRAG 不可用时返回 500。
 
@@ -645,8 +650,8 @@ draft ──► finished ──► published ──► practiced
 
 | 响应头 | 值 |
 |--------|----|
-| `Content-Type` | 透传 RAGFlow 的响应头；本机实测为 `application/octet-stream`，不保证与实际文件类型一致 |
-| `Content-Disposition` | `attachment; filename*=UTF-8''<URL 编码文件名>`；文件名优先取 RAGFlow 响应里的名字，其次 `documentName`，都没有时用 `content` |
+| `Content-Type` | 透传 RAGFlow 的响应头；本机实测为 `application/octet-stream`，不保证与实际文件类型一致；本地记录的 `mime` 更准确，前端按扩展名/本地记录判断文件类型 |
+| `Content-Disposition` | 默认 `attachment; filename*=UTF-8''<URL 编码文件名>`；文件名优先取 RAGFlow 响应里的名字，其次 `documentName`，都没有时用 `content`；带 `?inline=1` 时改为 `inline`，供浏览器内联展示（PDF / 图片），文件名规则不变 |
 | `Content-Length` | 仅当 RAGFlow 返回了有效长度时携带 |
 | `Cache-Control` | `private, no-store` |
 
@@ -1088,7 +1093,7 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 - 跳转前不做鉴权：未登录调用旧地址会先拿到 308，随后新地址返回 401。想看权限 / 校验错误，请看 6.2–6.8。
 - 页面对应关系：`/admin/vocabulary/formats` 同样 308 到 `/admin/vocabulary/categories`。
 - **新代码请直接调用 `/api/vocabulary/categories*`**。这两个旧路径是给尚未升级的调用方留的一个版本窗口，不要在上面继续开发。
-- 页面源码里这两个 route 文件只导出跳转函数（`src/app/api/vocabulary/formats/route.ts`、`.../[code]/route.ts`），method × path 上是 10 个组合，但对调用方而言只是 2 条跳转入口，所以第 3 节不把它们计入 36 条能力数。
+- 页面源码里这两个 route 文件只导出跳转函数（`src/app/api/vocabulary/formats/route.ts`、`.../[code]/route.ts`），method × path 上是 10 个组合，但对调用方而言只是 2 条跳转入口，所以第 3 节不把它们计入 43 条能力数。
 
 ---
 
@@ -1241,7 +1246,7 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ### 7.4 权限矩阵（管理员接口的判定依据）
 
-授权模型见 ADR-019：13 项权限、4 个系统角色，唯一强制层是 `src/server/authz.ts` 的 `requirePermission()`。四条管理员接口的权限如下：
+授权模型见 ADR-019：15 项权限、4 个系统角色，唯一强制层是 `src/server/authz.ts` 的 `requirePermission()`。管理员接口的权限如下：
 
 | 方法 | 路径 | 需要的权限 | 默认拥有该权限的角色 | 详见 |
 |------|------|-----------|--------------------|------|
@@ -1267,6 +1272,8 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 | `user:read` | 查看用户与角色（7.5、7.7） | ✓ | ✓ | | |
 | `user:write` | 改用户角色与状态（7.6） | ✓ | | | |
 | `role:write` | 修改角色定义（预留，v1 无写入接口） | ✓ | | | |
+| `settings:read` | 查看大模型配置（8.1） | ✓ | ✓ | | |
+| `settings:write` | 修改 / 测试 / 应用大模型配置（8.2–8.4） | ✓ | ✓ | | |
 
 要点：
 
@@ -1424,7 +1431,7 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 }
 ```
 
-（示例有删节：真实响应返回全部 4 个角色与 13 项权限。）
+（示例有删节：真实响应返回全部 4 个角色与 15 项权限。）
 
 **主要错误**：`401`、`403`（缺 `user:read`）、`500`。
 
@@ -1502,13 +1509,155 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ---
 
-## 8. 知识图谱
+## 8. 大模型配置（`settings:*`，仅管理员）
+
+「系统 → 大模型」（页面 `/admin/llm`）背后的接口（ADR-025）。图谱抽取默认走本机 Ollama，慢到会超时；这组接口让管理员换成外部 OpenAI 兼容服务。
+
+四条接口对应四步操作，**保存与应用是分开的**：`PUT` 只落库，`POST /apply` 才写进 LightRAG 并重启它。这样「改个超时」不会每次都重启服务。
+
+- **密钥只写不读**：任何响应都不含明文 API Key，只有 `hasKey` 与 `keyMasked`（形如 `sk-…abcd`）。
+- **落库加密**：配置整体加密后写入 `settings` 表，密钥派生自环境变量 `SETTINGS_ENC_KEY`（缺这个变量时保存直接报错，不会降级成明文）。
+- **`apiKey` 的三种写法**：省略 = 保持原值；显式空串 = 清除；非空字符串 = 替换。
+- **`baseUrl` 约束**：必须 `https://`；`http://` 只允许 `localhost` / `127.0.0.1` / `::1`（本机 Ollama 走这条）；地址里不能带账号密码、查询串或锚点。
+- **超时范围**：`timeoutMs` 30 000–1 800 000（默认 300 000）。
+
+### 8.1 `GET /api/settings/llm`
+
+读取当前配置。库里有保存值就返回保存值，否则回落到 `infra/lightrag/.env`，再否则用内置默认（Ollama `deepseek-r1:7b`）。
+
+**权限**：`settings:read`。
+
+**响应**：`200`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `provider` | `openai` \| `deepseek` \| `qwen` \| `ollama` \| `custom` | 供应商 |
+| `baseUrl` | string | 接口地址（如 `https://api.deepseek.com`） |
+| `model` | string | 模型名，≤ 120 字符 |
+| `timeoutMs` | number | 单次请求超时 |
+| `hasKey` | boolean | 是否已保存密钥 |
+| `keyMasked` | string \| null | 掩码后的密钥；没有密钥为 `null` |
+| `appliedToLightrag` | boolean | 已保存配置是否与 `infra/lightrag/.env` 一致（不一致说明「待应用」） |
+| `updatedAt` | string \| null | 最近一次保存时间；`null` 表示当前值来自 `.env` / 内置默认，还没在页面保存过 |
+
+```json
+{
+  "provider": "deepseek",
+  "baseUrl": "https://api.deepseek.com",
+  "model": "deepseek-chat",
+  "timeoutMs": 300000,
+  "hasKey": true,
+  "keyMasked": "sk-…abcd",
+  "appliedToLightrag": false,
+  "updatedAt": "2026-11-13T09:10:00.000Z"
+}
+```
+
+**主要错误**：401 未登录；403 缺 `settings:read`；500 `SETTINGS_ENC_KEY` 缺失或解密失败。
+
+---
+
+### 8.2 `PUT /api/settings/llm`
+
+保存配置。**不重启、不自动应用。**
+
+**权限**：`settings:write`。
+
+**请求体**（全部可选，缺省沿用当前生效值）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `provider` | 五个枚举之一 | 其他值 → 400 |
+| `baseUrl` | string | 见上文约束 |
+| `model` | string | 非空，≤ 120 字符 |
+| `timeoutMs` | number | 30 000–1 800 000 的整数 |
+| `apiKey` | string | 省略 = 保持；`""` = 清除；有值 = 替换，≤ 512 字符 |
+
+**响应**：`200`，与 8.1 同形的配置视图（`updatedAt` 已刷新，密钥仍是掩码）。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | 请求体不是 JSON 对象；`provider` 取值非法；`baseUrl` 不是合法 URL / 用了 `http` 且非本机 / 带账号密码或查询串；`model` 为空或超长；`timeoutMs` 越界或非整数；`apiKey` 超长 |
+| 401 / 403 | 未登录 / 缺 `settings:write` |
+| 500 `INTERNAL` | `SETTINGS_ENC_KEY` 缺失或加解密失败 |
+
+> 保存会写一条审计 `settings.llm.update`，`detail` 里只有 `provider` / `model` / `baseUrl` / `keyChanged`，**不含密钥**。
+
+---
+
+### 8.3 `POST /api/settings/llm/test`
+
+向供应商发一个最小请求（`max_tokens: 8`，内容 `ping`），验证地址、模型与密钥是否可用。**只测不写**：请求体里可以带尚未保存的新密钥，测试通过也不会落库。
+
+**权限**：`settings:write`。
+
+**请求体**：可选，字段同 8.2（通常只带刚输入、还没保存的 `apiKey` 或 `baseUrl`）。请求体不是 JSON 时按「全部沿用已保存值」处理。
+
+**响应**：`200`（失败原因也是业务结果，不用错误信封）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ok` | boolean | 是否可用 |
+| `latencyMs` | number | 往返耗时 |
+| `status` | number \| null | 上游 HTTP 状态；网络层失败为 `null` |
+| `error` | string（可选） | 失败原因，已归一到四类之一 |
+
+失败原因分两类给出：**上游拒绝**（`401` / `403` → 「鉴权失败（API Key 无效或权限不足）」；`404` → 「接口地址不对」；其它 → 「供应商返回 HTTP <状态码>」，并附上游响应体前 300 字，密钥会被替换成掩码）；**网络层**（「请求超时」「无法连接：目标地址未监听」「无法解析域名」「证书校验失败」或原始错误摘要）。测试请求的超时上限固定为 30 秒，不跟随配置里的长超时。
+
+**主要错误**：401 / 403；400（`baseUrl` / `provider` 等字段非法；未填 API Key 且供应商不是 Ollama）。
+
+---
+
+### 8.4 `POST /api/settings/llm/apply`
+
+把已保存的配置写进 `infra/lightrag/.env`，然后**只重启 `lightrag-server`**（不碰 embedding 服务），并轮询 `/health` 最多 60 秒。
+
+**权限**：`settings:write`。
+
+**请求体**：无。
+
+**执行步骤**：
+
+1. 读库里的配置；没有保存过 → 400「请先保存大模型配置再应用」。
+2. 备份现有 `.env` 到 `<同一目录>/.env.bak-<时间戳>`。
+3. 重写 `.env` 里的 `LLM_BINDING` / `LLM_MODEL` / `LLM_BINDING_HOST` / `LLM_BINDING_API_KEY` / `LLM_TIMEOUT` 五个键，其他行原样保留；文件中缺失的键追加到末尾。本机 Ollama 的密钥为空时写入占位值 `ollama`。
+4. 结束 `lightrag-server` 进程并重新拉起。
+5. 每 2 秒请求一次 `/health`，最多 60 秒。
+
+**响应**：`200`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `applied` | boolean | 恒为 `true`（失败走错误） |
+| `restarted` | boolean | 是否真的重启了服务 |
+| `rolledBack` | `false` | 成功响应里恒为 `false` |
+| `backup` | string | 备份文件名（不是完整路径） |
+| `healthLatencyMs` | number \| null | 健康检查耗时；未重启（演练模式）为 `null` |
+| `updatedAt` | string | 应用完成时间 |
+
+**失败与回滚**：写盘之后的任何失败（重启失败、健康检查超时）都会把备份 `.env` 还原回去，再尝试重启回原配置，然后抛出 `500 INTERNAL`；`details.rolledBack` 为 `true` 表示已还原，错误信息里会说明「回滚后服务是否恢复」。**这是唯一会改动运行中服务的接口**，验收实例或 CI 里禁止调用（会把验收实例的 LightRAG 一起重启）。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | 还没有保存过配置 |
+| 401 / 403 | 未登录 / 缺 `settings:write` |
+| 500 `INTERNAL` | 找不到 `infra/lightrag/.env`；写盘失败；重启失败；60 秒内健康检查未通过（`details.rolledBack`、`details.backup`）；平台不是 Windows（自动重启目前只支持本机 Windows） |
+
+> 成功后写审计 `settings.llm.apply`，`detail` 含 `provider` / `model` / `baseUrl` / `backup` / `restarted`，**不含密钥**。
+
+---
+
+## 9. 知识图谱
 
 图谱接口把业务对象的主内容同步进 LightRAG，并提供实体、邻域与图增强问答。读接口要求 `object:read`，同步接口要求 `content:sync`；LightRAG 不可用时返回 `500 INTERNAL`。
 
 > **单租户限制**：LightRAG 的图 / 问答路由绑定默认 workspace，不按 `ownerSub` 隔离实体与答案正文。当前仅适用于单用户本机部署；`POST /api/graph/query` 的来源对象会按归属过滤，但答案文本仍可能包含其他用户写入的内容。开放多用户前必须先做实例级隔离。
 
-### 8.1 `GET /api/graph/labels`
+### 9.1 `GET /api/graph/labels`
 
 返回图谱中的全部实体标签，供实体列表使用。
 
@@ -1526,7 +1675,7 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ---
 
-### 8.2 `GET /api/graph`
+### 9.2 `GET /api/graph`
 
 读取一个实体的邻域子图。
 
@@ -1560,9 +1709,9 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ---
 
-### 8.3 `POST /api/graph/sync`
+### 9.3 `POST /api/graph/sync`
 
-把当前用户的对象内容同步进 LightRAG。**只负责入库**，实体抽取在 LightRAG 后台异步进行，进度看 8.4。
+把当前用户的对象内容同步进 LightRAG。**只负责入库**，实体抽取在 LightRAG 后台异步进行，进度看 9.4。
 
 **请求体**：无（忽略）。
 
@@ -1600,30 +1749,94 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ---
 
-### 8.4 `GET /api/graph/status`
+### 9.4 `GET /api/graph/status`
 
-汇总 LightRAG 中**本系统写入**的图文档状态（`file_path` 以 `pakp:obj:` 开头）。
+汇总 LightRAG 中**当前账号拥有**的业务对象的图文档状态（按 `file_path` 的 `pakp:obj:{objectId}:` 前缀映射回对象，再按归属过滤）。
 
 **响应**：`200`
 
 ```json
 {
-  "total": 3,
-  "byStatus": { "processed": 2, "processing": 1 },
-  "objects": [{ "objectId": "01...", "status": "processing", "error": null }],
-  "failed": []
+  "total": 2,
+  "byStatus": { "PROCESSED": 1, "FAILED": 1 },
+  "counts": { "processed": 1, "extracting": 0, "queued": 0, "failed": 1, "unknown": 0 },
+  "objects": [
+    {
+      "objectId": "01...",
+      "title": "FDE100 案例集_江苏篇",
+      "docId": "doc-...",
+      "status": "FAILED",
+      "state": "failed",
+      "error": "抽取超时：本地模型过慢",
+      "errorRaw": "C[1/4]: doc-...-chunk-000: ",
+      "chunksCount": 4,
+      "updatedAt": "2026-11-13T08:12:00"
+    }
+  ],
+  "failed": [{ "objectId": "01...", "error": "抽取超时：本地模型过慢" }]
 }
 ```
 
-- `byStatus` 的键来自 LightRAG（实测有 `pending` / `processing` / `processed` / `failed`）。
-- 同一对象存在多个版本时逐个列出，不做去重。
-- 手工放入 LightRAG、未带 `pakp:` 前缀的文档不会计入。
+- `byStatus` 的键是 LightRAG 原始状态（实测 `PENDING` / `PROCESSING` / `PROCESSED` / `FAILED`），按对象选中那条文档的状态计数。
+- `counts` 把原始状态归并为五个应用态：`processed` / `extracting` / `queued` / `failed` / `unknown`，供页面直接显示。
+- `state = failed` 时，`error` 是归一后的可读原因（六类：``抽取超时：本地模型过慢``、``抽取服务连接失败：请确认 LightRAG 与模型服务已启动``、``抽取失败：模型接口的密钥或权限被拒绝``、``抽取失败：模型接口限流或额度不足``、``抽取失败（未返回原因）``、``抽取失败：<首行摘要>``），`errorRaw` 始终是 LightRAG 原文；非失败态两者都为 `null`。
+- 同一对象存在多个版本时只取当前应展示的一条（按状态优先级挑选），不做逐条罗列。
+- 手工放入 LightRAG、未带 `pakp:` 前缀的文档，以及其他账号的对象都不计入。
 
 **主要错误**：401 未登录；500 LightRAG 失败。
 
 ---
 
-### 8.5 `POST /api/graph/query`
+### 9.5 `POST /api/graph/retry`
+
+重新抽取**失败**态的对象（当前账号拥有的对象）。只重投当前状态为 `failed` 的图文档，非失败对象返回 `skipped`，抽取仍在 LightRAG 后台进行，进度以 `GET /api/graph/status` 为准。不会同步 RAGFlow 内容，只针对图抽取层——若对象主内容还没解析成功，直接返回失败并提示先完成内容解析。
+
+**权限**：`content:sync`。
+
+**请求体**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `objectIds` | `string[]` | 要重新抽取的对象 id 数组，1–20 个；重复项按一次算，非字符串项被忽略 |
+
+**示例**：
+
+```json
+{ "objectIds": ["01M786QGYP6NXAPHPPW4GCHJCF"] }
+```
+
+**响应**：`200`
+
+```json
+{
+  "requested": 1,
+  "resubmitted": 1,
+  "results": [
+    { "objectId": "01M786QGYP6NXAPHPPW4GCHJCF", "title": "FDE100 案例集_江苏篇", "outcome": "resubmitted", "message": null }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `requested` | number | 去重后请求的对象数（≥ 1，≤ 20） |
+| `resubmitted` | number | 已重新投递抽取的数量 |
+| `results[]` | array | 每个对象的处理结果，顺序与去重后的请求 id 一致 |
+| `results[].objectId` | string | 对象 id |
+| `results[].title` | string | 对象标题（用于前端展示，不是 id 短码） |
+| `results[].outcome` | `"resubmitted" \| "skipped" \| "failed"` | `resubmitted` 已投递；`skipped` 不是失败态（已完成 / 抽取中 / 排队 / 无记录）；`failed` 这次重试没投递 |
+| `results[].message` | string \| null | 未投递时的原因：对象不存在或不属于当前账号 / 已经完成抽取，无需重试 / 正在抽取，等它结束再试 / 还在排队，等它开始再试 / 没有可重试的失败记录，先刷新进度 / 还没有解析成功的主内容，先完成内容解析再重试 |
+
+**主要错误**：
+- 400 `objectIds` 不是数组；为空；超过 20 个。
+- 401 未登录；403 缺 `content:sync`。
+- 500 无法构造 LightRAG / RAGFlow 客户端。
+
+> 重试不等于同步：同步（`POST /api/graph/sync`）负责把内容写进 LightRAG；重试（本接口）只负责对已经入图但抽取失败的对象重发。若失败原因是「模型接口限流或额度不足」，短期内重复重试大概率再次失败，建议先在「系统 → 大模型」里换外部模型或补充额度。
+
+---
+
+### 9.6 `POST /api/graph/query`
 
 图增强问答：同时使用实体关系与内容片段，返回答案与来源业务对象。
 
@@ -1656,7 +1869,7 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ---
 
-## 9. Logto 登录路由（浏览器跳转，非 JSON 接口）
+## 10. Logto 登录路由（浏览器跳转，非 JSON 接口）
 
 三条路由供页面跳转使用，**不要**在脚本里当 JSON API 调用。
 
@@ -1678,7 +1891,7 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ---
 
-## 10. curl 示例（`AUTH_MODE=mock`，本地直接可用）
+## 11. curl 示例（`AUTH_MODE=mock`，本地直接可用）
 
 开发环境默认就是 `AUTH_MODE=mock`，无需登录、无需 Cookie。
 
@@ -1815,6 +2028,21 @@ curl -s -X POST $BASE/api/vocabulary/tags/<tagId>/merge \
 curl -s -X DELETE $BASE/api/vocabulary/tags/<tagId> \
   -H "Content-Type: application/json" \
   -d '{"removeFromObjects":true}'
+
+# 25. 大模型配置：读 → 保存 → 测试 → 应用（密钥只写不读）
+curl -s $BASE/api/settings/llm
+curl -s -X PUT $BASE/api/settings/llm \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"deepseek","baseUrl":"https://api.deepseek.com","model":"deepseek-chat","apiKey":"sk-…"}'
+curl -s -X POST $BASE/api/settings/llm/test \
+  -H "Content-Type: application/json" \
+  -d '{"baseUrl":"https://api.deepseek.com","model":"deepseek-chat","apiKey":"sk-…"}'
+curl -s -X POST $BASE/api/settings/llm/apply
+
+# 26. 重新抽取失败对象（1–20 个）
+curl -s -X POST $BASE/api/graph/retry \
+  -H "Content-Type: application/json" \
+  -d '{"objectIds":["01M786QGYP6NXAPHPPW4GCHJCF"]}'
 ```
 
 `<id>` 替换为上一步返回的对象 `id`，`<refId>` 替换为内容引用列表里的 `id`，`<tagId>` 替换为 `GET /api/vocabulary` 返回的标签 `id`；示例里的 `revision` 需要按实际返回值调整。中文请写进 `.json` 文件再用 `--data-binary @x.json` 提交（例如 `{"label":"播客"}`），Windows 下不要把中文直接内联在 `-d` 里。词表写接口在 `AUTH_MODE=mock` 下直接放行（本地身份恒为管理员）。
@@ -1825,7 +2053,7 @@ curl -s -X DELETE $BASE/api/vocabulary/tags/<tagId> \
 
 ---
 
-## 11. 尚未实现（不要按这些能力设计调用方）
+## 12. 尚未实现（不要按这些能力设计调用方）
 
 以下能力**当前代码中不存在**，本文不作契约承诺：
 
@@ -1833,11 +2061,11 @@ curl -s -X DELETE $BASE/api/vocabulary/tags/<tagId> \
 |------|------|
 | 内容删除 / 附件解绑 | 未实现。没有删除某条 `content_ref`、列出对象全部附件或解绑单个附件的接口；删除只能走对象级 `DELETE` + worker（整对象全部文档） |
 | RAGFlow 问答会话 | 未实现。检索接口只返回召回片段，不组装上下文、不调用 chat model，也没有多轮会话 |
-| 图谱多用户隔离 | 未实现。LightRAG 图 / 问答路由绑定单实例默认 workspace，`/api/graph/*` 只适用于单用户本机部署（见第 8 节顶部说明） |
+| 图谱多用户隔离 | 未实现。LightRAG 图 / 问答路由绑定单实例默认 workspace，`/api/graph/*` 只适用于单用户本机部署（见第 9 节顶部说明） |
 | 图谱自动同步 | 未实现。没有定时同步或对象变更后自动入图；只能手动 `POST /api/graph/sync`，且单轮最多 50 个对象 |
 | 图谱实体 / 关系编辑 | 未实现。实体与关系只来自 LightRAG 抽取，不能改名、合并或手工补边 |
 | 列表总数 / 游标 | 未实现。`GET /api/objects` 只返回数组，没有 `total`、页码或游标 |
-| 多用户权限 / 角色 / 共享 | 部分实现（ADR-019）：13 项权限 × 4 个系统角色，接口层统一由 `requirePermission()` 强制（矩阵与管理员接口见 7.4–7.8）。仍**没有**自定义角色（`role:write` 预留、无写入接口）、协作、共享或对象级 ACL；对象继续按 `owner_sub` 归属过滤，跨账号只能看到自己的对象（见 1.3） |
+| 多用户权限 / 角色 / 共享 | 部分实现（ADR-019）：15 项权限 × 4 个系统角色，接口层统一由 `requirePermission()` 强制（矩阵与管理员接口见 7.4–7.8）。仍**没有**自定义角色（`role:write` 预留、无写入接口）、协作、共享或对象级 ACL；对象继续按 `owner_sub` 归属过滤，跨账号只能看到自己的对象（见 1.3） |
 | 审计归档与导出 | 未实现。`audit_events` 只增不删，没有归档脚本、没有导出接口；ADR-019 约定的「10 万行后归档到 `data/audit-YYYY-MM.jsonl`」尚未落地 |
 | OpenAPI / Swagger 描述文件 | 未实现。本文是唯一接口说明 |
 | 词表界面之外的维护方式 | 管理页已实现（`/admin/vocabulary/categories`、`/admin/vocabulary/tags`），界面以外没有批量导入 / 导出词表、没有分类或标签的回收站，删除即不可撤销 |
@@ -1847,7 +2075,7 @@ curl -s -X DELETE $BASE/api/vocabulary/tags/<tagId> \
 
 ---
 
-## 12. 变更记录
+## 13. 变更记录
 
 | 日期 | 变更 |
 |------|------|
@@ -1861,3 +2089,4 @@ curl -s -X DELETE $BASE/api/vocabulary/tags/<tagId> \
 | 2026-11-12（ADR-016 词表化） | 新增第 6 节「词表接口」8 条：`GET /api/vocabulary`（形态 + 标签 + 使用次数，唯一读取入口）、`POST /api/vocabulary/categories`、`PATCH` 与 `DELETE /api/vocabulary/categories/{code}`（`?migrateTo=` 先迁移再删）、`POST /api/vocabulary/tags`、`PATCH` 与 `DELETE /api/vocabulary/tags/{id}`（可选 `removeFromObjects`）、`POST /api/vocabulary/tags/{id}/merge`；写接口仅管理员（403）。端点总数 24 → 32 条。对象结构同步改为词表口径：`tags` 最多 10 项、单项 ≤ 20 字，写入时自动创建缺失标签；`format` 改为 `work_formats` 的 code 且必须是启用状态（不存在或已停用返回 404，不再按「固定六个取值」返回 400）。第 11 节原「词表管理页面未实现」一条由「界面已实现、仅缺批量导入 / 回收站」取代 |
 | 2026-11-13（ADR-024 检索） | `GET /api/search` 扩展：新增 `mode=hybrid\|lexical\|semantic`（默认 hybrid）、检索语法表（空格 AND / `"短语"` / `title:` `desc:` `category:` `tag:` 与中文同义前缀 / `-` 与 `NOT` 排除 / 未知前缀按文本 / `OR`、括号报错）；新增错误码 `QUERY_SYNTAX`（400，`details.position` 为 0 基位置）；`total` 语义改为合并去重后的对象数，新增 `counts` / `lexical` / `semantic` 块与 `hits[].source` / `score` / `matchedFields` / `chunkCount` / `highlightTerms`，旧字段在纯词法命中时为 `null`；`threshold` 明确只作用于语义；`hybrid` 下语义 3 秒硬超时只降级不报错。端点总数不变（32 条） |
 | 2026-11-13（文档补全：形态与管理员接口） | 补入 4 条管理员接口并新增 7.4–7.8：`GET /api/admin/users`（`user:read`）、`PATCH /api/admin/users/{id}`（`user:write`，改 `sub` 另需 `role:write`；最后一个 active owner 被移除 / 停用时 422 `CONSTRAINT_VIOLATION` + `details.reason = "LAST_OWNER"`）、`GET /api/admin/roles`（`user:read`，角色 × 权限矩阵 + 权限目录只读）、`GET /api/admin/audit`（`audit:read`，游标分页，`detail` 是 JSON 字符串）。**`/api/vocabulary/formats*` 按代码核实为 ADR-023 的 308 跳转壳，不是独立词表接口**，故未按「POST /api/vocabulary/formats」另立端点，改为 6.9 说明跳转行为。端点数核实：`src/app/api/**/route.ts` 共 **31 个文件 / 31 条路径**，按本文既有的「方法 × 路径」口径展开为 **36 条**（33 业务 / 系统 + 3 Logto；此前记 32 条漏了这 4 条管理员接口，差额来自 4 个多方法文件），另有 2 条 308 旧路径单列不计。按 ADR-019 现状同步更正 §1.3 权限判定（`ADMIN_SUBS` 只剩引导作用）、§1.4 错误码（补 `QUERY_SYNTAX` / `TAG_NOT_FOUND` / `CATEGORY_EXISTS` / `CATEGORY_ARCHIVED` / `AUDIT_FAILED`，`FORBIDDEN` 改为缺权限）、§7.1 响应加 `authMode`、§7.2 / §7.3 权限表述、§11「多用户权限」现状。另按代码更正对象结构口径：`categories` / `primaryCategory` 已删除（传入即 400），`tags` 里的未知标签改为 400 `TAG_NOT_FOUND`（不再隐式创建，ADR-023），§4.1 `category` 筛选改为 code 精确匹配，§10 示例补建标签步骤。§8.2 未改动 |
+| 2026-11-13（ADR-025 / ADR-026） | 新增第 8 节「大模型配置」四条接口（GET / PUT / POST test / POST apply，需 settings:read / settings:write，权限总数 13 → 15）、`GET /api/objects/{id}/content/{refId}` 的 `?inline=1` 与内容预览弹窗，以及第 9.5 节 `POST /api/graph/retry`（需 content:sync）… 端点总数 36 → 43 条（按实际表格行核对，原文档口径少算 2 条，一并更正），route.ts 文件 31 → 35 个 |

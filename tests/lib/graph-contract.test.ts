@@ -123,6 +123,7 @@ describe("status 降级与 failed 状态条模型", () => {
     const view = viewOf([node("a")], [], 150, {
       total: 1,
       byStatus: { processed: 1 },
+      counts: { processed: 1, extracting: 0, queued: 0, failed: 0, unknown: 0 },
       objects: [],
       failed: [],
     });
@@ -139,6 +140,7 @@ describe("status 降级与 failed 状态条模型", () => {
     const view = viewOf([node("a")], [], 150, {
       total: 3,
       byStatus: { failed: 3 },
+      counts: { processed: 0, extracting: 0, queued: 0, failed: 3, unknown: 0 },
       objects: [],
       failed,
     });

@@ -12,6 +12,7 @@ import { buildExportMarkdown, exportFileName, type ExportItem } from "@/lib/expo
 import { categoryLabel, type CategoryLabelMap } from "@/lib/category-labels";
 import { libraryLabels, statusLabels } from "@/lib/object-labels";
 import { Icon } from "./icon";
+import { usePreview } from "./preview-provider";
 
 /**
  * 第三列内容列表：行内多选 + 批量归档 / 导出 / 删除。
@@ -80,6 +81,7 @@ export function RecordList({
   children: ReactNode;
 }) {
   const router = useRouter();
+  const preview = usePreview();
   const selectAllRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
@@ -312,6 +314,17 @@ export function RecordList({
                     href={`/workspace/${object.id}${listQuery}`}
                     scroll={false}
                     aria-current={isActive ? "page" : undefined}
+                    // 普通单击改为就地预览；带修饰键仍是原来的详情页链接（新标签）。
+                    onClick={(event) => {
+                      if (!preview) return;
+                      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                      event.preventDefault();
+                      preview.open(
+                        object.id,
+                        null,
+                        event.currentTarget.getAttribute("href") ?? undefined,
+                      );
+                    }}
                   >
                     <span className="record-row-title">
                       <span className={`record-dot ${object.type}`} aria-hidden="true" />

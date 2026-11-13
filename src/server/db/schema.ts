@@ -346,6 +346,24 @@ export const auditEvents = sqliteTable(
   ],
 );
 
+/**
+ * 系统设置（ADR-025）。
+ *
+ * 值整段加密（`v1.<iv>.<tag>.<ciphertext>`，AES-256-GCM），密钥由
+ * 独立变量 `SETTINGS_ENC_KEY` 经 HKDF-SHA256 派生；读取路径只在内存里解密，
+ * 接口只回掩码。不做外键：`updated_by` 是 sub 快照，用户删除后仍要可读。
+ */
+export const settings = sqliteTable(
+  "settings",
+  {
+    key: text("key").primaryKey(),
+    valueEncrypted: text("value_encrypted").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    updatedBy: text("updated_by").notNull(),
+  },
+  () => [check("settings_key_check", sql`length(key) > 0`)],
+);
+
 export type ObjectRow = typeof objects.$inferSelect;
 export type NewObjectRow = typeof objects.$inferInsert;
 export type CategoryRow = typeof categories.$inferSelect;
@@ -365,3 +383,5 @@ export type RoleRow = typeof roles.$inferSelect;
 export type PermissionRow = typeof permissions.$inferSelect;
 export type AuditEventRow = typeof auditEvents.$inferSelect;
 export type NewAuditEventRow = typeof auditEvents.$inferInsert;
+export type SettingRow = typeof settings.$inferSelect;
+export type NewSettingRow = typeof settings.$inferInsert;

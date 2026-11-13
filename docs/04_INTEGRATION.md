@@ -154,6 +154,17 @@
 - **速度**：CPU 下 118 字文本约 3.8 分钟完成抽取、问答约 94 秒；文档越长越慢。`POST /api/graph/sync` 只负责入库，抽取在 LightRAG 后台继续，页面按 15 秒轮询进度。
 - **抽取质量**：`deepseek-r1:7b` 会把 `#` 当成实体，关系描述偶发格式告警；当前结果可用于连通性与交互验收，不作为质量基线。
 
+## 应用设置与 LightRAG 模型配置（ADR-025）
+
+- **凭据密钥 `SETTINGS_ENC_KEY`**：应用侧只读环境变量，经 HKDF-SHA256 派生 AES-256-GCM 密钥，加密 `settings` 表里的整段配置 JSON（含 API Key）。已写入 `.env.local`，`.env.example` 留空占位。未配置时 `GET / PUT /api/settings/llm` 返回明确错误，**不做明文降级**。不要与 Logto / `AUTH_SECRET` 共用——轮换登录密钥会让已存 API Key 全部解不开；更换该变量等同于旧密文作废，需要重新保存一次配置。
+- **`apply` 写入的键**：逐键改写 `infra/lightrag/.env` 的 `LLM_BINDING`（`ollama` 或 `openai`）、`LLM_MODEL`、`LLM_BINDING_HOST`、`LLM_BINDING_API_KEY`、`LLM_TIMEOUT`（秒）；文件里其它变量与注释原样保留，缺失的键追加到末尾。本机 Ollama 的 API Key 留空时写入占位值 `ollama`。
+- **写入前的备份**：原 `.env` 复制为同目录带时间戳的备份文件，接口在失败时返回其路径。
+- **重启范围**：通过 PowerShell 只查找并重启 `lightrag-server`（排除 `embedding_server` 与 9381 端口），不动 Ollama、Embedding 与 RAGFlow。重启期间 `/graph` 与图谱问答不可用（约 10–30 秒），在途抽取任务会中断。
+- **健康检查与回滚**：重启后轮询 `GET /health` 最多 60 秒；超时或非 200 时把 `.env` 回滚为备份并重启回原配置，响应带 `rolledBack`；回滚后仍不通则提示手动检查服务。
+- **平台约束**：自动重启只在 Windows 本机实现（依赖 PowerShell 查询进程），其它平台会返回「自动重启目前只支持 Windows 本机」，只能手动改 `.env` 并重启。
+- **禁止在验收实例触发 `apply`**：它会真实重启正在服务的 LightRAG。配置页验收只做保存与 `test`；应用动作安排在无人使用的窗口，并先确认供应商可达。
+- **本机模型上限（实测）**：Ollama `deepseek-r1:7b` 纯 CPU 约 7 tok/s、单请求 300 秒，两篇长文双双 `ReadTimeout`——这是「图谱一个实体都没有」的直接原因。换成外部模型后，对失败对象调 `POST /api/graph/retry` 重抽。
+
 ## Embedding
 
 - 决策：RAGFlow 与 LightRAG 共用 Embedding 模型，不共用向量库（ADR-001）

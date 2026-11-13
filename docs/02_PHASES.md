@@ -29,6 +29,7 @@
 | **Phase 4** | 核心业务（资产 + 工作流） | **已完成** | 资产 CRUD + 四阶段流转；内容映射进 RAGFlow；归档与迁移审计可用 |
 | **Phase 5** | 联调与打磨 | **主路径完成** | 登录 → 资产 / 工作流 → 检索 / 图谱主路径贯通；剩登录验证与失败路径 |
 | **Phase 6** | 体验与图谱深化 | **已完成**（2026-11-13） | 6A 分类词表统一、6B 检索模糊查询与语义混合、6C 主题令牌收尾、6D 知识图谱 2D 聚焦 + 3D 星河（默认入口 / Worker / 抽稀 / 自适应降档已在 `next start` 复验） |
+| **Phase 6E** | 大模型配置、内容预览与图谱失败自愈 | **已完成**（2026-11-13） | ADR-025 设置页与四条接口（权限 13 → 15）、ADR-026 预览弹窗（工作台 + 详情入口）、图谱失败归因与重抽；门禁与真实数据验收通过，`apply` 待单独窗口 |
 
 > **Phase 1 范围扩展（2026-11-11）**：完成标准由「骨架 + Logto 登录」扩展为「身份 + 最小持久化 CRUD」。依据是产品的 **DATA-01 / DATA-05 / DATA-08**，存储选型见 ADR-009。
 
@@ -381,6 +382,23 @@
 - [x] **质量门（本轮实跑）**：`tsc --noEmit` 退出 0；`vitest run --maxWorkers=2` 45 文件通过 / 1 跳过，672 通过 / 3 跳过（共 46 文件 675 项）；`eslint .` 0 error / 14 warning（既有）；`check:theme` 129 名 · 0 失败；`check:contrast` 37/37
 - [x] **运行记录**：`08_RUN_LOG` §18（命令、读数、脚本改动、证据链）
 - [ ] **未验证**：生产运行时跑在 mock LightRAG 夹具 + 无头 SwiftShader 上，真实 LightRAG / 真实 Logto 会话仍未在 `next start` 下复测；Worker 由 CDP 目标证明存在，页面内消息流量未在生产构建下埋点
+
+### Phase 6E：大模型配置 · 内容预览 · 图谱失败自愈（ADR-025 / ADR-026，2026-11-13）
+
+> 起因是图谱页「什么都看不到」：排查后确认不是渲染问题，而是本机模型抽取全部超时、一个实体都没产出，而换模型只能手改 `infra/lightrag/.env`。三条线并行——配置入界面、内容可预览、失败可见可重抽。只改应用与文档，不提交、不推送。
+
+- [x] **ADR-025：大模型供应商配置与凭据存储**：配置落 `settings` 单行加密 JSON，`src/server/security/secret-box.ts` 用 AES-256-GCM + HKDF-SHA256 加密（`v1.<iv>.<tag>.<ct>`，b64url），密钥来自新变量 `SETTINGS_ENC_KEY`；不复用 Logto Cookie 密钥，避免轮换登录密钥后已存 API Key 全部解不开。密钥缺失时报错而非明文落库；接口只回掩码与 `hasKey`
+- [x] **权限与迁移**：`drizzle/0009_settings.sql` 建 `settings` 表并插入 `settings:read` / `settings:write`（仅 owner / admin），权限总数 **13 → 15**；`assertAuthzCatalog()` 在启动时核对代码常量与数据库目录
+- [x] **四条设置接口**：`GET /api/settings/llm`、`PUT /api/settings/llm`（缺省 `apiKey` 沿用已存值）、`POST /api/settings/llm/test`（`max_tokens: 8` 最小请求，失败以 200 返回业务结果）、`POST /api/settings/llm/apply`（备份 `.env` → 只重启 `lightrag-server` → 60 秒轮询 `/health` → 失败回滚 `.env` 并重启回原配置）
+- [x] **设置页 `/admin/llm`**：目录「系统」下新增入口（`settings:read` 可见，无权限与其它 admin 页一致拒绝）；供应商预设 OpenAI / DeepSeek / 通义千问 / 自定义 OpenAI 兼容 / 本机 Ollama；保存与应用分离，应用前确认弹窗写明重启 10–30 秒、在途任务中断、失败自动回滚；后端未就绪（404 / 503 非 JSON）显示「后端未就绪」而不是崩
+- [x] **ADR-026：内容预览**：`ContentPreviewDialog`（原生 `<dialog>`）+ `PreviewProvider` 单一宿主，打开状态写 URL `?preview=<objectId>`，可后退关闭、关闭后焦点回触发元素；PDF 同源 iframe、Markdown 复用零依赖渲染器、纯文本、图片内联、其它类型下载；解析状态与失败原因（超时 / 连接 / 不支持格式 / 空内容）可见，附件可切换，移动端全屏
+- [x] **预览入口（本轮范围）**：工作台列表标题点击与详情页「预览」；列表普通单击改就地预览，⌘ / Ctrl / Shift 单击仍是详情页链接。检索与图谱入口留到下一轮
+- [x] **下载接口 `?inline=1`**：`GET /api/objects/{id}/content/{refId}` 在 `inline` 与 `attachment` 间切换；`Content-Type` 优先本地 `content_refs.mime`，因为 RAGFlow 对 PDF 常回 `application/octet-stream`，照搬会让内联打开退化成下载
+- [x] **图谱失败归因**：`describeGraphFailure` 归一为六类可读原因（超时 / 连接失败 / 密钥或权限 / 限流或额度 / 未返回原因 / 首行摘要），原始错误串始终保留；`GET /api/graph/status` 只上报当前账号的对象
+- [x] **图谱重抽**：`POST /api/graph/retry`（`objectIds` 1–20 个，权限 `content:sync`），逐条回 `resubmitted` / `skipped` / `failed`；图谱页失败项可展开原因并直接重抽
+- [x] **空图根因（实测）**：本机 Ollama `deepseek-r1:7b` 纯 CPU 约 7 tok/s，单请求上限 300 秒，两篇长文双双 `ReadTimeout`——图谱不是「还没抽完」，而是全部抽取失败、一个实体都没有
+- [x] **验收**：真实数据下 `/graph` 显示 1 个失败项、原因与重抽入口；`/admin/llm` 与预览弹窗在明暗主题下用浏览器实际打开核对；主题 129 名 0 失败、对比度 37/37、`tsc` 0、`lint` 0 error（14 条既有 warning）、`vitest` 50 文件 734 通过 / 3 跳过
+- [ ] **未做 / 未验证**：`apply` 未在验收实例触发（会重启 LightRAG，需单独窗口）；真实供应商 API Key 的连接测试未跑；PDF 内嵌在 Chrome / Edge 的实机渲染、浏览器后退关闭弹窗、移动端全屏未逐项实测；多轮问答仍缺对话模型 key
 
 ## 下一步行动
 

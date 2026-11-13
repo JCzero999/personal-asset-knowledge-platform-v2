@@ -153,6 +153,7 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **同步**：`POST /api/graph/sync` 手动触发，单轮最多 50 个对象；LightRAG 收到文本后异步抽取，状态经 `GET /api/graph/status` 查看（`pending` / `processing` / `processed` / `failed`）。
 - **查询**：`GET /api/graph` 读实体邻域（深度 1–3，`maxNodes` 50–600、默认 150）；`POST /api/graph/query` 用 `mix` 模式（图谱 + 向量）问答，答案引用按 `pakp:` 前缀解析回业务对象并校验归属，不是本系统写入的文档不返回。
 - **前端**：`/graph` 是服务端组件，首屏取标签与初始邻域；`GraphExplorer` 负责实体切换、三种视图（2D 聚焦 / 3D 星系 / 列表）、邻域详情、问答与同步状态轮询（只在 `pending` / `processing` 时每 15 秒刷新）。模型层是冻结件 `graph-model.ts` / `graph-quality.ts` / `graph-selectors.ts`：2D 与 3D 只消费同一份 `GraphViewModel` 与 `GraphHighlight`（含 `dimmedEdges`）；2D 用 `graph-layout-2d.ts` 的确定性力导向，3D 用 `graph-layout-3d.ts` 的三层盘播种 + 松弛布局（>300 节点在 `src/workers/graph-layout.worker.ts` 里跑，默认 400ms 预算），渲染层见 `src/components/graph/`（节点 / 边 / 标签各一次 instanced 绘制，预算 ≤8 次 draw call）。档位只降不升：容器按 `onStats` 的帧时连续两个窗口超阈值降一档，并在超预算时用 `decimate` 只抽稀 3D 视图。布局与标签排序是纯函数，单测覆盖。
+- **失败与重抽（ADR-025 同期）**：`GET /api/graph/status` 只上报当前账号拥有的对象，每项带 `state`、`error` 与归一后的 `reason`；`describeGraphFailure` 把 LightRAG 原始错误分成超时 / 连接失败 / 密钥或权限 / 限流或额度 / 未返回原因 / 首行摘要六类，原始串一并保留。`POST /api/graph/retry` 按传入的 1–20 个对象重新入队（权限 `content:sync`），逐条返回 `resubmitted` / `skipped` / `failed`，进度仍以 `/api/graph/status` 为准。
 - **已知限制**：LightRAG 的图 / 问答路由绑定单实例默认 workspace，`LIGHTRAG-WORKSPACE` 头只覆盖部分接口，因此图谱是**单租户**；`/graphs` 只沿有向出边遍历，只有入边的实体返回空图；本机 CPU 上 118 字文档抽取约 226 秒、问答约 94 秒。
 
 ### 5.8 前端应用框架（ADR-013 / ADR-014 / ADR-015）
@@ -174,6 +175,22 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **守卫**：ESLint `no-restricted-imports` 禁止 `src/**` 从 `@/domain/objects` 导入 `SYSTEM_FORMAT_SEEDS`（只有定义文件自身豁免），把「改一处漏一处」变成 lint 错误。
 - **对外形状不变**：`BusinessObject.tags` 仍是 `string[]`（元素是 label），仓储读取时再水合并发一次查询分组，UI / 导出 / 筛选 / 既有测试的契约不变。
 - **迁移注意**：`0005` 要重建 `objects`（删列 + 加外键），而 `objects` 被 `library_events.object_id` 引用；SQLite 的 `PRAGMA foreign_keys = OFF` 在事务内无效，必须由 `openDatabase()` 放在迁移事务外层，迁移后再跑 `PRAGMA foreign_key_check`，结果非空即拒绝启动。
+
+### 5.10 系统设置与大模型配置（ADR-025）
+
+- **分层**：路由 `src/app/api/settings/llm/**` 只做「取会话 → `requirePermission` → 交给服务」；业务在 `src/server/services/llm-settings-service.ts`（字段归一、供应商预设、`.env` 读写、应用与回滚）；加解密单独收在 `src/server/security/secret-box.ts`，既不读库也不写日志，便于单测与替换。
+- **存储**：`drizzle/0009_settings.sql` 的 `settings` 表（`key` / `value_encrypted` / `updated_at` / `updated_by`）。整段 JSON 一起加密（含 API Key），避免出现「漏加密一列」；`updated_by` 是操作者 sub 快照，不建外键，用户删除后审计仍可读。迁移只建表，没有行时按 `infra/lightrag/.env` 推导当前生效值。
+- **凭据密钥**：只读 `SETTINGS_ENC_KEY`，经 HKDF-SHA256 派生 32 字节 AES-256-GCM 密钥，密文 `v1.<iv>.<tag>.<ct>`（b64url，IV 每次随机 12 字节）。**不复用** Logto Cookie 密钥：轮换登录密钥不应让已存 API Key 全部解不开。变量缺失时接口报错，不静默降级或临时生成。
+- **权限**：`settings:read`（查看，只回掩码与 `hasKey`）与 `settings:write`（保存 / 测试 / 应用），仅 owner / admin；代码常量与数据库目录由 `assertAuthzCatalog()` 启动时核对。权限总数 13 → 15。
+- **保存与应用分离**：`PUT` 只落库；`POST /api/settings/llm/apply` 才写 `infra/lightrag/.env`（先备份）、只重启 `lightrag-server`、轮询 `/health` 最多 60 秒，失败自动回滚 `.env` 并重启回原配置。写入是逐键替换，保留 `.env` 里的其它变量与注释。
+- **界面**：`/admin/llm`（`src/components/llm-settings.tsx`）四张卡——当前生效 / 模型服务 / 连接测试 / 应用并重启；与后端解耦，后端未就绪（404 / 503 非 JSON）时显示「后端未就绪」。字段校验与供应商预设收在 `src/lib/llm-settings.ts`，请求包装在 `src/lib/api-fetch.ts`。
+
+### 5.11 内容预览（ADR-026）
+
+- **结构与状态**：`PreviewProvider`（`src/components/preview-provider.tsx`）是唯一宿主，挂在 `workspace-view` 外层；打开状态写在 URL `?preview=<objectId>`，后退可关闭，关闭后焦点回到触发元素。弹窗本体 `content-preview-dialog.tsx` 使用原生 `<dialog>`，按对象 key 重新挂载，避免在 effect 里手工清空状态。
+- **内容来源**：复用既有三个接口，不新增读取路由——`GET /api/objects/{id}` 取对象与引用、`GET /api/objects/{id}/content/{refId}?inline=1` 取内联正文、`src/lib/content-preview.ts` 判定类型与内容地址。下载接口按 `?inline=1` 在 `inline` / `attachment` 间切换 `Content-Disposition`；`Content-Type` 优先本地 `content_refs.mime`，因为 RAGFlow 对 PDF 常回 `application/octet-stream`，照搬会让内联打开变成下载。
+- **各类型**：PDF 同源 iframe（过大降级下载）；Markdown 走 ADR-014 的零依赖解析器，不用 `dangerouslySetInnerHTML`；纯文本按 512 KB 截断并提示；图片内联；其它类型给下载卡片。解析状态与失败原因直接展示，失败归因（超时 / 连接 / 不支持格式 / 空内容）在 `src/lib/content-preview.ts`，附件可切换。
+- **响应式**：移动端全屏（`100dvh`），桌面居中；样式复用既有类，新增 `.preview-*` 只写尺寸与间距，不新增颜色字面量。
 
 ## 6. 主要数据流
 
@@ -207,7 +224,7 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - RAGFlow Dataset / Document 与业务 Asset/Work 的具体映射字段 —— **已定案并落地**：单一 Dataset（ADR-007），`content_refs` 保存映射，`meta_fields` 只镜像过滤字段（见 5.6 与 04_INTEGRATION.md）
 - 内容变更后如何触发 LightRAG 更新 —— **已落地（手动）**：`POST /api/graph/sync` 按内容哈希判重、删除旧版本后重建；自动同步与失败重试仍未实现
 - 业务元数据存储的最终选型（SQLite / 其他）—— **已定案**：SQLite + better-sqlite3 + Drizzle（ADR-009，实现见第 5 节）
-- Logto 与 Next.js 的具体集成方式（SDK、回调、会话）—— **已落地**：`@logto/next`，`/api/logto/sign-in`、`sign-in-callback`、`sign-out` 三条路由，会话由 `src/server/session.ts` 统一解析（见 06_API.md 第 8 节）
+- Logto 与 Next.js 的具体集成方式（SDK、回调、会话）—— **已落地**：`@logto/next`，`/api/logto/sign-in`、`sign-in-callback`、`sign-out` 三条路由，会话由 `src/server/session.ts` 统一解析（见 06_API.md 第 10 节）
 - 各服务的端口、环境变量、网络连通方式
 
 ## 10. 架构原则（必须遵守）

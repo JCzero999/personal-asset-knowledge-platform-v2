@@ -203,7 +203,7 @@ describe("0005–0007 词表迁移", () => {
         .map((row) => (row as { key: string }).key);
       expect(permissionKeys).toContain("vocabulary:category:write");
       expect(permissionKeys).not.toContain("vocabulary:format:write");
-      expect(permissionKeys).toHaveLength(13);
+      expect(permissionKeys).toHaveLength(15);
 
       const categoryGrants = upgraded.sqlite
         .prepare("select role_key from role_permissions where permission_key = 'vocabulary:category:write' order by role_key")

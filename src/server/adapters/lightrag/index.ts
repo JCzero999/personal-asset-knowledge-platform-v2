@@ -3,6 +3,7 @@ export {
   createLightragClientFromEnv,
   type LightragAnswer,
   type LightragClientOptions,
+  type LightragDeleteResult,
   type LightragDocument,
   type LightragDocumentPage,
   type LightragEdge,

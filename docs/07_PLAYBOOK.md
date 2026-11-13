@@ -284,6 +284,9 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 106 | `.next-build` 存在时跑 `eslint .` 报出近千条错误，删掉目录就恢复 | 自定义构建产物目录不在 ESLint 的默认忽略里，被当成源码扫描 | `.gitignore` 加 `/.next-build`，`eslint.config.mjs` 的 `globalIgnores` 同步加 `.next-build/**`；门禁一律在干净树上跑 | 任何自定义构建 / 导出目录都要同时进 git 忽略与 lint 忽略，否则「本地全绿」和「门禁全绿」不是同一件事 |
 | 107 | RAGFlow 刚重启时语义检索显示「超时」，但服务其实是好的；过一会儿自己恢复 | `SEMANTIC_TIMEOUT_MS = 3000` 对冷启动不够：容器刚起来时首个 `/api/v1/retrieval` 要几秒（模型 / 索引预热），`Promise.race` 直接判 `timeout`；同一分钟内连打三次，第 2、3 次才 `ok` | 暂未改代码（3s 是产品口径的取舍）。排查时先连打两三次区分「冷启动」与「真不可用」；界面文案上 `timeout` 与 `unavailable` 本就是两条不同的提示 | 外部检索的超时阈值要按「冷启动 + 稳态」两段分别验证；故障演练结束时的第一次请求不代表稳态 |
 | 108 | 上传 `.bin` 这类 RAGFlow 不支持的扩展名，接口回 `500 INTERNAL`，前端只能显示「服务内部错误」 | RAGFlow 在 `POST /documents` 阶段返回 `code=500` + "This type of file has not been supported yet!"，适配器把非 2xx 一律包成 `DomainError("INTERNAL")`，没有区分「上游 5xx」与「上游拒绝该输入」 | 暂未改代码。生产影响有限（前端上传组件限制扩展名），但如果放开上传类型，应按上游错误体里的「unsupported」语义映射为 400 `VALIDATION_FAILED` | 上游返回 5xx 不代表就是服务故障：先看响应体是不是「拒绝输入」；「我能处理的格式」清单要有单一出处，前后端与上游三方对齐 |
+| 109 | 图谱页一个实体都没有，界面上只写「抽取失败」，看不出是模型太慢还是服务挂了 | 本地 `deepseek-r1:7b` 纯 CPU 约 7 tok/s，300 秒内跑不完长文分块，LightRAG 只把 `C[1/4]: doc-…-chunk-000:` 这类前缀写进 `error_msg`，真正的 `ReadTimeout` 只在服务日志里；旧界面把所有错误压成一句「失败」 | `describeGraphFailure` 归一为六类原因（超时 / 连接失败 / 密钥或权限 / 限流或额度 / 未返回原因 / 首行摘要），原始串一并保留；`/api/graph/status` 只上报本账号对象，失败项可展开原因并直接 `POST /api/graph/retry` | 「空图」先查状态再查渲染；长文抽取前先量单篇耗时与 tok/s；「还在抽」与「已失败」必须在界面上分开表达 |
+| 110 | 管理员保存过大模型 API Key，过一阵子配置全部读不出来，只能重填 | 初版把设置加密密钥挂在 Logto 的 Cookie 密钥上，轮换登录密钥后旧密文全部解不开 | 改用独立变量 `SETTINGS_ENC_KEY`（HKDF-SHA256 → AES-256-GCM），缺失时报错而不是明文降级；密文带 `v1.` 版本前缀，便于将来换算法时保留旧格式解析 | 凭据加密密钥与身份 / 会话密钥必须分离；更换加密密钥等同作废旧数据，要有明确的操作记录与重填指引 |
+| 111 | 预览弹窗里 PDF 一片空白，或者点开直接变成下载 | 下载接口默认 `Content-Disposition: attachment`；且 RAGFlow 对 PDF 常回 `application/octet-stream`，浏览器按附件处理 iframe 响应 | 新增 `?inline=1` 切换为 `inline`；`Content-Type` 优先本地 `content_refs.mime`，只有本地没有时才用 RAGFlow 回传值 | 内联展示要同时对齐 `Content-Disposition` 与 `Content-Type`，只改一个仍会被浏览器当下载 |
 
 **通用预防**（比单条修复更重要）：
 
@@ -479,6 +482,24 @@ curl -s http://127.0.0.1:9381/v1/models
 ```
 
 端口与版本以 [04_INTEGRATION.md](04_INTEGRATION.md) 的实测表为准（Logto 3001 / 控制台 3002；RAGFlow API 9380 / Web 18080；LightRAG 9621；本地 embedding 9381；Ollama 11434）。
+
+### 5.6 换大模型与重抽图谱（管理员操作）
+
+**换大模型**（`/admin/llm`，需 `settings:read`；改配置需 `settings:write`）：
+
+1. 进「系统 → 大模型」，在「模型服务」里选预设（OpenAI / DeepSeek / 通义千问 / 自定义 OpenAI 兼容 / 本机 Ollama），再填 `Base URL`、模型名、API Key、超时。
+2. API Key **留空表示沿用已保存的那把**；只有换供应商时才必须重填（端口 / 地址变了但模型没变也算换供应商）。
+3. 点「测试连接」——它会向供应商发一个 `max_tokens: 8` 的最小请求。返回失败时先看是网络、密钥还是模型名，别急着保存。
+4. 「保存」只落库，不影响正在运行的 LightRAG；「应用并重启 LightRAG」才会写 `infra/lightrag/.env` 并重启服务（10–30 秒，在途抽取中断，失败自动回滚）。
+5. 应用后回图谱页确认「当前生效」与「运行中」一致；不一致的黄色提示条说明库里的配置还没落到 `.env`。
+
+**图谱一个实体都没有**：
+
+1. 打开 `/graph`，看提示条与状态区：是「抽取中」还是「抽取失败」。失败项可展开看原因原文。
+2. 原因写着「抽取超时：本地模型过慢」——说明模型在 300 秒内跑不完一个分块，不是页面问题；本机 `deepseek-r1:7b` 纯 CPU 约 7 tok/s，长文必然超时。
+3. 按上面步骤换成外部模型并应用，然后回到失败项点「重新抽取」（也可直接调 `POST /api/graph/retry`，一次 1–20 个对象）。
+4. 重抽是异步的，进度以页面轮询 / `GET /api/graph/status` 为准；若仍是超时，先缩短单篇篇幅或减小分块，再重试。
+5. 不要在生产 / 验收实例上随手点「应用并重启」——它会真实中断正在服务的 LightRAG。
 
 ---
 

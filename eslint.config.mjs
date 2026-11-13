@@ -13,6 +13,8 @@ export default defineConfig([
     ".next-build/**",
     // RAGFlow 故障演练的隔离实例构建产物
     ".next-failtest/**",
+    // 大模型配置 / 预览验收的隔离实例构建产物
+    ".next-verify/**",
     ".venv/**",
     "**/.venv/**",
     "agents/**",

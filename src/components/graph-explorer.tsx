@@ -43,7 +43,12 @@ import {
 } from "@/lib/graph-quality";
 import { selectGraphHighlight, type GraphHighlight } from "@/lib/graph-selectors";
 import type { LightragSubgraph } from "@/server/adapters/lightrag/client";
-import type { GraphStatus } from "@/server/services/graph-service";
+import type {
+  GraphObjectState,
+  GraphRetryItem,
+  GraphRetryResult,
+  GraphStatus,
+} from "@/server/services/graph-service";
 
 import { GraphStage2D } from "./graph/graph-stage-2d";
 import { Icon } from "./icon";
@@ -107,6 +112,13 @@ export interface GraphExplorerProps {
 }
 
 const EMPTY_SUBGRAPH: LightragSubgraph = { nodes: [], edges: [] };
+const EMPTY_STATE_COUNTS: GraphStatusView["counts"] = {
+  processed: 0,
+  extracting: 0,
+  queued: 0,
+  failed: 0,
+  unknown: 0,
+};
 const RELATION_LIMIT = 20;
 const EMPTY_HIGHLIGHT: GraphHighlight = {
   nodes: new Set<string>(),
@@ -116,9 +128,44 @@ const EMPTY_HIGHLIGHT: GraphHighlight = {
   path: null,
 };
 
+/**
+ * 四态中文标签：与 `graph-service.ts` 的 `GRAPH_OBJECT_STATE_LABEL` 同一套口径。
+ * 客户端只从服务端模块取类型（`import type`），不把服务端实现打进浏览器包。
+ */
+const OBJECT_STATE_LABEL: Record<GraphObjectState, string> = {
+  processed: "已完成",
+  extracting: "抽取中",
+  queued: "排队",
+  failed: "失败",
+  unknown: "状态未知",
+};
+
+/** 失败排最前，其余按「需要关注的程度」排；同一态按标题排，保证每次渲染顺序稳定。 */
+const OBJECT_STATE_ORDER: Record<GraphObjectState, number> = {
+  failed: 0,
+  extracting: 1,
+  queued: 2,
+  unknown: 3,
+  processed: 4,
+};
+
+function compareStatusObjects(
+  a: GraphStatusView["objects"][number],
+  b: GraphStatusView["objects"][number],
+): number {
+  const byState = OBJECT_STATE_ORDER[a.state] - OBJECT_STATE_ORDER[b.state];
+  if (byState !== 0) return byState;
+  if (a.title !== b.title) return a.title < b.title ? -1 : 1;
+  return a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0;
+}
+
+/**
+ * 「还在动」只看四态计数：LightRAG v2 的 parsing / analyzing 也是进行中，
+ * 旧口径只数 pending + processing 会把正在跑的文档漏掉。
+ */
 function isWorking(status: GraphStatusView | null): boolean {
   if (!status) return false;
-  return (status.byStatus.pending ?? 0) + (status.byStatus.processing ?? 0) > 0;
+  return status.counts.extracting + status.counts.queued > 0;
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -265,6 +312,10 @@ export function GraphExplorer({
 
   const [syncing, setSyncing] = useState(false);
   const [syncNote, setSyncNote] = useState<string | null>(null);
+  // 「重新抽取」只作用于失败对象：确认后逐个对象提交，结果逐条回显。
+  const [retrying, setRetrying] = useState(false);
+  const [retryResults, setRetryResults] = useState<GraphRetryItem[] | null>(null);
+  const [retryError, setRetryError] = useState<string | null>(null);
 
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
@@ -748,6 +799,48 @@ export function GraphExplorer({
     }
   }
 
+  /**
+   * 重新抽取失败对象（ADR 口径：只碰失败态；processed / 抽取中 / 排队一律跳过）。
+   * 服务端按对象重建，结果逐条回显；抽取回 pending 后页面继续轮询。
+   */
+  async function handleRetry(objectIds: string[], label: string) {
+    if (objectIds.length === 0) return;
+    const confirmed = window.confirm(
+      `重新抽取${label}？\n\n会先删除现有的图谱文档，再重新提交一次抽取。正在排队或抽取中的内容不会被选中；旧版本删除可能要等一两分钟，期间请勿重复点击。`,
+    );
+    if (!confirmed) return;
+
+    setRetrying(true);
+    setRetryError(null);
+    setRetryResults(null);
+    try {
+      const result = await readJson<GraphRetryResult>(
+        await fetch("/api/graph/retry", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ objectIds }),
+        }),
+      );
+      setRetryResults(result.results);
+      setSyncNote(
+        result.resubmitted > 0
+          ? `已重新提交 ${result.resubmitted} 个内容，抽取在后台进行；完成后点「刷新」。`
+          : "没有内容被重新提交，详情见下面的结果。",
+      );
+      await refreshStatus();
+      if (result.resubmitted > 0) {
+        setSelectedId(null);
+        setPathTo(null);
+        setSubgraph(null);
+        setLoadedKey("");
+      }
+    } catch (error) {
+      setRetryError(error instanceof Error ? error.message : "重新抽取失败");
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   async function refreshAll() {
     const next = await refreshStatus();
     if (next) await refreshLabels();
@@ -801,7 +894,21 @@ export function GraphExplorer({
     answer && selectedNode && answer.response.includes(selectedNode.label) ? answer.references : [];
 
   const working = isWorking(status);
-  const workingCount = (status?.byStatus.pending ?? 0) + (status?.byStatus.processing ?? 0);
+  // 四态计数直接来自服务端（对象维度，同一对象的历史版本只算一次）。
+  const counts = status?.counts ?? EMPTY_STATE_COUNTS;
+  const workingCount = counts.extracting + counts.queued;
+  const allFailed = Boolean(status && status.total > 0 && counts.failed === status.total);
+  // 只要有失败 / 进行中的对象就给进度明细，全部完成时不打扰。
+  const needsAttention = Boolean(status && status.total > 0 && counts.failed + workingCount > 0);
+  const statusRows = useMemo(
+    () => (status ? [...status.objects].sort(compareStatusObjects) : []),
+    [status],
+  );
+  // 失败行的富信息（标题、原始错误）在 objects 里；failed 只保留 objectId + 原因给旧调用方。
+  const failedRows = useMemo(
+    () => statusRows.filter((row) => row.state === "failed"),
+    [statusRows],
+  );
   // 状态接口挂掉（status === null）不等于「图谱确实为空」，两条文案必须分开。
   const statusUnknown = status === null && labels.length === 0;
   const zeroContent = labels.length === 0 && status !== null && status.total === 0;
@@ -839,15 +946,24 @@ export function GraphExplorer({
             <strong>
               {status
                 ? `${status.total} 个内容已进图谱${
-                    status.byStatus.processed ? ` · ${status.byStatus.processed} 个完成抽取` : ""
+                    counts.processed ? ` · ${counts.processed} 个完成抽取` : ""
                   }`
                 : "图谱服务未连接"}
             </strong>
             <p>
               {working
-                ? `还有 ${workingCount} 个在排队或抽取，本机模型较慢，几分钟属正常。`
-                : modeHint}
+                ? `抽取中 ${counts.extracting} 个，排队 ${counts.queued} 个；本机模型较慢，完成后点「刷新」。`
+                : counts.failed > 0
+                  ? `有 ${counts.failed} 个内容抽取失败，展开下面的进度明细查看原因。`
+                  : modeHint}
             </p>
+            {status && status.total > 0 ? (
+              <p>
+                已完成 {counts.processed} · 抽取中 {counts.extracting} · 排队 {counts.queued} ·
+                失败 {counts.failed}
+                {counts.unknown > 0 ? ` · 状态未知 ${counts.unknown}` : ""}
+              </p>
+            ) : null}
           </div>
         </div>
 
@@ -967,24 +1083,95 @@ export function GraphExplorer({
         </p>
       ) : null}
 
-      {status && status.failed.length > 0 ? (
-        <details className="graph-failures">
-          <summary>
-            <span className="graph-chip graph-chip-warn">
-              <Icon name="alert" size={13} />
-              {status.failed.length} 个对象抽取失败
-            </span>
-          </summary>
+      {retryError ? (
+        <p className="graph-note graph-note-error" role="alert">
+          {retryError}
+        </p>
+      ) : null}
+      {retryResults && retryResults.length > 0 ? (
+        <div className="graph-note" role="status">
+          <p>重新抽取结果：</p>
           <ul>
-            {status.failed.map((failure) => (
-              <li key={failure.objectId}>
-                <Link className="text-link" href={`/workspace/${failure.objectId}`}>
-                  {failure.objectId.slice(0, 8)}
-                </Link>
-                <span>{failure.error || "没有返回错误信息"}</span>
+            {retryResults.map((item) => (
+              <li key={item.objectId}>
+                《{item.title}》
+                {item.outcome === "resubmitted"
+                  ? "已重新提交"
+                  : item.outcome === "skipped"
+                    ? "跳过"
+                    : "失败"}
+                ：{item.message}
               </li>
             ))}
           </ul>
+        </div>
+      ) : null}
+
+      {needsAttention && status ? (
+        <details
+          className="graph-failures"
+          style={
+            counts.failed === 0
+              ? { background: "var(--surface-2)", borderColor: "var(--line)" }
+              : undefined
+          }
+        >
+          <summary>
+            <span className={`graph-chip${counts.failed > 0 ? " graph-chip-warn" : ""}`}>
+              <Icon name={counts.failed > 0 ? "alert" : "refresh"} size={13} />
+              抽取进度：已完成 {counts.processed} · 抽取中 {counts.extracting} · 排队{" "}
+              {counts.queued} · 失败 {counts.failed}
+              {counts.unknown > 0 ? ` · 状态未知 ${counts.unknown}` : ""}
+            </span>
+          </summary>
+          <ul>
+            {statusRows.map((row) => (
+              <li key={row.objectId}>
+                <Link className="text-link" href={`/workspace/${row.objectId}`}>
+                  {row.title}
+                </Link>
+                <span className="meta-chip">{OBJECT_STATE_LABEL[row.state]}</span>
+                {row.error ? (
+                  <span>
+                    {row.error}
+                    {row.errorRaw ? (
+                      <>
+                        <br />
+                        {`原始错误：${row.errorRaw}`}
+                      </>
+                    ) : null}
+                  </span>
+                ) : null}
+                {row.state === "failed" ? (
+                  <button
+                    className="text-link"
+                    type="button"
+                    disabled={retrying}
+                    onClick={() => void handleRetry([row.objectId], `《${row.title}》`)}
+                  >
+                    重新抽取
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {counts.failed > 0 ? (
+            <div className="graph-state-actions">
+              <button
+                className="btn btn-secondary"
+                type="button"
+                disabled={retrying}
+                onClick={() =>
+                  void handleRetry(
+                    failedRows.map((item) => item.objectId),
+                    `全部 ${counts.failed} 个失败对象`,
+                  )
+                }
+              >
+                {retrying ? "正在提交（等旧版本删除）…" : `重新抽取全部 ${counts.failed} 个失败对象`}
+              </button>
+            </div>
+          ) : null}
         </details>
       ) : null}
 
@@ -1093,13 +1280,65 @@ export function GraphExplorer({
               </div>
             </div>
           ) : noEntities ? (
-            <div className="graph-state-card">
-              <p className="graph-state-title">还没有抽取到实体</p>
-              <p>
-                已同步 {status?.total ?? 0} 个内容
-                {working ? `，还有 ${workingCount} 个在排队或抽取。` : "，抽取完成后这里会出现实体。"}
+            <div className={`graph-state-card${allFailed ? " is-error" : ""}`}>
+              <p className="graph-state-title">
+                {allFailed ? `${counts.failed} 个内容抽取失败` : "还没有抽取到实体"}
               </p>
+              <p>
+                {allFailed
+                  ? "这些内容都没有抽出实体。可以逐个或全部重新抽取；如果反复失败，多半是本机模型太慢，单次抽取超过了 300 秒。"
+                  : working
+                    ? `已同步 ${status?.total ?? 0} 个内容，其中抽取中 ${counts.extracting} 个、排队 ${counts.queued} 个。抽取完成后点「刷新进度」。`
+                    : `已同步 ${status?.total ?? 0} 个内容，抽取已完成但没有实体${
+                        counts.failed > 0 ? `（另有 ${counts.failed} 个失败）` : ""
+                      }。`}
+              </p>
+              {allFailed && status ? (
+                <div className="graph-failures" style={{ marginTop: "var(--sp-3)" }}>
+                  <ul>
+                    {failedRows.map((failure) => (
+                      <li key={failure.objectId}>
+                        <Link className="text-link" href={`/workspace/${failure.objectId}`}>
+                          {failure.title}
+                        </Link>
+                        <span>
+                          {failure.error}
+                          {failure.errorRaw ? (
+                            <>
+                              <br />
+                              {`原始错误：${failure.errorRaw}`}
+                            </>
+                          ) : null}
+                        </span>
+                        <button
+                          className="text-link"
+                          type="button"
+                          disabled={retrying}
+                          onClick={() => void handleRetry([failure.objectId], `《${failure.title}》`)}
+                        >
+                          重新抽取
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               <div className="graph-state-actions">
+                {allFailed && status ? (
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    disabled={retrying}
+                    onClick={() =>
+                      void handleRetry(
+                        failedRows.map((item) => item.objectId),
+                        `全部 ${counts.failed} 个失败对象`,
+                      )
+                    }
+                  >
+                    {retrying ? "正在提交（等旧版本删除）…" : `全部重新抽取（${counts.failed} 个）`}
+                  </button>
+                ) : null}
                 <button className="btn btn-secondary" type="button" onClick={() => void refreshAll()}>
                   刷新进度
                 </button>

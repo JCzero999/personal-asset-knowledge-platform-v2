@@ -175,5 +175,7 @@ export const AUDIT_ACTIONS = [
   "user.state.update",
   "user.sub.update",
   "user.bootstrap",
+  "settings.llm.update",
+  "settings.llm.apply",
   "authz.denied",
 ] as const;

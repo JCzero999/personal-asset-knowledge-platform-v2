@@ -21,11 +21,23 @@ export interface LightragDocument {
   status: string;
   chunksCount: number;
   errorMessage: string | null;
+  /** 最近一次状态更新时间（LightRAG 的 `updated_at`），用于挑选对象的最新版本。 */
+  updatedAt: string | null;
 }
 
 export interface LightragDocumentPage {
   documents: LightragDocument[];
   total: number;
+}
+
+/**
+ * `DELETE /documents/delete_document` 的回执。LightRAG 的删除在后台执行，
+ * 接口只负责占位：`deletion_started` 表示已排上（文档还要过一会儿才真的消失），
+ * `busy` / `not_allowed` 表示这次没排上，需要稍后重试。
+ */
+export interface LightragDeleteResult {
+  status: "deletion_started" | "busy" | "not_allowed" | "unknown";
+  message: string;
 }
 
 export interface LightragReference {
@@ -67,6 +79,7 @@ interface RawDocument {
   status?: string;
   chunks_count?: number;
   error_msg?: string | null;
+  updated_at?: string | null;
 }
 
 interface RawGraphNode {
@@ -148,14 +161,28 @@ export class LightragClient {
         status: raw.status ?? "",
         chunksCount: raw.chunks_count ?? 0,
         errorMessage: raw.error_msg?.trim() || null,
+        updatedAt: raw.updated_at ?? null,
       })),
       total: data.pagination?.total_count ?? data.documents.length,
     };
   }
 
-  async deleteDocuments(docIds: string[]): Promise<void> {
-    if (docIds.length === 0) return;
-    await this.request("DELETE", "/documents/delete_document", { doc_ids: docIds }, this.timeoutMs);
+  async deleteDocuments(docIds: string[]): Promise<LightragDeleteResult> {
+    if (docIds.length === 0) return { status: "unknown", message: "" };
+    const data = await this.request<{ status?: string; message?: string }>(
+      "DELETE",
+      "/documents/delete_document",
+      { doc_ids: docIds },
+      this.timeoutMs,
+    );
+    const status = data?.status;
+    return {
+      status:
+        status === "deletion_started" || status === "busy" || status === "not_allowed"
+          ? status
+          : "unknown",
+      message: data?.message ?? "",
+    };
   }
 
   /** 图增强问答；`mix` 同时走图谱与向量检索。 */

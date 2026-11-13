@@ -64,6 +64,13 @@
       "when": 1794501292913,
       "tag": "0008_search_norm",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794561938213,
+      "tag": "0009_settings",
+      "breakpoints": true
     }
   ]
 }

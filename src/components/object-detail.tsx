@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ObjectActions } from "@/components/object-actions";
 import { ObjectContent } from "@/components/object-content";
 import { Icon } from "@/components/icon";
+import { PreviewButton } from "@/components/preview-provider";
 import { type BusinessObject } from "@/domain/objects";
 import type { ContentRef } from "@/domain/content-ref";
 import type { VocabularyCategory, VocabularyTag } from "@/domain/vocabulary";
@@ -93,6 +94,7 @@ export function ObjectDetail({
           </div>
 
           <div className="detail-actions">
+            <PreviewButton objectId={object.id} />
             <ObjectActions
               object={object}
               categories={categories}

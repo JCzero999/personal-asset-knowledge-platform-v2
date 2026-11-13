@@ -539,3 +539,20 @@
 - **解析失败回写**：上传结构损坏的 PDF（RAGFlow 接受上传、解析阶段报错），轮询后 `parseStatus=failed`、`parseError` 写入 RAGFlow 原始日志「14:32:18 [ERROR][Exception]: cannot convert float NaN to integer」；`POST /api/parse/run` 返回 `failed:1` 并在 `errors[]` 带 `refId` / `documentId`
 - **两个新发现**（详见 `07_PLAYBOOK` 问题 107、108）：① 语义检索的 3 秒超时在 RAGFlow 刚重启 / 冷启动时会误报 `timeout`，界面提示与真正不可用混在一起；② RAGFlow 拒绝不支持的扩展名时（`broken.bin`）被包成 `500 INTERNAL`，这其实是客户端可纠正的输入问题，更适合 400
 - **环境状态**：实测结束后 `scripts/autostart.ps1 -App` 重新拉起全部依赖与应用（3000，`AUTH_MODE=logto`），health 200、首页 200、`/search` `/graph` 匿名 307 回首页
+
+## 2026-11-13（Phase 6E：大模型配置 · 内容预览 · 图谱失败自愈）
+
+- **起因**：图谱页长期「什么都看不到」，排查后发现不是渲染问题，而是本机模型抽取全部超时失败、一个实体都没产出；同时换模型只能手改 `infra/lightrag/.env` 并重启服务。三条线一起做：把大模型配置搬进界面（ADR-025）、给作品 / 资产加统一内容预览（ADR-026）、让图谱失败可见且可重抽
+- **ADR**：新采纳 **ADR-025**（大模型供应商配置与凭据存储，修订 ADR-010 的 LLM 固定条款）与 **ADR-026**（知识内容预览），索引表与 ADR-010 状态行同步更新；需求与设计稿见 `18_REQUIREMENTS_LLM_PREVIEW.md`、`19_DESIGN_LLM_PREVIEW.md`
+- **凭据存储**：新变量 `SETTINGS_ENC_KEY`（独立于 Logto 的 Cookie 密钥，轮换登录密钥不会让已存 API Key 解不开）；`src/server/security/secret-box.ts` 用 AES-256-GCM + HKDF-SHA256 派生密钥，密文格式 `v1.<iv>.<tag>.<ct>`（b64url），非密钥字段与 API Key 一起整段加密，避免「漏加密一列」；密钥缺失时接口直接报错，绝不降级为明文落库
+- **数据层**：`drizzle/0009_settings.sql` 新增 `settings` 表（`key` / `value_encrypted` / `updated_at` / `updated_by`，`updated_by` 存 sub 快照、不建外键）；迁移只建表不写默认行，没有行时接口按 `infra/lightrag/.env` 推导当前生效值。权限目录新增 `settings:read` / `settings:write`（仅 owner / admin），总数 **13 → 15**，`assertAuthzCatalog()` 启动时核对代码常量与数据库两边
+- **接口**：`GET /api/settings/llm`（密钥只回掩码与 `hasKey`）、`PUT /api/settings/llm`（未提交 `apiKey` 时沿用已存值）、`POST /api/settings/llm/test`（向供应商发 `max_tokens: 8` 的最小请求，失败仍以 200 返回业务结果）、`POST /api/settings/llm/apply`（备份 `.env` → 只重启 `lightrag-server` → 60 秒轮询 `/health` → 失败自动回滚 `.env` 并重启回原配置）；`POST /api/graph/retry`（`objectIds` 1–20 个，权限 `content:sync`，逐条回 `resubmitted` / `skipped` / `failed`）
+- **设置页**：新路由 `/admin/llm`，目录「系统」下加入口（`settings:read` 可见，无权限走与其它 admin 页一致的拒绝页）；四张卡——当前生效 / 模型服务（预设 OpenAI、DeepSeek、通义千问、自定义 OpenAI 兼容、本机 Ollama）/ 连接测试 / 应用并重启；保存与应用分开，应用前确认弹窗写明重启 10–30 秒、在途任务会中断、失败自动回滚
+- **内容预览**：`ContentPreviewDialog`（原生 `<dialog>`）+ `PreviewProvider` 单一宿主；打开状态写进 URL `?preview=<objectId>`，可后退关闭，关闭后焦点回到触发元素；PDF 同源 iframe、Markdown 复用零依赖渲染器、纯文本、图片内联，其它类型给下载；显示解析状态与失败原因（超时 / 连接 / 不支持格式 / 空内容四类），附件可切换，移动端全屏。本轮接入工作台列表标题点击与详情页「预览」，检索与图谱入口留到下一轮
+- **交互取舍**：列表行普通单击改为就地预览，⌘ / Ctrl / Shift 单击仍是原来的详情页链接；弹窗内「打开详情」保留当前筛选
+- **下载接口**：`GET /api/objects/{id}/content/{refId}` 新增 `?inline=1`，`Content-Disposition` 在 `inline` 与 `attachment` 之间切换；`Content-Type` 优先用本地 `content_refs.mime`，因为 RAGFlow 对 PDF 常回 `application/octet-stream`，照搬会让浏览器把内联打开变成下载
+- **图谱失败归因**：`describeGraphFailure` 把 LightRAG 原始错误归一为六类——「抽取超时：本地模型过慢」「抽取服务连接失败…」「抽取失败：模型接口的密钥或权限被拒绝」「抽取失败：模型接口限流或额度不足」「抽取失败（未返回原因）」「抽取失败：<首行>」（超过 120 字截断）；原始错误串始终一并返回。`GET /api/graph/status` 只上报当前账号拥有的对象，失败项可直接在页面上展开原因并重抽
+- **空图根因（实测）**：本机 Ollama `deepseek-r1:7b` 纯 CPU 约 7 tok/s，单请求上限 300 秒，两篇长文双双 `ReadTimeout`，图谱不是「还没抽完」而是**一个实体都没有**；换成外部模型或调小分块后需重新抽取
+- **验收**：真实数据下 `/graph` 页显示 1 个失败项、可读原因与「重新抽取」入口；`/admin/llm` 与预览弹窗在明暗主题下用浏览器实际打开核对
+- **质量门（本轮实跑）**：`tsc --noEmit` 退出 0；`eslint .` 0 error / 14 warning（既有）；`vitest run --maxWorkers=2` **50 文件 737 项（734 通过 / 3 跳过）**；`check:theme` 129 名 · 0 失败 · 字面量 26（未新增）；`check:contrast` 37/37
+- **未做 / 未验证**：`apply` 未在验收实例触发（会重启 LightRAG，需单独安排窗口）；真实供应商 API Key 的连接测试未跑；多轮问答仍缺对话模型 key；PDF 内嵌在 Chrome / Edge 的实机渲染、浏览器后退关闭弹窗、移动端 `100dvh` 全屏未逐项实测；检索与图谱的预览入口未接入

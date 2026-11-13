@@ -200,6 +200,7 @@
 
 - **状态**：已采纳
 - **日期**：2026-11-11
+- **状态变更（2026-11-13，ADR-025）**：LLM 从「固定 Ollama `deepseek-r1:7b`」改为**可配置的 OpenAI 兼容供应商**（未配置时默认值不变，仍指向本机 Ollama）；Embedding（bge-large-zh-v1.5 @ 9381）与文件存储两条**不变**。
 - **决策**：
   - LightRAG 以 **本机 Python 进程**自托管（`lightrag-hku[api]` 1.5.7，官方 `lightrag-server`），不额外起 Docker 栈；环境与数据隔离在 `infra/lightrag/`，不进入仓库。
   - **LLM**：Ollama 本地 `deepseek-r1:7b`（实体 / 关系抽取与摘要），不需要外部 API key。
@@ -471,7 +472,7 @@
 
 ## ADR-019：管理后台的用户 / 角色 / 权限模型
 
-- **状态**：已采纳，**已实施**（2026-11-12 设计，2026-11-13 按代码核实改状态）。依据：`src/server/authz.ts` 已导出 13 项 `PERMISSIONS` 常量与 `requirePermission` / `requireAnyPermission`；`src/server/http/guard.ts` 的 `adminGuard` 已收敛为薄封装（默认 key 为 `vocabulary:category:write`）；`src/server/services/audit-service.ts` 已存在；`src/app/api/admin/users`、`users/[id]`、`roles`、`audit` 四个路由文件均已上线，对应 `user:read` / `user:write` / `role:write` / `audit:read`。**两点与原文不符，已在正文就地更正**：权限矩阵里的 `vocabulary:format:write` 已由 ADR-023 改名为 `vocabulary:category:write`（第 3 条）；第 10 条的 `GET /api/admin/audit/export`（CSV）**没有实现**，只有设计稿。
+- **状态**：已采纳，**已实施**（2026-11-12 设计，2026-11-13 按代码核实改状态）。依据：`src/server/authz.ts` 已导出 13 项 `PERMISSIONS` 常量与 `requirePermission` / `requireAnyPermission`；`src/server/http/guard.ts` 的 `adminGuard` 已收敛为薄封装（默认 key 为 `vocabulary:category:write`）；`src/server/services/audit-service.ts` 已存在；`src/app/api/admin/users`、`users/[id]`、`roles`、`audit` 四个路由文件均已上线，对应 `user:read` / `user:write` / `role:write` / `audit:read`。**两点与原文不符，已在正文就地更正**：权限矩阵里的 `vocabulary:format:write` 已由 ADR-023 改名为 `vocabulary:category:write`（第 3 条）；第 10 条的 `GET /api/admin/audit/export`（CSV）**没有实现**，只有设计稿。 **2026-11-13（ADR-025）**：权限清单由 13 项增至 **15 项**（新增 `settings:read` / `settings:write`，仅 owner / admin），矩阵其余不变。
 
 - **背景**：使用者第 4 条需求要求把「过于简陋」的管理页细化重做，明确点名用户管理、角色管理、权限管理。现状：
   - 身份只有一个来源：Logto（`src/server/adapters/session/logto.ts`），`SessionPort` 只返回 `{ sub, name, email }`。
@@ -2056,6 +2057,185 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 
 ---
 
+## ADR-025：大模型供应商配置与凭据存储
+
+- **状态**：已采纳·已实施（2026-11-13）
+- **日期**：2026-11-13
+- **实施说明（2026-11-13）**：表名最终定为 **`settings`**（列 `key` / `value_encrypted` / `updated_at` / `updated_by`，`updated_by` 非空、存操作者 sub 快照）；下文 `app_settings(value_enc …)` 是最初草稿的形状，其余决策（AES-256-GCM + HKDF、独立 `SETTINGS_ENC_KEY`、权限 13 → 15、`test` / `apply` 分离、60 秒健康检查与回滚）均按原文落地。
+- **背景**：图谱页 0 实体，实测根因在模型侧太慢，不是链路接错：
+  - `infra/lightrag/.env` 当前是 `LLM_BINDING=ollama`、`LLM_MODEL=deepseek-r1:7b`、`LLM_BINDING_HOST=http://127.0.0.1:11434`、`LLM_TIMEOUT=300`；本机无 GPU，实测生成约 **7 tokens/s**，一篇中等长度内容的分块实体抽取远超 300 秒。
+  - `infra/lightrag/lightrag.err.log` 里 `ReadTimeout` 命中 **16 次**，4 篇内容全部抽取失败；报错串只剩 `C[1/4]: doc-…-chunk-000:`，页面的失败卡片因此没有可读原因（该问题由图谱线另行修复，本 ADR 不重复设计）。
+  - 改模型要手改 `infra/lightrag/.env` 再手动重启进程：没有审计，没有校验，也没有任何地方能回答「现在保存的配置到底生效了没有」。
+  - **三处与任务书不一致的现状（已实测，必须先裁决）**：
+
+    | 任务书假设 | 仓库实际 | 本 ADR 的裁决 |
+    |---|---|---|
+    | 有 `AUTH_SECRET` | `grep -rn "AUTH_SECRET" src/ scripts/` 命中 **0**；`.env.local` 只有 `LOGTO_COOKIE_SECRET` / `LOGTO_APP_SECRET` | 新增专用变量 **`SETTINGS_ENC_KEY`**，不复用 Logto 的 cookie secret（理由见第 2 条） |
+    | 迁移编号 `0008_settings.sql` | `drizzle/0008_search_norm.sql` 已占用（ADR-024） | 改用 **`drizzle/0009_settings.sql`** |
+    | `.env.example` 里有 `OPENAI_API_KEY` 等可作回退 | `src/`、`scripts/` 对该组变量**零读取**，是历史遗留 | 不把它当回退来源；DB 是唯一真相源，`.env.example` 只保留说明 |
+
+- **决策**：
+  1. **配置落库，DB 是唯一真相源**：新表 `app_settings(key TEXT PK, value_enc TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NULL)`，本次只有一行 `key = "llm"`，值是一整组配置的**加密 JSON**（`provider / baseUrl / model / apiKey / timeoutMs`）。
+     - 一 key 存一整组，而不是一字段一行：`test` 与 `apply` 天然需要一组彼此一致的值，按行拆开会出现「`provider` 已改成 openai、`apiKey` 还是 ollama 的默认占位」这种半更新态，而它只能靠额外的事务约束来防。
+     - 迁移 **`drizzle/0009_settings.sql`**（编号理由见背景表）。
+  2. **密钥加密：AES-256-GCM，密钥来自专用环境变量 `SETTINGS_ENC_KEY`**（32 字节随机值，base64 或 hex 写进 `.env.local`；生成命令 `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`）。
+     - 派生：`HKDF-SHA256(SETTINGS_ENC_KEY, salt="pakp.settings", info="llm")` → 32 字节密钥；存储格式 `v1.<iv-b64>.<tag-b64>.<cipher-b64>`，**AAD 固定为 key 名 `"llm"`**，使一行密文不能被搬到另一 key 下解开。
+     - **不沿用任务书的 `AUTH_SECRET`**：这个变量在本仓库不存在。**也不复用 `LOGTO_COOKIE_SECRET`**：轮换 Logto cookie secret 会让库里所有已存 API key 当场解不开（密文还在、解密密钥变了），而且 cookie secret 的暴露面比一个只用于设置的密钥大得多。
+     - `SETTINGS_ENC_KEY` 缺失或格式错误时：**读接口返回 `hasKey=false` 并带 `keyError: "未配置加密密钥"`，写接口 503 `SETTINGS_KEY_MISSING`**。绝不静默回落到默认密钥——默认密钥等于明文。
+     - **诚实边界（必须写进文档，防止误解）**：`apply` 之后明文 API key 仍会落在 `infra/lightrag/.env`，因为 LightRAG 只从环境变量读模型配置。这层加密保护的是**业务库、数据库备份、导出产物、接口与日志**，不是「本机磁盘上的全部副本」。该文件已在 `.gitignore`（`/infra/lightrag/.env`）里，不入库。
+  3. **权限：新增 `settings:read` / `settings:write`，权限清单由 13 项变为 15 项**（修订 ADR-019 第 3 条）：owner / admin 全有，editor / viewer 皆无。`requirePermission` 仍是唯一强制层；`authz.ts` 的 `PERMISSIONS`、`ROLE_PERMISSIONS` 与 `permissions` 表随迁移同批更新，ADR-019 第 2 条的启动一致性校验会守住「代码加了、库里没有」。
+     - 只授管理员：这份配置是**全局**的——同一个 LightRAG 实例、同一个图库（ADR-011），editor 改它等于改所有人的抽取行为。
+  4. **接口四件套**（`src/app/api/settings/llm/**`），任何响应都不含明文：
+     - `GET /api/settings/llm` → `{ provider, baseUrl, model, timeoutMs, hasKey, keyMasked, appliedToLightrag, updatedAt, updatedBy }`。
+       - `keyMasked` 取前 4 + 后 4（`sk-…abcd`），短于 12 位只给 `••••`，空则 `null`。
+       - `appliedToLightrag` 是**现算的**，不是存下来的标记：把 DB 配置与 `infra/lightrag/.env` 的 `LLM_BINDING / LLM_MODEL / LLM_BINDING_HOST / LLM_TIMEOUT` 逐项比对，得出 `in-sync | drift | unknown`；`.env` 不可读时为 `unknown`，不猜。
+     - `PUT /api/settings/llm` → 校验：`provider ∈ {openai, deepseek, qwen, custom, ollama}`；`baseUrl` 必须 `https://`，或 `http://` 且主机为 `localhost / 127.0.0.1 / ::1 / RFC1918`；`model` 非空、≤ 100 字符；`timeoutMs ∈ [30000, 1800000]`。**`apiKey` 省略 = 保持原值，显式空串 = 清除**——否则「只想改超时」的请求会把密钥抹掉，这是这类表单最常见的坑。保存**不重启、不自动 apply**，返回与 GET 同形。
+     - `POST /api/settings/llm/test` → 向 `{baseUrl}/chat/completions` 发最小请求（`max_tokens: 8`、内容 `ping`、客户端超时 10s），返回 `{ ok, latencyMs, model, error? }`。错误只归四类：`401 密钥无效` / `404 路径或模型不存在` / `超时` / `网络不可达`，**不透传上游响应体**（它可能回显请求头）。
+     - `POST /api/settings/llm/apply` → 写 `infra/lightrag/.env` 并重启 `lightrag-server`，六步：
+       1. 备份：`.env` → `.env.bak-<UTC 时间戳>`（同一目录）。
+       2. **逐键替换，不整文件重写**：只改 `LLM_BINDING / LLM_MODEL / LLM_BINDING_HOST / LLM_BINDING_API_KEY / LLM_TIMEOUT`，保留注释、`EMBEDDING_*`、`LIGHTRAG_API_KEY` 等全部其余行；缺失键追加到 `# LLM` 段尾。写入前**拒绝任何含 `\n` / `\r` 的值**（否则一个换行就能注入出新的 env 行）。落盘用临时文件 + rename，避免半写。
+       3. 结束 `lightrag-server` 进程：**只按 `lightrag-server` 匹配并只杀它**，绝不碰 9381 的 embedding 服务、Ollama 与任何容器；匹配不到就报错退出，不猜 PID。
+       4. 用 `infra/lightrag/start.ps1` 里那条启动命令（同一工作目录）重新拉起。
+       5. 轮询 `GET /health` 最多 60s。
+       6. 任一步失败 → 用备份覆盖 `.env`、按原配置重启、返回 502，并说明「已回滚到 `<备份时间戳>` 的配置」。
+     - 审计：`apply` 写 `settings.llm.apply`、`PUT` 写 `settings.llm.update`，`detail` 只记 `provider / baseUrl / model / 掩码 / 备份文件名`。**审计、日志、错误响应、异常栈一律不含明文 key**；实现上 key 只出现在「加解密函数」与「上游请求头」两处。
+  5. **provider 与 LightRAG 环境变量的映射（唯一的写入口径）**：
+
+     | provider | `LLM_BINDING` | `LLM_BINDING_HOST` | `LLM_BINDING_API_KEY` |
+     |---|---|---|---|
+     | `openai` / `deepseek` / `qwen` / `custom` | `openai` | 用户填的 `baseUrl`（不带 `/chat/completions`） | 用户填的 key |
+     | `ollama` | `ollama` | `http://127.0.0.1:11434`（固定，忽略 `baseUrl`） | 占位 `ollama`，不写用户 key |
+
+     `LLM_TIMEOUT` 取 `timeoutMs / 1000` 的整数秒。`EMBEDDING_*` 一行都不动（ADR-001：共用 bge，不共用向量库）。
+  6. **可测性**：服务 `src/server/services/settings-service.ts` 收 `env` 与 `spawn` 依赖（与 `content-service` 的 `options.client` 同一手法），单测用临时目录 + 假 spawn，**测试里绝不启动真实进程**。
+  7. **生效语义**：保存 ≠ 生效。页面必须同时显示「已保存」与「生效中（`appliedToLightrag`）」两件事；`apply` 是唯一让配置落到 LightRAG 的动作，且必须提示「重启会打断正在进行的抽取」。
+
+- **备选方案与取舍**：
+
+  | 方案 | 做法 | 取舍 |
+  |------|------|------|
+  | **A（采纳）** | DB + AES-256-GCM（`SETTINGS_ENC_KEY`）+ 掩码接口 + 显式 apply | 有审计、有校验、有「是否生效」的答案；代价是多一个环境变量与一次显式重启 |
+  | B | 维持手改 `infra/lightrag/.env` + 手动重启 | 零代码；但没有界面（正是使用者要的）、没有审计、没有校验，改错一个键只能靠日志发现 |
+  | C | 明文存 DB | 实现最省事；但数据库备份、`data/app.db` 拷走、导出、错误日志任意一处泄漏就是终局泄漏 |
+  | D | 不落库，页面每次输入、直接转发或只写 `.env` | 免存储；但无人值守的抽取任务没有 key 可用，每次重抽都要人重填，且仍要写 `.env`，等于用一个更差的入口换掉更好的入口 |
+  | E | 用 Windows 凭据管理器 / OS keyring | 本机更安全；但 LightRAG 仍只认环境变量，明文最终还是要落到 `.env`，多一层依赖却没消除主要暴露面 |
+
+- **对 ADR-010 的修订**：LLM 从「固定 Ollama `deepseek-r1:7b`」改为**可配置的 OpenAI 兼容供应商**，默认值不变（仍指向本机 Ollama，未配置时行为与今天一致）。Embedding（bge-large-zh-v1.5 @ 9381）与文件存储两条**不变**。ADR-010 的「本机无 GPU，7B 是唯一可用 LLM」作为事实保留，不再作为约束。
+
+- **影响**：
+  - 新增迁移 `drizzle/0009_settings.sql` 与 `app_settings` 表；`src/server/db/schema.ts` 加定义。
+  - `src/server/authz.ts`：`PERMISSIONS` 13 → 15，矩阵随之更新；迁移灌入两个新 key。
+  - 新增 `src/server/services/settings-service.ts`、`src/server/crypto/settings-cipher.ts`、`src/app/api/settings/llm/{route.ts,test/route.ts,apply/route.ts}`、`src/app/admin/settings/llm/page.tsx`。
+  - 导航：第一列「系统」（`NavRail` 的 `adminItem`）进入后，第二列 `AdminDirectory` 的**「系统」分组**新增「大模型」，与「系统状态 / 审计日志」同级；非管理员整项不渲染（与 ADR-019 第 9 条同一做法）。
+  - 设计稿：`docs/19_DESIGN_LLM_PREVIEW.md` 的 A 部分；本 ADR 只定契约，不定视觉。
+
+- **风险**：
+
+  | # | 风险 | 应对 |
+  |---|------|------|
+  | K1 | 密钥从日志 / 审计 / 错误串泄漏 | 审计 detail 只存掩码；上游错误按四类归一，不透传响应体；单测断言「序列化后的响应与审计行不含 key 子串」 |
+  | K2 | `apply` 重启打断在途抽取，正在跑的文档丢失进度 | 重启前查 LightRAG 是否有处理中的文档，有则要求二次确认（30 秒内可取消）；被打断的文档需要重新抽取（与图谱线的「重新抽取」同批） |
+  | K3 | 配置是全局的，多账号共用同一个 LightRAG 图库 | 本 ADR 明确：设置不按账号区分（ADR-011 的单实例前提）。单机单 owner 下无实际冲突；将来多账号同时使用需按 ADR-011 的强隔离条件重估 |
+  | K4 | `.env` 写到一半、或键替换吃掉注释与其他配置 | 临时文件 + rename 原子落盘；逐键替换；apply 后 `git diff --no-index` 式比对，断言只有 5 个 `LLM_*` 行变化（单测用临时目录验证） |
+  | K5 | Windows 进程重启不可靠（同名进程、被其他终端拉起） | 只匹配 `lightrag-server`，找不到就报错不猜；失败一律回滚并保留备份文件 |
+  | K6 | 轮换 / 丢失 `SETTINGS_ENC_KEY` → 已存密钥全部解不开 | 格式带 `v1.` 版本前缀，轮换需重录一次 key；恢复与轮换步骤写进 `07_PLAYBOOK`，并明确「换密钥不等于换 API key」 |
+  | K7 | 「测试连接通过」被误解为「抽取会变快」 | `test` 只证明连通与鉴权，不证明吞吐；页面文案分两行写清，验收项里也分开 |
+  | K8 | `baseUrl` 被填成任意内网地址或 `file:` 之类协议 | 白名单 scheme + 私网限制；写入 `.env` 前再次校验（防止绕过 UI 直接调接口） |
+
+- **验收要点**：
+  1. `curl` 实测四个接口：`GET` 只返回掩码与 `hasKey`；`PUT` 后 `GET` 立即反映；`POST /test` 对错误 key 返回 401 类原因、对正确 key 返回延迟；`POST /apply` 后 `GET` 的 `appliedToLightrag` 变 `in-sync`。
+  2. editor / viewer 调用四个接口全部 403，且 `audit_events` 有 `denied` 记录。
+  3. `.env` 前后 diff 只有 5 个 `LLM_*` 行变化，`EMBEDDING_*`、`LIGHTRAG_API_KEY` 与注释逐字不变；备份文件存在。
+  4. 故意把 `baseUrl` 写成不可达地址后 `apply`：服务回滚，`.env` 与重启前逐字一致，LightRAG 仍可用。
+  5. 单测：加密往返、AAD 不匹配时解密失败、掩码长度边界、`apiKey` 省略与空串两种语义、403、校验边界、`.env` 生成与回滚（临时目录 + 假 spawn）。
+  6. 门禁：`npm run typecheck`、`npm run lint`、`vitest run --maxWorkers=2` 全绿。
+
+- **影响范围**：01_ARCHITECTURE（模型接入层）、04_INTEGRATION、06_API、07_PLAYBOOK（密钥轮换与回滚）、09_USER_GUIDE、05_CHANGELOG
+
+---
+
+## ADR-026：知识内容预览（作品 / 资产内容弹窗）
+
+- **状态**：已采纳·已实施（2026-11-13，工作台与详情两入口；检索与图谱入口待接）
+- **日期**：2026-11-13
+- **实施说明（2026-11-13）**：本轮先接工作台列表标题与详情页「预览」两处，检索与图谱入口留到下一轮（图谱侧同期在改）；列表普通单击改为就地预览，⌘ / Ctrl / Shift 单击仍保持原详情页链接。`?inline=1` 由服务端切换 `Content-Disposition`，`Content-Type` 优先本地 `content_refs.mime`（RAGFlow 对 PDF 常回 `application/octet-stream`）。
+- **背景**：正文与元数据早已分离——内容在 RAGFlow，`content_refs` 只存引用（ADR-005 / 007 / 014）。今天唯一能看到内容的入口是工作台右栏的 `ObjectContent`：列出引用、编辑纯文本 / Markdown 正文、下载。它有三处不够：
+  - 列表标题点击进的是**详情**，不是「看一眼」；检索结果、图谱节点、首页预览根本没有正文入口。
+  - 浏览器默认行为是**下载**（`Content-Disposition: attachment`），想看一眼 PDF 或 Markdown 也要先落盘。
+  - 使用者的原话是「解析完不知道内容在哪里看」，本质是缺少一个**读完即关**的预览面，而不是缺编辑面。
+- **决策**：
+  1. **一个统一组件 `ContentPreviewDialog`**，用原生 `<dialog>` + `showModal()`（与 `record-list` 的删除确认框同一原语，`.dialog` 样式已存在）。四个入口共用：工作台列表标题、检索结果、图谱节点、首页预览。**入口只传 `objectId`，不传内容**——内容一律由弹窗自己按需取。
+  2. **打开状态进 URL：`?preview=<objectId>`**，沿用 ADR-013「URL 是选中 / 筛选状态的唯一来源」。刷新、浏览器返回、从检索跳到工作台都能复现；关闭时 `router.replace` 去掉该参数（不新增历史项）。Esc、焦点圈定、`::backdrop` 交给浏览器，不自绘遮罩。
+  3. **只用现有接口，不新增预览专用接口**：
+     - `GET /api/objects/{id}` → 标题、分类、标签、时间、`parseStatus` 等元数据；
+     - `GET /api/objects/{id}/content` → 引用列表（`role` / `mime` / `documentName` / `sizeBytes` / `parseStatus` / `parseError`）；
+     - `GET /api/objects/{id}/content/{refId}?inline=1` → 文件流。
+     - **`inline=1` 是本 ADR 唯一新增的参数**：置位时 `Content-Disposition: inline`，其余不变（仍 `private, no-store`，仍透传 RAGFlow 的 `Content-Type` / `Content-Length` / 文件流）。不置位时保持今天的「下载」语义，现有调用点（`object-content.tsx` 的下载链接、`record-list.tsx` 的导出）零改动。
+  4. **渲染矩阵**（判定收在一处 `contentPreviewKind(ref)`，与 `content-format.ts` 的 `isEditableTextContent` 同一口径）：
+
+     | 内容类型 | 渲染方式 | 边界 |
+     |---|---|---|
+     | `text/markdown`、`.md` / `.markdown` | 取文本 → `MarkdownPreview`（ADR-014 的零依赖解析器） | 单文件 > 512 KB 只渲染前 2000 行 + 「下载全文」 |
+     | 其它 `text/*`、`.txt` / `.json` / `.csv` | `<pre>` 等宽、可滚动、长行横向滚 | 同上 |
+     | `application/pdf` | `<iframe title="…">` 同源内嵌 | 打开即加载；> 20 MB 或 iframe 触发下载时降级为「下载后打开」 |
+     | `image/*` | `<img>`，容器内 `object-fit: contain` | 不预解码、不做缩略图缓存 |
+     | 其余（office / zip / 未知） | 不预览，显示元信息 + 下载按钮 | 文案固定「该类型暂不支持预览」 |
+
+  5. **文本怎么取**：`fetch(url)` 读 `text()`，**先看 `Content-Length`，超过 512 KB 直接降级**；长度未知时流式读取并截断。取回后按 MIME 与扩展名决定 Markdown 还是纯文本——与 ADR-014「类型不落库，由 MIME / 文件名表达」完全一致，不引入第二个类型来源。
+  6. **附件切换**：`refs` 中 `role=primary` 默认选中，其余作为附件列在顶部；**主内容缺失时选第一个附件并明确标注「这是附件，不是主内容」**，避免把附件当正文误读。
+  7. **解析状态**：显示 `parseStatusLabels` 与 `parseError`，`pending / running` 时沿用 5 秒刷新节奏（与 `ObjectContent` 同一常量，不另写一套）。**解析中也能预览**：预览读的是 RAGFlow 里的原始文件，不依赖抽取结果——这条必须写在界面上，否则会被理解成「解析完才能看」。`failed` 时给「到图谱页重新抽取」的链接（重抽能力由图谱线提供，本 ADR 不实现）。
+  8. **权限与归属**：全程 `object:read`；归属校验沿用 `downloadObjectContent` 里的 `getObject(ownerSub)`，**不开第二条读文件路径**；无权限或不属于本账号一律 404，不泄露存在性。
+  9. **安全**：不渲染原始 HTML（沿用 ADR-014）；链接仍走 `safeHref`；PDF / 图片与页面同源，不为预览放宽任何响应头。**当前仓库没有 CSP**；将来加 CSP 时必须补 `frame-src 'self'`，已列入验收清单，避免上线后 PDF 全白。
+  10. **主题**：只用现有 token（`--surface-*` / `--border-*` / `--text-*`），明暗两套逐一核对。**PDF 内嵌容器固定浅色底**——浏览器内置阅读器不跟随主题，套深色会让纸面变成一块发光的白方块；这是与「全站随主题」刻意不同的一处，设计稿需单独标注。
+  11. **性能**：弹窗挂载才发请求，关闭即 `AbortController.abort()`；列表不预取正文；同一对象重复打开用组件内内存缓存（刷新即失效，不做持久化）。
+
+- **备选方案与取舍**：
+
+  | 方案 | 做法 | 取舍 |
+  |------|------|------|
+  | **A（采纳）** | `<dialog>` 弹窗 + `?preview=` 参数 + 复用现有接口 | 读完即关、可分享可刷新、零新接口；代价是一个新组件与一处 `inline` 参数 |
+  | B | 独立路由 `/preview/[id]` | 可深链、可打印；但离开当前上下文，返回会丢滚动与筛选，且与使用者要的「弹窗」不符 |
+  | C | 复用工作台右栏详情 | 零新组件；但检索 / 图谱 / 首页没有右栏，四个入口里三个用不了 |
+  | D | 引入 `pdf.js` / `react-pdf` | 渲染可控、可做页码与文本层；但多出数百 KB 依赖与 worker，v1 用浏览器内嵌足够，大文件已在矩阵里降级 |
+  | E | `<object type="application/pdf">` / 浏览器插件 | 省事；但各浏览器行为不一致，移动端基本不支持，排障成本高于收益 |
+
+- **与既有 ADR 的冲突核对（结论：不冲突）**：
+  - **ADR-011**：预览只读，归属过滤照旧走 `owner_sub`。
+  - **ADR-019**：仍只需 `object:read`，**不新增权限**；弹窗不是安全边界，真正的挡板仍在 route 的 `requirePermission`。
+  - **ADR-022**：图谱节点打开的是同一个弹窗，3D 行为不变；只传 `objectId`，不碰 `GraphSelection` 与两个时钟。
+  - **ADR-014**：Markdown 复用同一解析器与 `safeHref`，不新增 XSS 面。
+  - **ADR-013**：打开状态进 URL，与「URL 单一状态」一致；不新增第四列。
+
+- **影响**：
+  - 新增 `src/components/content-preview-dialog.tsx`、`src/components/content-preview-body.tsx`（按类型分支）、`src/lib/content-preview.ts`（`contentPreviewKind` 纯函数，可单测）。
+  - 改动 `src/app/api/objects/[id]/content/[refId]/route.ts`：读 `?inline=1`，只在 `contentDisposition()` 里切换 `inline` / `attachment`；下载路径行为不变。
+  - 四个入口各加一行「打开预览」（列表标题按钮、检索结果标题、图谱节点操作、首页预览条目）。
+  - 设计稿：`docs/19_DESIGN_LLM_PREVIEW.md` 的 B 部分；本 ADR 只定边界与契约。
+
+- **风险**：
+
+  | # | 风险 | 应对 |
+  |---|------|------|
+  | P1 | RAGFlow 是否支持 Range 未验证，大 PDF 在 iframe 里整包下载、首屏慢 | 以实测为准：`curl -H "Range: bytes=0-1023"` 看是否 206。不支持就按矩阵的 20 MB 上限降级为下载；**不伪造进度条** |
+  | P2 | iOS Safari 内嵌 PDF 只显示首页或直接下载 | 移动端改为「在新标签打开」按钮，文案写清；不承诺内嵌 |
+  | P3 | 大文件把页面内存撑爆 | 文本 512 KB 上限、PDF 20 MB 上限、图片走浏览器解码；超限一律降级而不是加载后截断 |
+  | P4 | `Content-Disposition` 仍是 `attachment`，iframe 直接触发下载 | `inline=1` 是硬前提；验收用 `curl -I` 断言响应头，并加一条单测 |
+  | P5 | 三种「空白」被混为一谈：无内容、解析失败、类型不支持 | 三种空态文案分开写，各自给下一步动作（上传 / 重新抽取 / 下载） |
+  | P6 | 深色主题下 PDF 白块刺眼 | 容器固定浅色 + 细边框；设计稿明暗两套都标 |
+  | P7 | RAGFlow 回传的文件名可能只剩扩展名 | 一律显示 `ref.documentName`（本地记录的上传名），与下载路由 `route.ts` 的取值口径一致 |
+
+- **验收要点**：
+  1. 四个入口都能打开同一弹窗，URL 出现 `?preview=<id>`，Esc / 点遮罩关闭后参数被移除，焦点回到触发元素。
+  2. Markdown、纯文本、PDF、图片、未知类型五条分支各有一个真实对象走通；PDF 用 `curl -I "...?inline=1"` 断言 `Content-Disposition: inline`，不带参数时仍是 `attachment`。
+  3. 解析中（`running`）的对象能正常预览原文；解析失败的对象显示 `parseError` 与重抽入口。
+  4. 他人对象（`owner_sub` 不同）打开返回 404；`viewer` 角色可预览、不可编辑（编辑入口按 `object:write` 显隐）。
+  5. 明暗两主题逐项核对：背景、边框、文字、PDF 容器、空态、加载态无一处裸色值（新增样式只引用 token，`npm run check:theme` 不因本次新增字面量而变红）。
+  6. 门禁：`npm run typecheck`、`npm run lint`、`vitest run --maxWorkers=2` 全绿；新增 `content-preview` 纯函数单测覆盖类型判定与大小边界。
+
+- **影响范围**：02_PHASES、06_API（`?inline=1`）、09_USER_GUIDE、05_CHANGELOG
+
+---
+
 ## ADR-016 ~ 018 实施风险清单
 
 > 按严重程度排序。前 3 条必须在动手前处理完，其余随实现跟进。
@@ -2121,6 +2301,8 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 | ADR-022 | 知识图谱 3D 渲染与 2D 降级 | 已采纳·已实施（生产运行时已复验；真机 GPU 帧时序、2000 节点、真实 Logto / LightRAG 未测） | `/graph` 主视图改 three.js + @react-three/fiber 的 3D 银河、选中后可切 2D 聚焦；两套渲染器共用一个 `GraphViewModel`；不引 drei / postprocessing；`frameloop="demand"` 空闲零帧；150 节点 60fps、2000 节点抽稀可用；舞台固定深空不随主题；补 `maxNodes` 透传与 `failed` 渲染 |
 | ADR-023 | 分类词表统一与迁移 | 已采纳·已实施 | 废止「作品形态 / 自由文本分类」双轨：`work_formats` 升级为 `categories`、`objects.format` → `category_code`、自由值折叠进同一词表（多余值转标签）；分类单选、标签多选；全站文案 / 路由 / 权限 / API 统一为「分类」，含迁移 SQL、命名矩阵与回滚留档 |
 | ADR-024 | 检索的模糊查询与语义混合 | 已采纳·已实施 | SQLite `instr` 元数据子串匹配（标题 / 描述 / 分类 / 标签）+ RAGFlow 语义并行混合；对象级六级权重排序、3s 超时降级；`/api/search` 增量扩展 `mode` 与 `lexical`；首页 200ms 防抖预览 8 条 |
+| ADR-025 | 大模型供应商配置与凭据存储 | 已采纳·已实施（2026-11-13） | 配置落 `settings` 单行加密 JSON（AES-256-GCM，密钥来自新变量 `SETTINGS_ENC_KEY`，非 `AUTH_SECRET`）；接口只回掩码与 `hasKey`；`settings:read/write`（权限 13 → 15，仅 owner/admin）；`test` 最小请求、`apply` 逐键改 `infra/lightrag/.env` + 只重启 `lightrag-server` + 60s 健康检查 + 失败回滚；迁移编号 `0009`；修订 ADR-010 的 LLM 固定条款 |
+| ADR-026 | 知识内容预览（弹窗） | 已采纳·已实施（2026-11-13，工作台与详情两入口） | 统一 `ContentPreviewDialog`（原生 `<dialog>`），工作台 / 检索 / 图谱 / 首页四入口；打开状态 `?preview=<id>` 进 URL；复用现有三接口，仅新增 `?inline=1` 切换 `Content-Disposition`；Markdown 走 ADR-014 的零依赖解析器，PDF 同源 iframe（>20MB 降级下载），文本 512KB 上限；仅需 `object:read` |
 
 ---
 

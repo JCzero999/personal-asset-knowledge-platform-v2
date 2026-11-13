@@ -315,6 +315,7 @@ describe("meta 组合", () => {
     const status: GraphStatus = {
       total: 2,
       byStatus: { failed: 2 },
+      counts: { processed: 0, extracting: 0, queued: 0, failed: 2, unknown: 0 },
       objects: [],
       failed: [
         { objectId: "obj-aaaaaaaa", error: "LightRAG: extraction failed: bad JSON" },
@@ -351,7 +352,13 @@ describe("纯函数", () => {
     };
     Object.freeze(subgraph);
 
-    const rawStatus: GraphStatus = { total: 0, byStatus: {}, objects: [], failed: [] };
+    const rawStatus: GraphStatus = {
+      total: 0,
+      byStatus: {},
+      counts: { processed: 0, extracting: 0, queued: 0, failed: 0, unknown: 0 },
+      objects: [],
+      failed: [],
+    };
     Object.freeze(rawStatus.failed);
     Object.freeze(rawStatus);
 

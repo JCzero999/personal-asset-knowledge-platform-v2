@@ -4,6 +4,7 @@ import { ValidationError } from "../../domain/errors";
 import type { BusinessObject } from "../../domain/objects";
 import {
   createLightragClientFromEnv,
+  type LightragDeleteResult,
   type LightragDocumentPage,
   type LightragQueryMode,
   type LightragSubgraph,
@@ -61,7 +62,7 @@ export function resolveGraphMaxNodes(raw: string | number | null | undefined): n
 export interface GraphGateway {
   insertText(input: { text: string; fileSource: string }): Promise<void>;
   listDocuments(page?: number, pageSize?: number): Promise<LightragDocumentPage>;
-  deleteDocuments(docIds: string[]): Promise<void>;
+  deleteDocuments(docIds: string[]): Promise<LightragDeleteResult>;
   query(input: { query: string; mode?: LightragQueryMode }): Promise<{
     response: string;
     references: Array<{ referenceId: string; filePath: string }>;
@@ -86,6 +87,8 @@ export interface GraphOptions {
   client?: GraphGateway;
   content?: RagflowContentGateway;
   env?: Record<string, string | undefined>;
+  /** 等 LightRAG 后台删除的时间参数；仅测试注入，生产用默认值。 */
+  deleteWait?: GraphDeleteWaitOptions;
 }
 
 export interface GraphSyncResult {
@@ -207,6 +210,102 @@ export function parseGraphFileSource(filePath: string): { objectId: string; hash
   return { objectId, hash };
 }
 
+/**
+ * 图谱文档在进度条上的四种状态（外加「状态未知」兜底）。
+ *
+ * LightRAG v2 的文档生命周期是
+ * `pending → parsing → analyzing → processing → processed | failed`
+ * （见 lightrag/base.py `DocStatus`）。旧实现只认 `pending` / `processing`，
+ * 于是 parsing / analyzing 的文档既不算完成也不算进行中，页面上的
+ * 「还有 1 个在排队或抽取」会和真实队列对不上——这里显式收口。
+ */
+export type GraphObjectState = "processed" | "extracting" | "queued" | "failed" | "unknown";
+
+/** 正在被流水线处理的只读状态集合（parsing / analyzing / processing）。 */
+const EXTRACTING_DOC_STATUSES = new Set(["parsing", "analyzing", "processing", "preprocessed"]);
+
+/**
+ * 把同一对象的多个图文档（历史版本）收敛成一个四态。
+ *
+ * 优先级刻意定成「进行中 > 已完成 > 排队 > 失败」：
+ * - 正在抽取的新版本优先展示，避免界面在重抽期间显示「已完成」；
+ * - 只要有一个版本已经 processed，内容就已经在库里，按已完成算；
+ * - 旧版本失败不能盖过仍在排队的版本。
+ */
+export function graphObjectStateOf(statuses: readonly string[]): GraphObjectState {
+  const normalized = statuses.map((status) => status.trim().toLowerCase());
+  if (normalized.some((status) => EXTRACTING_DOC_STATUSES.has(status))) return "extracting";
+  if (normalized.includes("processed")) return "processed";
+  if (normalized.includes("pending")) return "queued";
+  if (normalized.includes("failed")) return "failed";
+  return "unknown";
+}
+
+/** 四态的中文标签：服务端与页面共用同一套口径。 */
+export const GRAPH_OBJECT_STATE_LABEL: Record<GraphObjectState, string> = {
+  processed: "已完成",
+  extracting: "抽取中",
+  queued: "排队",
+  failed: "失败",
+  unknown: "状态未知",
+};
+
+const TIMEOUT_PATTERN =
+  /(readtimeout|apitimeout|timeout|timed out|deadline exceeded|upstream request timeout)/i;
+const CONNECT_PATTERN =
+  /(connecterror|connection refused|connection reset|connection error|econnrefused|econnreset|getaddrinfo|name or service not known)/i;
+const AUTH_PATTERN = /(401|403|unauthorized|invalid api key|authentication|permission denied)/i;
+const RATE_PATTERN = /(429|rate limit|rate_limit|quota|insufficient_quota)/i;
+/**
+ * LightRAG 的 chunk 前缀：`C[1/4]: doc-…-chunk-000: `。
+ * 抽取失败时它把前缀写进 error_msg，真正的异常（如 httpx.ReadTimeout）只进服务日志，
+ * 于是 error_msg 只剩下前缀、冒号后面是空的。第二个捕获组就是被吞掉的原因。
+ */
+const CHUNK_PREFIX_PATTERN = /^(?:C\[\d+\/\d+\]:\s*)?doc-\S+-chunk-\d+:\s*([\s\S]*)$/i;
+
+export interface GraphFailureReason {
+  /** 一句可读原因。 */
+  message: string;
+  /** LightRAG 原始错误串，保留给第二行展示；没有就是 null。 */
+  raw: string | null;
+}
+
+/**
+ * 把 LightRAG 的原始 error 映射成可读原因（原始串永远保留）。
+ *
+ * 现状：本地 7B 模型在 300 秒内跑不完一个分块，LightRAG 只把
+ * `C[1/4]: doc-…-chunk-000: ` 写进 error_msg，真正的 ReadTimeout 在日志里。
+ * 所以「前缀 + 空尾巴」必须落到「未返回原因」，而不是空白。
+ */
+export function describeGraphFailure(raw: string | null | undefined): GraphFailureReason {
+  const detail = raw?.trim() ? raw.trim() : null;
+  if (!detail) {
+    return { message: "抽取失败（未返回原因）", raw: null };
+  }
+  if (TIMEOUT_PATTERN.test(detail)) {
+    return { message: "抽取超时：本地模型过慢", raw: detail };
+  }
+  if (CONNECT_PATTERN.test(detail)) {
+    return { message: "抽取服务连接失败：请确认 LightRAG 与模型服务已启动", raw: detail };
+  }
+  if (AUTH_PATTERN.test(detail)) {
+    return { message: "抽取失败：模型接口的密钥或权限被拒绝", raw: detail };
+  }
+  if (RATE_PATTERN.test(detail)) {
+    return { message: "抽取失败：模型接口限流或额度不足", raw: detail };
+  }
+
+  const cause = detail.replace(CHUNK_PREFIX_PATTERN, "$1").trim();
+  if (!cause || cause === detail) {
+    // 只有 chunk 前缀（尾巴为空）或完全无法识别的串：不臆造原因。
+    return { message: "抽取失败（未返回原因）", raw: detail };
+  }
+
+  const firstLine = cause.split(/\r?\n/)[0].trim();
+  const clipped = firstLine.length > 120 ? `${firstLine.slice(0, 120)}…` : firstLine;
+  return { message: `抽取失败：${clipped}`, raw: detail };
+}
+
 /** LightRAG 里已有的图文档，按对象分组；分页扫描一次，供整轮同步复用。 */
 export async function loadGraphDocuments(
   client: GraphGateway,
@@ -226,6 +325,108 @@ export async function loadGraphDocuments(
   }
 
   return byObject;
+}
+
+/**
+ * LightRAG 的删除是**后台任务**：`DELETE /documents/delete_document` 只回
+ * `deletion_started`，文档记录还要过几十秒才从 `/documents/paginated` 消失；
+ * 这期间同名 file_source 的 `POST /documents/text` 一律 409。
+ * 所以换版本（同步、重试）必须等旧记录真的没了再入库，否则用户点了也白点。
+ */
+const DELETE_WAIT_BUDGET_MS = 180_000;
+const DELETE_POLL_INTERVAL_MS = 3_000;
+
+/** 在整份文档列表里找这些 id，返回仍然存在的部分。 */
+async function findExistingDocumentIds(
+  client: GraphGateway,
+  docIds: ReadonlySet<string>,
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (docIds.size === 0) return found;
+
+  for (let page = 1; page <= MAX_DOC_PAGES; page += 1) {
+    const result = await client.listDocuments(page, DOC_PAGE_SIZE);
+    for (const doc of result.documents) {
+      if (docIds.has(doc.id)) found.add(doc.id);
+    }
+    if (found.size === docIds.size) break;
+    if (result.documents.length < DOC_PAGE_SIZE) break;
+  }
+
+  return found;
+}
+
+export interface DocumentDeletionWait {
+  /** 全部旧记录都消失了。 */
+  gone: boolean;
+  /** 预算内仍未消失的 id。 */
+  remaining: string[];
+}
+
+export interface GraphDeleteWaitOptions {
+  budgetMs?: number;
+  intervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * 轮询等旧文档从 LightRAG 消失。默认最多等 3 分钟、每 3 秒查一次；
+ * `sleep` / `now` 可注入，便于单测不真的等待。
+ */
+export async function waitForGraphDocumentsDeleted(
+  client: GraphGateway,
+  docIds: readonly string[],
+  options: GraphDeleteWaitOptions = {},
+): Promise<DocumentDeletionWait> {
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = options.now ?? Date.now;
+  const target = new Set(docIds);
+  if (target.size === 0) return { gone: true, remaining: [] };
+
+  const deadline = now() + (options.budgetMs ?? DELETE_WAIT_BUDGET_MS);
+  let remaining = [...target];
+
+  for (;;) {
+    const present = await findExistingDocumentIds(client, target);
+    remaining = [...target].filter((docId) => present.has(docId));
+    if (remaining.length === 0) return { gone: true, remaining };
+    if (now() >= deadline) return { gone: false, remaining };
+    await sleep(options.intervalMs ?? DELETE_POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * 替换一个对象的图文档：先删旧版本并等它真的消失，再按同一 file_source 入库。
+ * 同步与「重新抽取」共用这一条路径，避免两处各写一遍终于踩同一个 409。
+ */
+async function replaceGraphDocuments(
+  client: GraphGateway,
+  previous: readonly GraphDocumentRef[],
+  text: string,
+  fileSource: string,
+  waitOptions: GraphDeleteWaitOptions = {},
+): Promise<void> {
+  if (previous.length > 0) {
+    const docIds = previous.map((doc) => doc.docId);
+    const deletion = await client.deleteDocuments(docIds);
+    if (deletion.status === "busy" || deletion.status === "not_allowed") {
+      throw new Error(
+        deletion.status === "busy"
+          ? "LightRAG 正忙，旧版本暂时删不掉，等它空下来再试"
+          : "LightRAG 不允许删除这批旧版本，请稍后再试",
+      );
+    }
+    const waited = await waitForGraphDocumentsDeleted(client, docIds, waitOptions);
+    if (!waited.gone) {
+      throw new Error(
+        `旧版本还在后台删除（剩 ${waited.remaining.length} 个），稍等一两分钟再试一次`,
+      );
+    }
+  }
+
+  await client.insertText({ text, fileSource });
 }
 
 async function primaryText(
@@ -303,12 +504,8 @@ export async function syncGraph(
         continue;
       }
 
-      if (previous.length > 0) {
-        await client.deleteDocuments(previous.map((doc) => doc.docId));
-        result.removed += previous.length;
-      }
-
-      await client.insertText({ text, fileSource: source });
+      await replaceGraphDocuments(client, previous, text, source, options.deleteWait);
+      result.removed += previous.length;
       result.submitted += 1;
     } catch (error) {
       result.errors.push({
@@ -320,6 +517,142 @@ export async function syncGraph(
   }
 
   return result;
+}
+
+/**
+ * 重新抽取失败对象：LightRAG 的 `/documents/reprocess_failed` 只能整批重试，
+ * 而这里要按对象逐个重来。因此走最小可行路径——删掉该对象的全部图文档版本，
+ * 再用与 `syncGraph` 完全相同的 `buildGraphText` + `fileSource` 重新 `insertText`，
+ * 抽取仍由 LightRAG 后台执行，状态回 `pending`，页面据此继续轮询。
+ *
+ * 只允许失败态：processed / extracting / queued 一律跳过，避免把正在跑的抽取打断。
+ */
+export const GRAPH_RETRY_MAX_OBJECTS = 20;
+
+export interface GraphRetryItem {
+  objectId: string;
+  title: string;
+  outcome: "resubmitted" | "skipped" | "failed";
+  message: string;
+}
+
+export interface GraphRetryResult {
+  requested: number;
+  resubmitted: number;
+  results: GraphRetryItem[];
+}
+
+export async function retryGraphObjects(
+  db: AppDatabase,
+  ownerSub: string,
+  objectIds: readonly string[],
+  options: GraphOptions = {},
+): Promise<GraphRetryResult> {
+  const ids = [...new Set(objectIds.map((id) => String(id).trim()).filter(Boolean))];
+  if (ids.length === 0) {
+    throw new ValidationError("至少选择一个要重新抽取的对象", { field: "objectIds" });
+  }
+  if (ids.length > GRAPH_RETRY_MAX_OBJECTS) {
+    throw new ValidationError(`一次最多重新抽取 ${GRAPH_RETRY_MAX_OBJECTS} 个对象`, {
+      field: "objectIds",
+      max: GRAPH_RETRY_MAX_OBJECTS,
+    });
+  }
+
+  const env = options.env ?? process.env;
+  const client = options.client ?? (createLightragClientFromEnv(env) as GraphGateway);
+  const content =
+    options.content ?? (createRagflowClientFromEnv(env) as unknown as RagflowContentGateway);
+
+  const objects = await listObjects(db, { ownerSub, limit: MAX_OWNED_OBJECTS });
+  const ownedById = new Map(objects.map((object) => [object.id, object]));
+  const categoryLabels = new Map(listCategories(db).map((item) => [item.code, item.label]));
+
+  const statuses = await loadGraphDocumentStatuses(client);
+  const statusByObject = new Map<string, GraphDocumentStatus[]>();
+  for (const doc of statuses) {
+    const list = statusByObject.get(doc.objectId) ?? [];
+    list.push(doc);
+    statusByObject.set(doc.objectId, list);
+  }
+  const existing = await loadGraphDocuments(client);
+
+  const results: GraphRetryItem[] = [];
+  let resubmitted = 0;
+
+  for (const objectId of ids) {
+    const object = ownedById.get(objectId);
+    if (!object) {
+      results.push({
+        objectId,
+        title: objectId,
+        outcome: "failed",
+        message: "对象不存在或不属于当前账号",
+      });
+      continue;
+    }
+
+    const docs = statusByObject.get(objectId) ?? [];
+    const state = graphObjectStateOf(docs.map((doc) => doc.status));
+    if (state !== "failed") {
+      results.push({
+        objectId,
+        title: object.title,
+        outcome: "skipped",
+        message:
+          state === "processed"
+            ? "已经完成抽取，无需重试"
+            : state === "extracting"
+              ? "正在抽取，等它结束再试"
+              : state === "queued"
+                ? "还在排队，等它开始再试"
+                : "没有可重试的失败记录，先刷新进度",
+      });
+      continue;
+    }
+
+    try {
+      const text = buildGraphText(
+        object,
+        await primaryText(content, db, object),
+        object.category ? categoryLabels.get(object.category) : null,
+      );
+      if (!text.includes("\n正文：\n")) {
+        results.push({
+          objectId,
+          title: object.title,
+          outcome: "failed",
+          message: "还没有解析成功的主内容，先完成内容解析再重试",
+        });
+        continue;
+      }
+
+      const previous = existing.get(objectId) ?? [];
+      await replaceGraphDocuments(
+        client,
+        previous,
+        text,
+        graphFileSource(object.id, text),
+        options.deleteWait,
+      );
+      resubmitted += 1;
+      results.push({
+        objectId,
+        title: object.title,
+        outcome: "resubmitted",
+        message: "已重新提交，抽取在后台进行",
+      });
+    } catch (error) {
+      results.push({
+        objectId,
+        title: object.title,
+        outcome: "failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return { requested: ids.length, resubmitted, results };
 }
 
 export async function listGraphLabels(
@@ -356,12 +689,44 @@ export async function listGraphLabels(
   return labels;
 }
 
+/** 单个对象的构图进度（同一对象的历史版本已收敛成一行）。 */
+export interface GraphStatusObject {
+  objectId: string;
+  /** 对象标题；对象已被删除时回落到 id。 */
+  title: string;
+  /** 代表该对象当前状态的那份图文档（重试时按对象整体重建，不依赖它）。 */
+  docId: string;
+  /** LightRAG 原始状态串（pending / parsing / analyzing / processing / processed / failed）。 */
+  status: string;
+  state: GraphObjectState;
+  /** 可读失败原因；非失败态为 null。 */
+  error: string | null;
+  /** LightRAG 原始错误串（第二行展示）；非失败态为 null。 */
+  errorRaw: string | null;
+  chunksCount: number;
+  updatedAt: string | null;
+}
+
+/**
+ * 失败对象（保持旧口径：只有 objectId + 可读原因）。
+ * 标题、原始错误等富字段在 `objects` 里；`graph-model.ts` 只消费这两个字段。
+ */
+export interface GraphStatusFailure {
+  objectId: string;
+  error: string;
+}
+
 export interface GraphStatus {
+  /** 本账号已进图谱的**对象**数（同一对象的多个版本只算一次）。 */
   total: number;
+  /** 按代表文档的原始状态统计（保留旧口径，供调用方判断是否已有 processed）。 */
   byStatus: Record<string, number>;
-  /** 按对象汇总的最近状态（同一对象有多个版本时取最新一页里的第一条）。 */
-  objects: Array<{ objectId: string; status: string; error: string | null }>;
-  failed: Array<{ objectId: string; error: string }>;
+  /** 四态计数（对象维度）；四项之和等于 total（unknown 另计）。 */
+  counts: Record<GraphObjectState, number>;
+  /** 每个对象的当前状态，按 objectId 排序，保证同输入同输出。 */
+  objects: GraphStatusObject[];
+  /** 失败对象列表（只含 failed 态），供失败卡片与重试入口使用。 */
+  failed: GraphStatusFailure[];
 }
 
 export async function graphStatus(
@@ -371,23 +736,60 @@ export async function graphStatus(
 ): Promise<GraphStatus> {
   const client =
     options.client ?? (createLightragClientFromEnv(options.env ?? process.env) as GraphGateway);
-  const owned = await ownerObjectIdSet(db, ownerSub);
+  const ownedObjects = await listObjects(db, { ownerSub, limit: MAX_OWNED_OBJECTS });
+  const ownedById = new Map(ownedObjects.map((object) => [object.id, object]));
   const documents = (await loadGraphDocumentStatuses(client)).filter((doc) =>
-    owned.has(doc.objectId),
+    ownedById.has(doc.objectId),
   );
-  const status: GraphStatus = { total: documents.length, byStatus: {}, objects: [], failed: [] };
 
+  const byObject = new Map<string, GraphDocumentStatus[]>();
   for (const doc of documents) {
-    status.byStatus[doc.status] = (status.byStatus[doc.status] ?? 0) + 1;
-    if (doc.error) status.failed.push({ objectId: doc.objectId, error: doc.error });
+    const list = byObject.get(doc.objectId) ?? [];
+    list.push(doc);
+    byObject.set(doc.objectId, list);
   }
-  status.objects = documents.map((doc) => ({
-    objectId: doc.objectId,
-    status: doc.status,
-    error: doc.error,
-  }));
 
-  return status;
+  const counts: Record<GraphObjectState, number> = {
+    processed: 0,
+    extracting: 0,
+    queued: 0,
+    failed: 0,
+    unknown: 0,
+  };
+  const objects: GraphStatusObject[] = [];
+  const failed: GraphStatusFailure[] = [];
+
+  for (const objectId of [...byObject.keys()].sort()) {
+    const docs = byObject.get(objectId) ?? [];
+    const state = graphObjectStateOf(docs.map((doc) => doc.status));
+    const chosen = pickStatusDocument(docs, state);
+    const reason = state === "failed" ? describeGraphFailure(chosen.error) : null;
+
+    const row: GraphStatusObject = {
+      objectId,
+      title: ownedById.get(objectId)?.title ?? objectId,
+      docId: chosen.docId,
+      status: chosen.status,
+      state,
+      error: reason?.message ?? null,
+      errorRaw: reason?.raw ?? null,
+      chunksCount: chosen.chunksCount,
+      updatedAt: chosen.updatedAt,
+    };
+
+    objects.push(row);
+    counts[state] += 1;
+    if (state === "failed" && reason) {
+      failed.push({ objectId, error: reason.message });
+    }
+  }
+
+  const byStatus: Record<string, number> = {};
+  for (const row of objects) {
+    byStatus[row.status] = (byStatus[row.status] ?? 0) + 1;
+  }
+
+  return { total: objects.length, byStatus, counts, objects, failed };
 }
 
 interface GraphDocumentStatus {
@@ -395,6 +797,33 @@ interface GraphDocumentStatus {
   docId: string;
   status: string;
   error: string | null;
+  chunksCount: number;
+  updatedAt: string | null;
+}
+
+/** 文档排序：更新时间新在前，同刻按 docId 升序——同输入逐字节确定。 */
+function compareDocuments(a: GraphDocumentStatus, b: GraphDocumentStatus): number {
+  const left = a.updatedAt ?? "";
+  const right = b.updatedAt ?? "";
+  if (left !== right) return left < right ? 1 : -1;
+  return a.docId < b.docId ? -1 : a.docId > b.docId ? 1 : 0;
+}
+
+/** 选出代表对象当前状态的那份文档：优先与四态对应的状态，再取最新。 */
+function pickStatusDocument(
+  docs: readonly GraphDocumentStatus[],
+  state: GraphObjectState,
+): GraphDocumentStatus {
+  const sorted = [...docs].sort(compareDocuments);
+  const matches: Record<Exclude<GraphObjectState, "unknown">, (doc: GraphDocumentStatus) => boolean> = {
+    extracting: (doc) => EXTRACTING_DOC_STATUSES.has(doc.status.trim().toLowerCase()),
+    processed: (doc) => doc.status.trim().toLowerCase() === "processed",
+    queued: (doc) => doc.status.trim().toLowerCase() === "pending",
+    failed: (doc) => doc.status.trim().toLowerCase() === "failed",
+  };
+  if (state === "unknown") return sorted[0];
+  const matched = sorted.find(matches[state]);
+  return matched ?? sorted[0];
 }
 
 async function loadGraphDocumentStatuses(client: GraphGateway): Promise<GraphDocumentStatus[]> {
@@ -409,6 +838,8 @@ async function loadGraphDocumentStatuses(client: GraphGateway): Promise<GraphDoc
         docId: doc.id,
         status: doc.status,
         error: doc.errorMessage,
+        chunksCount: doc.chunksCount,
+        updatedAt: doc.updatedAt ?? null,
       });
     }
     if (result.documents.length < DOC_PAGE_SIZE) break;

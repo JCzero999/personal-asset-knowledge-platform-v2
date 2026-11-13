@@ -21,6 +21,7 @@ import { Icon, type IconName } from "./icon";
 import { NavRail } from "./nav-rail";
 import { ObjectDetail } from "./object-detail";
 import { ObjectFilters } from "./object-filters";
+import { PreviewProvider } from "./preview-provider";
 import { RecordList } from "./record-list";
 
 /**
@@ -334,7 +335,8 @@ export function WorkspaceView({
   ) : null;
 
   return (
-    <div className="app-frame has-list" data-selected={selected ? "true" : "false"}>
+    <PreviewProvider>
+      <div className="app-frame has-list" data-selected={selected ? "true" : "false"}>
       <NavRail session={session} active="workspace" signOutHref={signOutHref} />
       <WorkspaceDirectory
         filters={filters}
@@ -402,6 +404,7 @@ export function WorkspaceView({
           </div>
         </div>
       </main>
-    </div>
+      </div>
+    </PreviewProvider>
   );
 }

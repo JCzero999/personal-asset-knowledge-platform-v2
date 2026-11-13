@@ -43,9 +43,9 @@ function sessionWith(permissions: string[], overrides: Partial<Session> = {}): S
 }
 
 describe("角色 → 权限矩阵（ADR-019）", () => {
-  it("登记 13 项权限，key 唯一且顺序稳定", () => {
-    expect(PERMISSIONS).toHaveLength(13);
-    expect(new Set(PERMISSION_KEYS).size).toBe(13);
+  it("登记 15 项权限，key 唯一且顺序稳定", () => {
+    expect(PERMISSIONS).toHaveLength(15);
+    expect(new Set(PERMISSION_KEYS).size).toBe(15);
     expect(PERMISSION_KEYS).toEqual(PERMISSIONS.map((item) => item.key));
   });
 
@@ -54,13 +54,13 @@ describe("角色 → 权限矩阵（ADR-019）", () => {
     expect(ROLES.map((role) => role.label)).toEqual(["所有者", "管理员", "编辑", "只读"]);
   });
 
-  /** 52 格逐一断言，避免「看起来对」但漏掉一格。 */
+  /** 60 格逐一断言，避免「看起来对」但漏掉一格。 */
   const cells = ROLE_KEYS.flatMap((role) =>
     PERMISSION_KEYS.map((permission) => [role, permission] as const),
   );
 
-  it("矩阵共 52 格", () => {
-    expect(cells).toHaveLength(52);
+  it("矩阵共 60 格", () => {
+    expect(cells).toHaveLength(60);
   });
 
   it.each(cells)("%s × %s 与 ADR 表格一致", (role, permission) => {
