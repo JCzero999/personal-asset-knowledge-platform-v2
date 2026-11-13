@@ -77,15 +77,16 @@ export function PreviewProvider({ children }: { children: ReactNode }) {
     window.history.back();
   }, []);
 
-  /** 去详情页等导航前调用：清参数但不回退，否则会把即将发生的跳转撤掉。 */
+  /**
+   * 去详情页等导航前调用：清掉弹窗状态，但不碰历史。
+   *
+   * 这里刻意不 `replaceState` 抹参数——紧接着的 `router.push(detailHref)` 本身就会
+   * 落到不带 `?preview` 的地址；手动改历史会和 App Router 的地址状态错位，
+   * 表现为「点了打开详情，最后停在 /workspace 而不是详情页」。
+   */
   const dismiss = useCallback(() => {
     pushedRef.current = false;
     setTarget(null);
-
-    const url = new URL(window.location.href);
-    url.searchParams.delete("preview");
-    url.searchParams.delete("file");
-    window.history.replaceState(null, "", url);
   }, []);
 
   const api = useMemo<PreviewApi>(() => ({ open }), [open]);

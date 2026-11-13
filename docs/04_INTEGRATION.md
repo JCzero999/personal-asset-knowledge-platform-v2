@@ -127,7 +127,7 @@
 | 版本 / 部署方式 | `lightrag-hku[api]==1.5.7`，`lightrag-server` 本地进程；启动脚本 `infra/lightrag/start.ps1` |
 | 地址与端口 | API `http://127.0.0.1:9621`；OpenAPI 文档 `/docs`；WebUI 随服务提供 |
 | 鉴权 | `LIGHTRAG_API_KEY` → 请求头 `X-API-Key`；实测无 Key 为 **403**，带 Key 为 **200**。注意 `/health` 的 `auth_mode` 字段显示 `disabled`，与实际端点鉴权不一致，以实测状态码为准 |
-| LLM | Ollama `deepseek-r1:7b`（`http://127.0.0.1:11434`，`think=false`，`LLM_TIMEOUT=300`，`MAX_ASYNC=2`）；本机无 GPU，纯 CPU 推理 |
+| LLM | 2026-11-13 起生效：`openai` / `deepseek-chat` @ `https://api.deepseek.com/v1`（`LLM_TIMEOUT=300`）。此前的本机 Ollama `deepseek-r1:7b`（`http://127.0.0.1:11434`，纯 CPU 约 7 tok/s）在长文上必然 `ReadTimeout`，已弃用；配置经 `/admin/llm` 应用，写入 `infra/lightrag/.env` |
 | Embedding | 本地 FastAPI 兼容服务 `infra/lightrag/embedding_server.py`，`http://127.0.0.1:9381/v1`；模型 `BAAI/bge-large-zh-v1.5`（从 RAGFlow 容器缓存复制到 `infra/lightrag/models/`），1024 维，归一化 |
 | 图存储 / 向量存储位置 | 文件存储于 `infra/lightrag/data/rag_storage/`：NetworkX（`graph_chunk_entity_relation.graphml`）、NanoVectorDB（`vdb_*.json`）、JsonKV、JsonDocStatus；上传目录 `data/inputs/` |
 | 构图与查询验证结果 | 118 字测试文本抽取约 **226 秒**完成（status `processed`，1 chunk）；产出 9 个实体 / 3 条关系；`GET /graph/label/list` 返回 9 个标签；`GET /graphs?label=#2B6CB0&max_depth=2` 返回 2 节点 / 1 边；`POST /query {mode:"mix"}` 约 **93.8 秒**返回中文答案 |
@@ -160,10 +160,12 @@
 - **`apply` 写入的键**：逐键改写 `infra/lightrag/.env` 的 `LLM_BINDING`（`ollama` 或 `openai`）、`LLM_MODEL`、`LLM_BINDING_HOST`、`LLM_BINDING_API_KEY`、`LLM_TIMEOUT`（秒）；文件里其它变量与注释原样保留，缺失的键追加到末尾。本机 Ollama 的 API Key 留空时写入占位值 `ollama`。
 - **写入前的备份**：原 `.env` 复制为同目录带时间戳的备份文件，接口在失败时返回其路径。
 - **重启范围**：通过 PowerShell 只查找并重启 `lightrag-server`（排除 `embedding_server` 与 9381 端口），不动 Ollama、Embedding 与 RAGFlow。重启期间 `/graph` 与图谱问答不可用（约 10–30 秒），在途抽取任务会中断。
+- **重启是真的重启（2026-11-13 修）**：进程查询脚本的每一段必须用 `;` 分隔——用空格拼数组会让 PowerShell 把 `if (...)` 当成 `Select-Object` 的参数而直接失败。脚本退出码非 0、或查询结果为空时，`apply` **必须报错并回滚**，不能返回 `restarted: true`；否则旧进程会继续占用 9621 端口，健康检查照样 200，看起来「应用成功」，实际仍在跑旧模型。
+- **启动进程的环境变量**：`spawn` 拉起 `lightrag-server.exe` 时带 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`。stdout 被重定向到日志文件时，Python 默认用 GBK 编码，启动横幅里的 emoji 会触发 `UnicodeEncodeError` 直接退出。
 - **健康检查与回滚**：重启后轮询 `GET /health` 最多 60 秒；超时或非 200 时把 `.env` 回滚为备份并重启回原配置，响应带 `rolledBack`；回滚后仍不通则提示手动检查服务。
 - **平台约束**：自动重启只在 Windows 本机实现（依赖 PowerShell 查询进程），其它平台会返回「自动重启目前只支持 Windows 本机」，只能手动改 `.env` 并重启。
 - **禁止在验收实例触发 `apply`**：它会真实重启正在服务的 LightRAG。配置页验收只做保存与 `test`；应用动作安排在无人使用的窗口，并先确认供应商可达。
-- **本机模型上限（实测）**：Ollama `deepseek-r1:7b` 纯 CPU 约 7 tok/s、单请求 300 秒，两篇长文双双 `ReadTimeout`——这是「图谱一个实体都没有」的直接原因。换成外部模型后，对失败对象调 `POST /api/graph/retry` 重抽。
+- **本机模型上限（实测，已换云端）**：Ollama `deepseek-r1:7b` 纯 CPU 约 7 tok/s、单请求 300 秒，两篇长文双双 `ReadTimeout`——这是 2026-11-13 之前「图谱一个实体都没有」的直接原因。切换为 DeepSeek 后，三篇长文档（29 / 4 / 29 块）全部抽取成功；对仍失败的对象可调 `POST /api/graph/retry` 重抽。
 
 ## Embedding
 

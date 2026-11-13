@@ -48,6 +48,7 @@ import type {
   GraphRetryItem,
   GraphRetryResult,
   GraphStatus,
+  ModelDiagnosis,
 } from "@/server/services/graph-service";
 
 import { GraphStage2D } from "./graph/graph-stage-2d";
@@ -1124,6 +1125,7 @@ export function GraphExplorer({
               {counts.unknown > 0 ? ` · 状态未知 ${counts.unknown}` : ""}
             </span>
           </summary>
+          {status.diagnosis ? <DiagnosisNote diagnosis={status.diagnosis} /> : null}
           <ul>
             {statusRows.map((row) => (
               <li key={row.objectId}>
@@ -1293,6 +1295,9 @@ export function GraphExplorer({
                         counts.failed > 0 ? `（另有 ${counts.failed} 个失败）` : ""
                       }。`}
               </p>
+              {allFailed && status?.diagnosis ? (
+                <DiagnosisNote diagnosis={status.diagnosis} />
+              ) : null}
               {allFailed && status ? (
                 <div className="graph-failures" style={{ marginTop: "var(--sp-3)" }}>
                   <ul>
@@ -1648,6 +1653,23 @@ export function GraphExplorer({
         ) : null}
       </section>
     </div>
+  );
+}
+
+/**
+ * 模型端点探测结论：失败面板里那行「可判定」的说明。
+ *
+ * LightRAG 的 error_msg 常常是空尾巴，页面只能写「未返回原因」；这条来自
+ * `GET /api/graph/status` 的 `diagnosis`，直接说清是端点不可达、鉴权失败还是超时。
+ * 端点正常但仍失败时用中性样式，避免把「服务没问题」画成红条。
+ */
+function DiagnosisNote({ diagnosis }: { diagnosis: ModelDiagnosis }) {
+  const icon = diagnosis.ok === false ? "alert" : diagnosis.ok ? "check" : "refresh";
+  return (
+    <p className={`graph-diagnosis${diagnosis.ok === false ? " is-error" : ""}`} role="status">
+      <Icon name={icon} size={14} />
+      <span>{diagnosis.message}</span>
+    </p>
   );
 }
 

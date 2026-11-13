@@ -3391,6 +3391,32 @@ a.object-main:hover small {
   padding: 8px var(--sp-3);
 }
 
+/* 模型端点探测结论（失败面板）：中性样式说明「服务没问题」，is-error 才用 danger 色调。 */
+.graph-diagnosis {
+  align-items: flex-start;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  color: var(--text-2);
+  display: flex;
+  font-size: var(--fs-12);
+  gap: 6px;
+  line-height: 1.55;
+  margin: 6px 0 0;
+  padding: 7px 9px;
+}
+
+.graph-diagnosis svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.graph-diagnosis.is-error {
+  background: var(--danger-bg);
+  border-color: color-mix(in srgb, var(--danger-fg) 26%, var(--line));
+  color: var(--danger-fg);
+}
+
 .graph-failures summary {
   align-items: center;
   cursor: pointer;
@@ -5862,13 +5888,47 @@ a.object-main:hover small {
   z-index: 1;
 }
 
+/* 行内点击分工：铺满整行的详情链接在底层，标题按钮叠在它上面。
+   文字本身不定位，落在链接之下，所以「名称以外的任何位置」都归详情链接。 */
 .record-row {
   color: var(--text-1);
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 10px calc(var(--sp-4) - 3px) 10px 40px;
-  text-decoration: none;
+}
+
+.record-row-link {
+  inset: 0;
+  position: absolute;
+  z-index: 0;
+}
+
+/* 焦点环画在行内缘，避免被列表滚动容器裁掉。 */
+.record-row-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.record-title-button {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  margin: 0;
+  padding: 0;
+  position: relative;
+  text-align: left;
+  z-index: 1;
+}
+
+/* 悬停变色 + 下划线：让「名称是另一个入口」这件事在鼠标移上去时能看见。 */
+.record-title-button:hover {
+  color: var(--green-600);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
 
 .record-row-title {
@@ -5880,7 +5940,8 @@ a.object-main:hover small {
   line-height: 1.45;
 }
 
-.record-row-title > span:last-child {
+.record-row-title > .record-title-text,
+.record-title-button {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;

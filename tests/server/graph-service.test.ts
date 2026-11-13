@@ -160,6 +160,12 @@ function options(client: FakeGraphClient, content: FakeContent): GraphOptions {
     client,
     content,
     deleteWait: { budgetMs: 0, intervalMs: 0, sleep: async () => {} },
+    // 模型端点探测不打网络：默认固定「可达」，需要断言的用例自己注入。
+    diagnosis: {
+      config: { provider: "openai", baseUrl: "https://probe.invalid/v1", apiKey: "" },
+      fetch: async () => ({ status: 200 }),
+      cache: null,
+    },
   };
 }
 
@@ -334,6 +340,141 @@ describe("graphStatus", () => {
     expect(status.failed).toHaveLength(1);
     // 同对象取最新版本（doc-b）作为代表文档。
     expect(status.objects[0].docId).toBe("doc-b");
+  });
+});
+
+describe("graphStatus 模型端点探测", () => {
+  /** Node fetch 的连接拒绝长这样：TypeError("fetch failed") + cause.code。 */
+  function connectionRefused(): Error {
+    const error = new TypeError("fetch failed");
+    (error as { cause?: unknown }).cause = { code: "ECONNREFUSED" };
+    return error;
+  }
+
+  async function failedWorkWithDocs() {
+    const failed = await seedWork("探测用途的作品");
+    const client = new FakeGraphClient();
+    client.documents = [
+      doc({
+        docId: "doc-probe-failed",
+        objectId: failed.id,
+        status: "failed",
+        error: "C[1/29]: doc-probe-failed-chunk-001: ",
+      }),
+    ];
+    return { failed, client };
+  }
+
+  it("有失败对象时探测端点：可达就给中性结论，且响应里不出现密钥", async () => {
+    const { client } = await failedWorkWithDocs();
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+
+    const status = await graphStatus(handle.db, OWNER, {
+      ...options(client, new FakeContent()),
+      diagnosis: {
+        config: {
+          provider: "deepseek",
+          baseUrl: "https://api.deepseek.com/v1/",
+          apiKey: "sk-live-abcdef123456",
+        },
+        fetch: async (url, init) => {
+          seen.push({ url, headers: init.headers });
+          return { status: 200 };
+        },
+        cache: null,
+      },
+    });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toBe("https://api.deepseek.com/v1/models");
+    expect(seen[0].headers.authorization).toBe("Bearer sk-live-abcdef123456");
+    expect(status.diagnosis?.ok).toBe(true);
+    expect(status.diagnosis?.message).toContain("可连接");
+    expect(status.diagnosis?.message).toContain("抽取仍然失败");
+    expect(status.diagnosis?.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isNaN(Date.parse(status.diagnosis?.checkedAt ?? ""))).toBe(false);
+
+    // 整个响应体（页面会原样拿到）不得出现明文密钥。
+    expect(JSON.stringify(status)).not.toContain("sk-live-abcdef123456");
+  });
+
+  it("端点连不上时给出可判定结论，status 本身不失败", async () => {
+    const { client } = await failedWorkWithDocs();
+
+    const status = await graphStatus(handle.db, OWNER, {
+      ...options(client, new FakeContent()),
+      diagnosis: {
+        config: {
+          provider: "ollama",
+          baseUrl: "http://127.0.0.1:11434",
+          apiKey: "ollama",
+        },
+        fetch: async () => {
+          throw connectionRefused();
+        },
+        cache: null,
+      },
+    });
+
+    expect(status.counts.failed).toBe(1);
+    expect(status.diagnosis?.ok).toBe(false);
+    expect(status.diagnosis?.message).toContain("连接被拒绝");
+    expect(status.diagnosis?.message).toContain("127.0.0.1:11434");
+  });
+
+  it("探测超时降级成「探测超时」，不抛错", async () => {
+    const { client } = await failedWorkWithDocs();
+    const timeout = new Error("The operation was aborted due to timeout");
+    timeout.name = "TimeoutError";
+
+    const status = await graphStatus(handle.db, OWNER, {
+      ...options(client, new FakeContent()),
+      diagnosis: {
+        config: { provider: "openai", baseUrl: "https://slow.invalid/v1", apiKey: "" },
+        timeoutMs: 3_000,
+        fetch: async () => {
+          throw timeout;
+        },
+        cache: null,
+      },
+    });
+
+    expect(status.diagnosis?.ok).toBe(false);
+    expect(status.diagnosis?.message).toContain("探测超时");
+  });
+
+  it("没有失败对象时不探测，diagnosis 为 null", async () => {
+    const done = await seedWork("已经抽好的作品");
+    const client = new FakeGraphClient();
+    client.documents = [doc({ docId: "doc-ok", objectId: done.id, status: "processed" })];
+
+    let calls = 0;
+    const status = await graphStatus(handle.db, OWNER, {
+      ...options(client, new FakeContent()),
+      diagnosis: {
+        config: { provider: "openai", baseUrl: "https://probe.invalid/v1", apiKey: "" },
+        fetch: async () => {
+          calls += 1;
+          return { status: 200 };
+        },
+        cache: null,
+      },
+    });
+
+    expect(calls).toBe(0);
+    expect(status.diagnosis).toBeNull();
+  });
+
+  it("显式传 diagnosis: null 可关闭探测（既有调用方与离线环境）", async () => {
+    const { client } = await failedWorkWithDocs();
+
+    const status = await graphStatus(handle.db, OWNER, {
+      ...options(client, new FakeContent()),
+      diagnosis: null,
+    });
+
+    expect(status.diagnosis).toBeNull();
+    expect(status.counts.failed).toBe(1);
   });
 });
 

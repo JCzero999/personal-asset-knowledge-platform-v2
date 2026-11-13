@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState, type MouseEvent, type RefObject } from "react";
 
 import type { ContentRef } from "@/domain/content-ref";
 import type { BusinessObject } from "@/domain/objects";
@@ -100,6 +101,8 @@ export function ContentPreviewDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  /** 由 props 变化（去详情）关掉的弹窗，不再回报 onClose——否则会触发一次多余的历史回退。 */
+  const suppressCloseRef = useRef(false);
 
   // 打开 / 关闭：dialog 元素只挂一个实例；内容按对象重新挂载，
   // 换对象时不会残留上一条的正文或解析状态。
@@ -113,6 +116,7 @@ export function ContentPreviewDialog({
       dialog.showModal();
       window.setTimeout(() => closeButtonRef.current?.focus(), 0);
     } else if (!target && dialog.open) {
+      suppressCloseRef.current = true;
       dialog.close();
     }
   }, [target]);
@@ -123,6 +127,11 @@ export function ContentPreviewDialog({
       className="dialog dialog-preview"
       aria-labelledby="preview-title"
       onClose={() => {
+        // 程序性关闭（去详情）：焦点交给即将到达的页面，也不回报 onClose。
+        if (suppressCloseRef.current) {
+          suppressCloseRef.current = false;
+          return;
+        }
         restoreFocusRef.current?.focus();
         onClose();
       }}
@@ -151,6 +160,7 @@ function PreviewSheet({
   onDismiss: () => void;
   closeButtonRef: RefObject<HTMLButtonElement | null>;
 }) {
+  const router = useRouter();
   const [object, setObject] = useState<BusinessObject | null>(null);
   const [refs, setRefs] = useState<ContentRef[] | null>(null);
   const [selected, setSelected] = useState<ContentRef | null>(null);
@@ -333,9 +343,19 @@ function PreviewSheet({
   const text: TextState = selected && textSlice.id === selected.id ? textSlice.state : LOADING_TEXT;
   const pdf: PdfState = selected && pdfSlice.id === selected.id ? pdfSlice.state : PROBING_PDF;
 
-  function dismissForDetail() {
+  /**
+   * 「打开详情」：先清掉 `?preview`，再交给 router 导航。
+   *
+   * 不能只用 <Link> 加 onClick 收尾——收尾会同步卸载弹窗，锚点从 DOM 移除后
+   * 浏览器会取消默认导航，表现就是「点了没反应」。修饰键点击仍走链接默认行为
+   * （新标签打开详情），此时不需要收尾。
+   */
+  const openDetail = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
     onDismiss();
-  }
+    router.push(detailHref);
+  };
 
   return (
     <div
@@ -395,7 +415,7 @@ function PreviewSheet({
             <Link
               className="btn btn-secondary preview-action"
               href={detailHref}
-              onClick={dismissForDetail}
+              onClick={openDetail}
               aria-label="打开详情"
             >
               <span className="preview-action-label">打开详情</span>
@@ -465,7 +485,7 @@ function PreviewSheet({
             text={text}
             pdf={pdf}
             detailHref={detailHref}
-            onDismiss={dismissForDetail}
+            onOpenDetail={openDetail}
           />
         </div>
 
@@ -519,7 +539,7 @@ function PreviewStage({
   text,
   pdf,
   detailHref,
-  onDismiss,
+  onOpenDetail,
 }: {
   objectId: string;
   objectLoaded: boolean;
@@ -529,7 +549,7 @@ function PreviewStage({
   text: TextState;
   pdf: PdfState;
   detailHref: string;
-  onDismiss: () => void;
+  onOpenDetail: (event: MouseEvent<HTMLAnchorElement>) => void;
 }) {
   if (loadError) {
     return (
@@ -542,7 +562,7 @@ function PreviewStage({
             : "网络或服务端暂时不可用，稍后再试一次。"}
         </p>
         <div className="preview-error-actions">
-          <Link className="btn btn-secondary" href={detailHref} onClick={onDismiss}>
+          <Link className="btn btn-secondary" href={detailHref} onClick={onOpenDetail}>
             打开详情
           </Link>
           <button className="btn btn-ghost" type="button" onClick={() => window.location.reload()}>
@@ -571,7 +591,7 @@ function PreviewStage({
           <strong>这个作品还没有内容文件</strong>
           <p>上传原文后，这里会直接显示正文。</p>
         </div>
-        <Link className="btn btn-primary empty-action" href={detailHref} onClick={onDismiss}>
+        <Link className="btn btn-primary empty-action" href={detailHref} onClick={onOpenDetail}>
           去详情上传
         </Link>
       </div>

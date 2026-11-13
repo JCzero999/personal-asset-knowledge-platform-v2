@@ -1773,13 +1773,20 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
       "updatedAt": "2026-11-13T08:12:00"
     }
   ],
-  "failed": [{ "objectId": "01...", "error": "抽取超时：本地模型过慢" }]
+  "failed": [{ "objectId": "01...", "error": "抽取失败（未返回原因）" }],
+  "diagnosis": {
+    "checkedAt": "2026-11-13T13:56:02.110Z",
+    "ok": true,
+    "latencyMs": 210,
+    "message": "模型服务可连接（api.deepseek.com，210ms），但抽取仍然失败，请查看 LightRAG 引擎日志；也可以到「系统 → 大模型」测试连接后重新抽取。"
+  }
 }
 ```
 
 - `byStatus` 的键是 LightRAG 原始状态（实测 `PENDING` / `PROCESSING` / `PROCESSED` / `FAILED`），按对象选中那条文档的状态计数。
 - `counts` 把原始状态归并为五个应用态：`processed` / `extracting` / `queued` / `failed` / `unknown`，供页面直接显示。
 - `state = failed` 时，`error` 是归一后的可读原因（六类：``抽取超时：本地模型过慢``、``抽取服务连接失败：请确认 LightRAG 与模型服务已启动``、``抽取失败：模型接口的密钥或权限被拒绝``、``抽取失败：模型接口限流或额度不足``、``抽取失败（未返回原因）``、``抽取失败：<首行摘要>``），`errorRaw` 始终是 LightRAG 原文；非失败态两者都为 `null`。
+- `diagnosis` 是**模型端点探测结论**，只在本次统计里存在失败对象时才有值，否则为 `null`：`ok` 为 `true` 表示端点可达、`false` 表示不可达或用不了、`null` 表示拿不到可探测地址；`message` 是可直接展示的中文结论与下一步。探测按当前生效配置（库内 → 环境变量 → `infra/lightrag/.env` → 内置默认）发起 `GET {baseUrl}/models`（Ollama 原生走 `/api/tags`），3 秒超时、结论缓存 30 秒；密钥只进请求头，不出现在响应或文案里。
 - 同一对象存在多个版本时只取当前应展示的一条（按状态优先级挑选），不做逐条罗列。
 - 手工放入 LightRAG、未带 `pakp:` 前缀的文档，以及其他账号的对象都不计入。
 

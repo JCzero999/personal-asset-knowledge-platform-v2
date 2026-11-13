@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { DomainError, ValidationError } from "../../domain/errors";
@@ -662,16 +662,34 @@ function defaultRunPowerShell(script: string): string {
   if (result.error) {
     throw new DomainError("INTERNAL", "无法调用 PowerShell 查询 LightRAG 进程");
   }
+  // 脚本写错或权限不足时 PowerShell 退出码非 0、stdout 为空；不看退出码就会
+  // 被当成「没有进程」，于是跳过重启却报告成功。
+  if (result.status !== 0) {
+    const detail = (result.stderr ?? "").trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "";
+    throw new DomainError("INTERNAL", "查询 LightRAG 进程失败", { detail });
+  }
 
   return result.stdout ?? "";
 }
 
 function defaultSpawnDetached(exePath: string, cwd: string): void {
+  // 延续 start.ps1 的日志约定：重启后的进程仍写 lightrag.log / lightrag.err.log，
+  // 否则「重启后为什么还失败」就查无实据。日志打不开也要照常启动。
+  let stdio: "ignore" | ["ignore", number, number] = "ignore";
+  try {
+    stdio = ["ignore", openSync(path.join(cwd, "lightrag.log"), "a"), openSync(path.join(cwd, "lightrag.err.log"), "a")];
+  } catch {
+    stdio = "ignore";
+  }
+
   const child = spawn(exePath, [], {
     cwd,
     detached: true,
-    stdio: "ignore",
+    stdio,
     windowsHide: true,
+    // 控制台中文/emoji 横幅在 GBK 代码页下会抛 UnicodeEncodeError 直接退出；
+    // 从服务里拉起的进程没有终端，必须显式要求 UTF-8。
+    env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
   });
   child.unref();
 }
@@ -684,8 +702,10 @@ export function findLightragProcesses(runPowerShell: (script: string) => string)
     "  $_.CommandLine -match 'lightrag-server' -and",
     "  $_.CommandLine -notmatch 'embedding_server' -and",
     "  $_.CommandLine -notmatch '9381'",
-    "} | Select-Object ProcessId,Name,CommandLine",
+    "} | Select-Object ProcessId,Name,CommandLine;",
     "if ($items) { $items | ConvertTo-Json -Compress }",
+    // 以分号分隔：PowerShell 会把同一行里紧跟的参数并进上一条命令，
+    // 拼成空格连接时 `Select-Object … if (…)` 直接报错，整段静默失败。
   ].join(" ");
 
   const raw = runPowerShell(script).trim();
@@ -719,11 +739,14 @@ export function findLightragProcesses(runPowerShell: (script: string) => string)
 }
 
 function killProcessTree(pid: number): void {
-  spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+  const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
     encoding: "utf8",
     windowsHide: true,
     timeout: 15_000,
   });
+  if (result.error || result.status !== 0) {
+    throw new DomainError("INTERNAL", "LightRAG 进程停止失败，配置没有生效", { pid });
+  }
 }
 
 export interface RestartOutcome {
@@ -741,6 +764,15 @@ export function restartLightrag(
   const killProcess = deps.killProcess ?? killProcessTree;
 
   const processes = findLightragProcesses(runPowerShell);
+  if (processes.length === 0) {
+    // 旧进程还在监听时，新进程会抢不到端口而立刻退出，健康检查却由旧进程
+    // 应答——那正是「报告已重启、配置实际没生效」的来源，必须直接失败。
+    throw new DomainError(
+      "INTERNAL",
+      "没有找到正在运行的 LightRAG 进程，无法重启，配置没有生效",
+    );
+  }
+
   const killed = processes.map((item) => item.pid);
   for (const pid of killed) {
     killProcess(pid);

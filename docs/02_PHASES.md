@@ -400,6 +400,19 @@
 - [x] **验收**：真实数据下 `/graph` 显示 1 个失败项、原因与重抽入口；`/admin/llm` 与预览弹窗在明暗主题下用浏览器实际打开核对；主题 129 名 0 失败、对比度 37/37、`tsc` 0、`lint` 0 error（14 条既有 warning）、`vitest` 50 文件 734 通过 / 3 跳过
 - [ ] **未做 / 未验证**：`apply` 未在验收实例触发（会重启 LightRAG，需单独窗口）；真实供应商 API Key 的连接测试未跑；PDF 内嵌在 Chrome / Edge 的实机渲染、浏览器后退关闭弹窗、移动端全屏未逐项实测；多轮问答仍缺对话模型 key
 
+### Phase 6F：列表点击语义 · 模型应用真重启 · 图谱恢复（2026-11-13）
+
+> 起因是用户实测反馈两条：预览弹窗右上角「打开详情」点了没反应；作品目录整行都会弹预览，与「全部内容」区「点名称才跳详情」的习惯不一致。同时图谱页三个对象全部抽取失败且不显示原因。排查看出「应用大模型配置」一直是假成功：引擎从 11 月 11 日起就没换过模型，一直在打已经停掉的 Ollama。
+
+- [x] **「打开详情」失效修复**：原实现依赖 `<Link>` 默认跳转，但点击处理器里弹窗自己先被卸载，默认导航随 DOM 一起消失；`dismiss()` 里额外的 `window.history.replaceState` 又抹掉了 URL 上的 `?preview=`，让 App Router 状态失同步（表现为「跳到一半又停在列表页」）。改为 `preventDefault()` → 关闭弹窗 → `router.push(detailHref)`，并从 `dismiss()` 移除 `replaceState`；程序化关闭加 `suppressCloseRef`，不触发 `onClose`
+- [x] **列表行点击语义统一**：工作台列表「全部内容」与「作品目录」共用 `record-list.tsx` 的 stretched-link 结构——铺满整行、`z-index:0` 的 `<Link>` 负责跳详情，行内标题是 `z-index:1` 的 `<button>`，只负责就地预览；⌘ / Ctrl / Shift 单击仍走详情页；无预览上下文时标题退化为纯文本
+- [x] **`apply` 假成功根因（三层）**：① 进程查询脚本用空格拼接，`if (...)` 被 PowerShell 当成 `Select-Object` 的参数，脚本 exit 1、stdout 为空；② 代码不检查退出码与空结果；③ 旧 `lightrag-server` 没被杀掉，新实例抢不到 9621，健康检查由旧进程回答。修法：脚本改分号分隔；`defaultRunPowerShell` / `killProcessTree` 非 0 退出直接抛错；`restartLightrag` 查不到进程时抛错并回滚 `.env`；`spawn` 带 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`，避免启动横幅 emoji 在 GBK 下 `UnicodeEncodeError`
+- [x] **真实生效**：重启后启动日志显示 `openai/deepseek-chat @ https://api.deepseek.com/v1`；三篇文档（江苏篇 29 块、OpenMausBot 指南 4 块、浙江篇 29 块）依次重抽为 `processed`，图存储累计 **1256 个节点 / 1521 条关系**
+- [x] **失败可诊断（新增只读探测）**：`src/server/services/model-endpoint-probe.ts` 按当前生效配置直连供应商 `GET {base}/models`（Ollama 走 `/api/tags`），3 秒超时、30 秒缓存、永不抛错；`GET /api/graph/status` 在有失败对象时附 `diagnosis`（`checkedAt` / `ok` / `latencyMs` / `message`），图谱页失败面板与进度区展示结论
+- [x] **测试**：新增 `tests/server/model-endpoint-probe.test.ts`；`llm-apply.test.ts` 补「查不到进程必须失败」与「脚本必须含分号」两项；`vitest run --maxWorkers=2` **51 文件 757 通过 / 3 跳过**
+- [x] **质量门**：`tsc --noEmit` 退出 0；`eslint .` 0 error / 14 warning（既有）；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` 37/37
+- [ ] **未验证**：浏览器内的后退关闭弹窗、移动端预览全屏本轮未复测；`diagnosis` 只在「模型端点真的不可达」的注入场景下验过文案，未在真实断网下复现；抽取耗时未重新统计（DeepSeek 下 29 块文档约 2–3 分钟）
+
 ## 下一步行动
 
 按优先级：
@@ -431,7 +444,7 @@
 | 失败重试只有单测覆盖 | 真实故障场景（停机、解析失败、Token 失效）待补测，文档不得写成已验证 |
 | 多实例部署重复投递 | `sync_jobs` 原子认领可避免重复处理，但 worker 为进程内定时器；部署前确认实例数与间隔 |
 | LightRAG 单 workspace，实体抽取全局合并 | 读侧已按 `file_path` 过滤（ADR-011）；抽取仍是全局的，开放多用户前需拆分实例 / 工作目录 |
-| CPU 构图与问答较慢 | 118 字文档抽取约 3.8 分钟、`mix` 问答约 94 秒；同步接口只负责入队，前端轮询进度；长文档需更长等待或换 GPU / 云模型 |
+| 抽取与问答耗时 | 已切到 DeepSeek（29 块长文约 2–3 分钟、单篇图写入约 5–6 分钟）；同步接口只负责入队，前端轮询进度。若切回本机 Ollama，118 字文档就要约 3.8 分钟、`mix` 问答约 94 秒，长文必超时 |
 | 7B 模型抽取质量有限 | 会把「#」等噪声当实体、关系偶发格式告警；换模型后在真实语料上复评，不把当前图谱当作质量基线 |
 | 文档与实现脱节 | 遵守 maintain-docs；每次有意义工作后更新本文件与 CHANGELOG |
 | 服务未启动就编造集成细节 | 禁止；`04_INTEGRATION.md` 只写实测值 |

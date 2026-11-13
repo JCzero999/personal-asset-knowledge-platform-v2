@@ -202,6 +202,38 @@ describe("应用配置（ADR-025）", () => {
     );
   });
 
+  it("查不到 lightrag 进程时拒绝重启并回滚，而不是假报成功", async () => {
+    saveConfig();
+    const { deps, killed, spawns } = harness(true);
+
+    let caught: unknown;
+    try {
+      await applyLlmSettings(handle.db, actor("u-owner"), {
+        ...deps,
+        runPowerShell: () => "",
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(DomainError);
+    expect((caught as DomainError).message).toContain("回滚");
+    expect((caught as DomainError).details?.reason).toContain("没有找到正在运行的 LightRAG 进程");
+    expect(killed).toEqual([]);
+    expect(spawns).toEqual([]);
+    expect(readFileSync(envPath, "utf8")).toBe(ENV_FIXTURE);
+  });
+
+  it("进程查询脚本用分号分隔语句，PowerShell 不会把 if 当成参数", () => {
+    let script = "";
+    findLightragProcesses((input) => {
+      script = input;
+      return "";
+    });
+
+    expect(script).toContain("Select-Object ProcessId,Name,CommandLine;");
+  });
+
   it(".env 不存在时拒绝应用（不猜测运行时目录）", async () => {
     saveConfig();
     const { deps } = harness(true);

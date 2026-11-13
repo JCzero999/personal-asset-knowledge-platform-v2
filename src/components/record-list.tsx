@@ -299,6 +299,8 @@ export function RecordList({
                 ? `${categoryLabel(categoryLabels, object.category)} · ${statusLabels[object.status]}`
                 : libraryLabels[object.library];
 
+              const href = `/workspace/${object.id}${listQuery}`;
+
               return (
                 <li className={`record-row-item${isActive ? " is-active" : ""}`} key={object.id}>
                   <span className="record-check">
@@ -309,26 +311,37 @@ export function RecordList({
                       onChange={() => toggleOne(object.id)}
                     />
                   </span>
+
+                  {/*
+                    点击口径：名称 → 预览弹窗；行内其余位置 → 详情页。
+                    铺满整行的绝对定位链接负责「其余位置」，名称按钮叠在它上面（z-index 更高）。
+                    两者并列而非嵌套，保持 <a> 里不出现交互控件；修饰键点击仍由浏览器
+                    按链接默认行为处理（新标签打开详情）。
+                  */}
                   <Link
-                    className="record-row"
-                    href={`/workspace/${object.id}${listQuery}`}
+                    className="record-row-link"
+                    href={href}
                     scroll={false}
                     aria-current={isActive ? "page" : undefined}
-                    // 普通单击改为就地预览；带修饰键仍是原来的详情页链接（新标签）。
-                    onClick={(event) => {
-                      if (!preview) return;
-                      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-                      event.preventDefault();
-                      preview.open(
-                        object.id,
-                        null,
-                        event.currentTarget.getAttribute("href") ?? undefined,
-                      );
-                    }}
-                  >
+                    aria-label={`打开「${object.title}」详情`}
+                  />
+
+                  <div className="record-row">
                     <span className="record-row-title">
                       <span className={`record-dot ${object.type}`} aria-hidden="true" />
-                      <span>{object.title}</span>
+                      {preview ? (
+                        <button
+                          type="button"
+                          className="record-title-button"
+                          aria-label={`预览「${object.title}」`}
+                          title="打开预览"
+                          onClick={() => preview.open(object.id, null, href)}
+                        >
+                          {object.title}
+                        </button>
+                      ) : (
+                        <span className="record-title-text">{object.title}</span>
+                      )}
                     </span>
                     <span className="record-row-meta">
                       <span>{meta}</span>
@@ -336,7 +349,7 @@ export function RecordList({
                         {formatUpdatedAt(object.updatedAt, now)}
                       </time>
                     </span>
-                  </Link>
+                  </div>
                 </li>
               );
             })}

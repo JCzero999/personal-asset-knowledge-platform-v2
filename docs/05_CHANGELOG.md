@@ -556,3 +556,14 @@
 - **验收**：真实数据下 `/graph` 页显示 1 个失败项、可读原因与「重新抽取」入口；`/admin/llm` 与预览弹窗在明暗主题下用浏览器实际打开核对
 - **质量门（本轮实跑）**：`tsc --noEmit` 退出 0；`eslint .` 0 error / 14 warning（既有）；`vitest run --maxWorkers=2` **50 文件 737 项（734 通过 / 3 跳过）**；`check:theme` 129 名 · 0 失败 · 字面量 26（未新增）；`check:contrast` 37/37
 - **未做 / 未验证**：`apply` 未在验收实例触发（会重启 LightRAG，需单独安排窗口）；真实供应商 API Key 的连接测试未跑；多轮问答仍缺对话模型 key；PDF 内嵌在 Chrome / Edge 的实机渲染、浏览器后退关闭弹窗、移动端 `100dvh` 全屏未逐项实测；检索与图谱的预览入口未接入
+
+## 2026-11-13（Phase 6F：列表点击语义 · 模型应用真重启 · 图谱恢复）
+
+- **起因**：用户实测两条反馈——预览弹窗右上角「打开详情」点了没反应；作品目录点标题周围整片区域都会弹预览，与「全部内容」区「点名称才跳详情」的习惯不一致。同时图谱页三个对象全部抽取失败，界面只写「未返回原因」。
+- **「打开详情」修复**：原生 `<dialog>` 在自身点击处理器里被卸载，`<Link>` 的默认导航随 DOM 一起取消；`dismiss()` 里的 `window.history.replaceState` 又抹掉 `?preview=`，与 App Router 状态失同步（表现为「跳一下又停回列表」）。改为 `preventDefault()` → `onDismiss()` → `router.push(detailHref)`；移除 `replaceState`；新增 `suppressCloseRef` 区分程序化关闭与用户关闭
+- **列表点击语义统一**：`record-list.tsx` 改成 stretched link——铺满整行、`z-index:0` 的 `<Link>` 负责详情，标题是 `z-index:1` 的 `<button>` 只负责预览；⌘ / Ctrl / Shift 单击仍走详情；无预览上下文时标题退化为纯文本。工作台「全部内容」与「作品目录」共用同一结构；样式落在 `globals.css` 的 `.record-row-*`
+- **`apply` 假成功的三层根因**：① `findLightragProcesses` 的 PowerShell 脚本用空格拼接语句，`if (...)` 被当成 `Select-Object` 的参数，exit 1、stdout 为空；② 代码不检查退出码与空结果；③ 旧 `lightrag-server` 没被杀掉，新实例抢不到 9621，`/health` 由旧进程回答。修法：脚本分号分隔；`defaultRunPowerShell` / `killProcessTree` 非 0 退出抛 `DomainError`；`restartLightrag` 查不到进程时抛错并回滚 `.env`；`spawn` 带 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`（stdout 重定向到文件时 GBK 编码遇 emoji 会 `UnicodeEncodeError`）
+- **真实生效并恢复图谱**：重启后启动日志为 `openai/deepseek-chat @ https://api.deepseek.com/v1`；三篇文档（江苏篇 29 块、OpenMausBot 指南 4 块、浙江篇 29 块）全部重抽为 `processed`，图存储累计 **1256 节点 / 1521 条关系**
+- **失败可诊断**：新增 `src/server/services/model-endpoint-probe.ts`（只读）：按当前生效配置直连 `GET {base}/models`（Ollama 原生走 `/api/tags`），3 秒超时、30 秒内存缓存、密钥只进请求头、永不抛错；`GET /api/graph/status` 在存在失败对象时附带 `diagnosis`（`checkedAt` / `ok` / `latencyMs` / `message`），图谱页在失败面板与进度区用 `DiagnosisNote` 展示；接口契约同步写入 `06_API.md` §9.4
+- **测试与门禁**：新增 `tests/server/model-endpoint-probe.test.ts`；`llm-apply.test.ts` 补「查不到进程必须失败并回滚」与「脚本必须含分号」两项；`tsc --noEmit` 退出 0；`eslint .` 0 error / 14 warning（既有）；`vitest run --maxWorkers=2` **51 文件 757 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` 37/37
+- **未做 / 未验证**：浏览器后退关闭弹窗、移动端预览全屏未复测；`diagnosis` 的文案只在注入场景下验过，未在真实断网下复现；抽取耗时未重新统计

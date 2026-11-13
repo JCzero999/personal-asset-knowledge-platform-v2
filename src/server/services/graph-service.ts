@@ -14,7 +14,14 @@ import { createRagflowClientFromEnv } from "../adapters/ragflow";
 import type { AppDatabase } from "../db/client";
 import { SqliteContentStore } from "../repositories/sqlite-content-store";
 import { getObject, listObjects } from "./object-service";
+import {
+  probeModelEndpoint,
+  type ModelDiagnosis,
+  type ModelProbeOptions,
+} from "./model-endpoint-probe";
 import { listCategories } from "./vocabulary-service";
+
+export type { ModelDiagnosis } from "./model-endpoint-probe";
 
 /**
  * 知识图谱：把业务内容送进 LightRAG，再按实体查询。
@@ -89,6 +96,10 @@ export interface GraphOptions {
   env?: Record<string, string | undefined>;
   /** 等 LightRAG 后台删除的时间参数；仅测试注入，生产用默认值。 */
   deleteWait?: GraphDeleteWaitOptions;
+  /**
+   * 模型端点探测参数；仅测试注入。`null` 关闭探测（生产不传，走 30 秒缓存）。
+   */
+  diagnosis?: ModelProbeOptions | null;
 }
 
 export interface GraphSyncResult {
@@ -727,6 +738,11 @@ export interface GraphStatus {
   objects: GraphStatusObject[];
   /** 失败对象列表（只含 failed 态），供失败卡片与重试入口使用。 */
   failed: GraphStatusFailure[];
+  /**
+   * 模型端点探测结论（ADR-025 只读侧）：只在存在失败对象时探测，其余时候为 null。
+   * 新增字段，旧调用方可以忽略。
+   */
+  diagnosis?: ModelDiagnosis | null;
 }
 
 export async function graphStatus(
@@ -789,7 +805,13 @@ export async function graphStatus(
     byStatus[row.status] = (byStatus[row.status] ?? 0) + 1;
   }
 
-  return { total: objects.length, byStatus, counts, objects, failed };
+  // 只有真的失败了才去探模型端点：常态零开销，也不会因为供应商抖动影响正常页面。
+  const diagnosis =
+    failed.length > 0 && options.diagnosis !== null
+      ? await probeModelEndpoint(db, options.diagnosis ?? {})
+      : null;
+
+  return { total: objects.length, byStatus, counts, objects, failed, diagnosis };
 }
 
 interface GraphDocumentStatus {
