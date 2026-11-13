@@ -11,6 +11,8 @@ export default defineConfig([
     ".next-mock/**",
     // 生产运行时验收的构建产物（scripts/phase6d-capture.mjs 的 PHASE6D_PROD=1）
     ".next-build/**",
+    // RAGFlow 故障演练的隔离实例构建产物
+    ".next-failtest/**",
     ".venv/**",
     "**/.venv/**",
     "agents/**",

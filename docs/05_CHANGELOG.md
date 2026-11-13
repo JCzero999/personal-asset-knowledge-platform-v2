@@ -529,3 +529,13 @@
 - **截图**：`phase6d-3d-default-entry-prod.png`、`phase6d-3d-worker-600-prod.png`、`phase6d-3d-worker-600-prod-switch.png`、`phase6d-3d-decimate-prod.png`、`phase6d-3d-downgrade-prod.png`
 - **门禁**：`tsc --noEmit` 0；`vitest run --maxWorkers=2` 46 文件 675 项（672 通过 / 3 跳过）；`eslint .` 0 error（14 条既有 warning）；`check:theme` 129 名 · 0 失败；`check:contrast` 37/37
 - **未验证**：生产运行时仍跑在 mock LightRAG 夹具 + 无头 SwiftShader 上；真实 LightRAG 与真实 Logto 会话未在 `next start` 下复测；Worker 由 CDP 目标证明存在，页面内消息流量未在生产构建下埋点
+
+## 2026-11-13（真实 RAGFlow 失败链路实测）
+
+- **起因**：`02_PHASES` 的「失败路径实测（待做）」——解析失败回写、outbox 重试退避、RAGFlow 不可用时的 500 语义，此前只有 12 项单测覆盖，没有真实故障实测
+- **隔离方式**：`data/app.db` 复制到 `%TEMP%`，`AUTH_MODE=mock` + `DATABASE_PATH` 指向副本 + `NEXT_DIST_DIR=.next-failtest` 另起实例（3135），RAGFlow 用真实容器（9380）。副本里 `mock-local-user` 名下没有任何对象，真实账号的数据与真实 RAGFlow 文档都不受影响；验证用的临时对象与文档最后经 `DELETE /api/objects/{id}` 连同 RAGFlow 侧文档一并删除，临时库、构建目录与日志已清理
+- **RAGFlow 不可用**：`docker stop ragflow-server` 后，上传内容返回 `500 INTERNAL`、`message` 为「RAGFlow 请求失败：GET /api/v1/datasets…」、`details.cause` 为 `fetch failed`；语义检索 `status` 从 `ok` 变 `unavailable`，`/search` 页渲染「语义检索暂不可用，当前只显示关键词匹配结果。」，关键词结果照常返回（`counts.lexical=1`）；`/api/graph/status` 与 `/api/objects` 仍 200；`/graph` 正常（图谱走 LightRAG，与 RAGFlow 无耦合）
+- **outbox 退避与恢复**：停机时 PATCH 对象入队 `upsert`，后台 worker 第 1 次失败 `attempts=1` / `available_at` 推后 60s，第 2 次 `attempts=2` / 推后 120s，`last_error` 记下失败端点；`docker start ragflow-server` 恢复后第 3 次投递成功（`state=done`、`attempts=3`、`last_error=null`），`content_refs.sync_state` 回到 `synced`
+- **解析失败回写**：上传结构损坏的 PDF（RAGFlow 接受上传、解析阶段报错），轮询后 `parseStatus=failed`、`parseError` 写入 RAGFlow 原始日志「14:32:18 [ERROR][Exception]: cannot convert float NaN to integer」；`POST /api/parse/run` 返回 `failed:1` 并在 `errors[]` 带 `refId` / `documentId`
+- **两个新发现**（详见 `07_PLAYBOOK` 问题 107、108）：① 语义检索的 3 秒超时在 RAGFlow 刚重启 / 冷启动时会误报 `timeout`，界面提示与真正不可用混在一起；② RAGFlow 拒绝不支持的扩展名时（`broken.bin`）被包成 `500 INTERNAL`，这其实是客户端可纠正的输入问题，更适合 400
+- **环境状态**：实测结束后 `scripts/autostart.ps1 -App` 重新拉起全部依赖与应用（3000，`AUTH_MODE=logto`），health 200、首页 200、`/search` `/graph` 匿名 307 回首页

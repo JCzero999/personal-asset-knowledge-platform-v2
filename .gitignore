@@ -6,6 +6,7 @@
 /.next
 /.next-mock
 /.next-build
+/.next-failtest
 /out
 
 # production

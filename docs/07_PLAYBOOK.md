@@ -282,6 +282,8 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 104 | 生产构建里什么都验不了：`window.__graphStats` 是 `undefined`，标签框调试钩子也消失，脚本一律超时 | `__graphStats` / `__graphLabelBoxes` 都按 `NODE_ENV !== "production"` 早退，这正是「生产不写调试全局」的本意，但验收脚本仍按 dev 口径断言 | 生产态只断言可见 DOM：`data-mode`、`[data-mode="3d"] canvas`、工具条 `aria-pressed`、提示条、`.meta-chip` 档位、`.g3-stub`、`.graph-note-error`、`.sr-only` 播报；再用截图像素统计（尺寸 / 平均亮度 / 亮像素占比 / 颜色桶）防「画布在但没画东西」。`PHASE6D_PROD=1` 走独立的构建 + `next start` 流程 | 调试钩子被生产守卫关掉不是缺陷，是契约；「生产可验证」要在设计断言时就用 DOM 说话，别依赖任何 window 上的读数 |
 | 105 | 生产验收的图谱永远是空的，或标签全是「未连通」 | mock LightRAG 的夹具对象用自造 `filePath`，而 ADR-011 的读侧过滤按「本账号内容是否参与」判归属，不认识这些 id | 真实库只读备份到 `%TEMP%`，在**副本**上播夹具对象，让 `filePath` / 对象 id 对上；源库全程不打开写入，验证后删副本 | 图谱验收的夹具必须和归属过滤对齐；「接口 200 但图是空」先查归属过滤，别查渲染 |
 | 106 | `.next-build` 存在时跑 `eslint .` 报出近千条错误，删掉目录就恢复 | 自定义构建产物目录不在 ESLint 的默认忽略里，被当成源码扫描 | `.gitignore` 加 `/.next-build`，`eslint.config.mjs` 的 `globalIgnores` 同步加 `.next-build/**`；门禁一律在干净树上跑 | 任何自定义构建 / 导出目录都要同时进 git 忽略与 lint 忽略，否则「本地全绿」和「门禁全绿」不是同一件事 |
+| 107 | RAGFlow 刚重启时语义检索显示「超时」，但服务其实是好的；过一会儿自己恢复 | `SEMANTIC_TIMEOUT_MS = 3000` 对冷启动不够：容器刚起来时首个 `/api/v1/retrieval` 要几秒（模型 / 索引预热），`Promise.race` 直接判 `timeout`；同一分钟内连打三次，第 2、3 次才 `ok` | 暂未改代码（3s 是产品口径的取舍）。排查时先连打两三次区分「冷启动」与「真不可用」；界面文案上 `timeout` 与 `unavailable` 本就是两条不同的提示 | 外部检索的超时阈值要按「冷启动 + 稳态」两段分别验证；故障演练结束时的第一次请求不代表稳态 |
+| 108 | 上传 `.bin` 这类 RAGFlow 不支持的扩展名，接口回 `500 INTERNAL`，前端只能显示「服务内部错误」 | RAGFlow 在 `POST /documents` 阶段返回 `code=500` + "This type of file has not been supported yet!"，适配器把非 2xx 一律包成 `DomainError("INTERNAL")`，没有区分「上游 5xx」与「上游拒绝该输入」 | 暂未改代码。生产影响有限（前端上传组件限制扩展名），但如果放开上传类型，应按上游错误体里的「unsupported」语义映射为 400 `VALIDATION_FAILED` | 上游返回 5xx 不代表就是服务故障：先看响应体是不是「拒绝输入」；「我能处理的格式」清单要有单一出处，前后端与上游三方对齐 |
 
 **通用预防**（比单条修复更重要）：
 

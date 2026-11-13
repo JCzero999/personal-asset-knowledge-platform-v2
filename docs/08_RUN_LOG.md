@@ -639,7 +639,88 @@ npm run check:contrast                                               # 37/37 组
 
 ① 生产运行时跑在 mock LightRAG 夹具 + 无头 SwiftShader 上，真实 LightRAG / 真实 Logto 会话仍未在 `next start` 下复测；② Worker 由 CDP 目标证明存在，页面内消息流量没有在生产构建下埋点（生产构建不允许页面探针）；③ 像素统计只证明「画布画出了东西」，节点 / 边的可读性靠截图人工复核。
 
+## 19. 2026-11-13 真实 RAGFlow 失败链路实测
+
+**目标**：把 `02_PHASES` 「失败路径实测（待做）」落到真实 RAGFlow 上，覆盖解析失败回写、outbox 重试退避、RAGFlow 不可用时的接口语义。
+
+**隔离方式**
+
+```bash
+# 副本库（真实库 data/app.db 全程只读复制，未打开写入）
+cp data/app.db %TEMP%/pakp-failtest/app.db
+
+# 另起实例：mock 身份 + 副本库 + 独立构建目录，端口 3135
+AUTH_MODE=mock DATABASE_PATH=%TEMP%/pakp-failtest/app.db NEXT_DIST_DIR=.next-failtest \
+  npm run dev -- -p 3135
+```
+
+副本里 `mock-local-user` 名下没有任何对象（真实对象属于 Logto 的 sub），因此所有写操作天然落在真实数据之外；RAGFlow 用真实容器（9380）。测试对象与文档在结束时删除，临时库 / 构建目录 / 日志已清理。
+
+**基线（RAGFlow 在线）**
+
+```text
+POST /api/objects                              → 201，对象 01M79SCW5C0J38QY7KZSBM7XWS
+POST /api/objects/{id}/content (upload.md)     → 201，1.30s，documentId 4aa086f4…
+POST /api/parse/run                            → {"checked":1,"succeeded":1,"failed":0}
+GET  /api/objects/{id}/content                 → parseStatus=succeeded
+GET  /api/search?q=安装&mode=semantic          → 首次 timeout（冷启动），第 2、3 次 status=ok
+```
+
+**① RAGFlow 不可用（`docker stop ragflow-server`，9380 拒连）**
+
+```text
+POST /api/objects/{id}/content  → 500，0.05s
+  {"error":{"code":"INTERNAL","message":"RAGFlow 请求失败：GET /api/v1/datasets?…",
+            "details":{"cause":"fetch failed"}}}
+GET  /api/search?q=…&mode=semantic → semantic {"status":"unavailable"}
+GET  /api/search?q=RAGFlow&mode=hybrid → total 1，counts.lexical 1，semantic unavailable
+  /search 页 SSR 含「语义检索暂不可用，当前只显示关键词匹配结果。」
+GET  /api/graph/status          → 200（只读本地库）
+GET  /api/objects               → 200
+GET  /graph                     → 200，33876 字节（图谱后端是 LightRAG，与 RAGFlow 无关）
+```
+
+**② outbox 退避与恢复**
+
+```text
+PATCH /api/objects/{id}  (title, expectedRevision=1) → 200，入队 upsert
+停机后第 1 次投递 → attempts=1，last_error=「RAGFlow 请求失败：PUT /api/v1/datasets/…/documents/4aa086f4…」，
+                   available_at = updated_at + 60s
+停机后第 2 次投递 → attempts=2，同上错误，available_at = updated_at + 120s
+docker start ragflow-server（约 42s 后 9380 恢复 200）
+恢复后第 3 次投递 → state=done，attempts=3，last_error=null
+content_refs.sync_state → synced，last_synced_at 更新
+```
+
+**③ 解析失败回写**
+
+```text
+POST /api/objects/{id}/content (broken.pdf, 结构损坏) → 201（RAGFlow 接受上传）
+POST /api/parse/run × 2 → running=1
+POST /api/parse/run × 3 → {"failed":1,"errors":[{"refId":"01M79SP5…","documentId":"ed9509fc…",
+                            "message":"14:32:18 [ERROR][Exception]: cannot convert float NaN to integer"}]}
+GET  /api/objects/{id}/content → attachment broken.pdf | parseStatus=failed | parseError=上述原始日志
+```
+
+不支持扩展名（`broken.bin`）在**上传阶段**就被 RAGFlow 拒绝：`500 INTERNAL`，`details.code=500`，message 含 "This type of file has not been supported yet!"——记为问题 108。
+
+**④ 清理与收尾**
+
+```text
+DELETE /api/objects/{id}?expectedRevision=2 → 204
+POST /api/sync/run → delete 任务 state=done，两条 content_refs 均 sync_state=deleted
+停止 3135 实例；删除 .next-failtest、failtest*.log、%TEMP%/pakp-failtest
+git restore next-env.d.ts tsconfig.json   # 测试实例改写了 distDir 指向，恢复为已提交版本
+powershell -ExecutionPolicy Bypass -File scripts/autostart.ps1 -App
+  → Logto / RAGFlow / LightRAG embedding / LightRAG / 应用(3000) 全部 up
+GET /api/health → {"status":"ok","authMode":"logto"}
+GET / /workspace /admin → 200；/search /graph 匿名 → 307 回首页
+```
+
+**新发现**：① 语义检索 3s 超时在 RAGFlow 冷启动时会误报 `timeout`（问题 107）；② 上游拒绝不支持的扩展名被包成 500（问题 108）。两条都只记录、未改代码。
+
 ## 附录：本轮常用命令
+
 
 ```bash
 # 质量门禁

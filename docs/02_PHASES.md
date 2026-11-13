@@ -388,7 +388,7 @@
 
 1. ~~**Phase 1 收尾**~~：已完成（2026-11-11）。测试账号 `pakp_test`（`sub` `7vjekboa76zu`）走通登录 → `/workspace`，`ownerSub` 已记入 [04_INTEGRATION.md](04_INTEGRATION.md)。
 2. ~~**前端登录态冒烟**~~：已完成。真实身份下 `/search`、`/workspace/[id]`、`/graph` 均渲染正常，创建资产 201、非法请求 400、匿名 401。
-3. **失败路径实测（待做）**：在真实 RAGFlow 上验证解析失败回写、outbox 重试退避、RAGFlow 不可用时接口的 500 语义；现有 12 项单测覆盖，但不等于真实故障实测。
+3. ~~**失败路径实测**~~：已完成（2026-11-13，真实 RAGFlow 容器 + 隔离实例实测）。① **RAGFlow 不可用时**：上传内容返回 `500 INTERNAL`，`details.cause` 为 `fetch failed` 且带失败端点；语义检索降级为 `semantic.status = "unavailable"`，`/search` 页显示「语义检索暂不可用，当前只显示关键词匹配结果」而关键词结果照常返回；`/api/graph/status`、`/api/objects` 等本地接口仍 200。② **outbox 退避**：RAGFlow 停机后 PATCH 对象入队 `upsert`，第 1 次失败 `attempts=1`、`available_at +60s`，第 2 次 `attempts=2`、`+120s`，`last_error` 记录失败端点；RAGFlow 恢复后第 3 次投递成功、`last_error` 清空、引用回到 `synced`。③ **解析失败回写**：上传结构损坏的 PDF（RAGFlow 接受上传但解析报错），轮询后 `parseStatus = "failed"`、`parseError` 写入 RAGFlow 原始报错「cannot convert float NaN to integer」，`/api/parse/run` 统计 `failed: 1` 并带 `refId` / `documentId`。④ 图谱页与 RAGFlow 无关（后端是 LightRAG），停机期间 `/graph` 正常渲染，这一条也一并确认。
 4. **多轮问答会话**：需要 chat model API key；当前 RAGFlow 只有本地 embedding，检索可用但生成不可用。
 5. **图谱强隔离（待做）**：读侧过滤已完成（ADR-011）；真正强隔离需按 `ownerSub` 拆分 LightRAG 实例 / 工作目录，触发条件是多账号同时使用图谱。
 6. ~~**生产运行检查**~~：已完成。`next build` + `next start`（3100）通过，health 200 / 首页 200 / 未登录 307 / sign-in 307 到 Logto；开机自启由 `scripts\autostart.ps1` + 启动文件夹负责。
