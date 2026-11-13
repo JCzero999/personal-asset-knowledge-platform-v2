@@ -1,5 +1,6 @@
 import { getDb } from "@/server/db/client";
 import { fail, fromError, ok } from "@/server/http/respond";
+import { requirePermission } from "@/server/authz";
 import { getSession } from "@/server/session";
 import { syncGraph } from "@/server/services/graph-service";
 
@@ -12,10 +13,11 @@ export const dynamic = "force-dynamic";
  */
 export async function POST() {
   const session = await getSession();
-  if (!session) return fail("UNAUTHORIZED", "请先登录");
+  const denied = requirePermission(session, "content:sync");
+  if (denied) return denied;
 
   try {
-    return ok(await syncGraph(getDb(), session.sub));
+    return ok(await syncGraph(getDb(), session!.sub));
   } catch (error) {
     return fromError(error);
   }

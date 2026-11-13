@@ -7,6 +7,10 @@ export default defineConfig([
   ...nextTypeScript,
   globalIgnores([
     ".next/**",
+    // `NEXT_DIST_DIR` 验收实例的第二份构建产物（scripts/phase5-capture.mjs）
+    ".next-mock/**",
+    // 生产运行时验收的构建产物（scripts/phase6d-capture.mjs 的 PHASE6D_PROD=1）
+    ".next-build/**",
     ".venv/**",
     "**/.venv/**",
     "agents/**",
@@ -14,4 +18,26 @@ export default defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    // 形态已经词表化（ADR-016 第 5 条）：业务代码只能读 /api/vocabulary 或
+    // listVocabulary()，禁止再把内置形态名单当常量 import 回来——那正是过去
+    // 「改一处漏一处」的来源。种子只允许在领域定义、迁移文档与测试里出现。
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/domain/objects.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/domain/objects"],
+              importNames: ["SYSTEM_FORMAT_SEEDS"],
+              message:
+                "形态词表请读 /api/vocabulary 或 listVocabulary()，不要再用代码常量（ADR-016）。",
+            },
+          ],
+        },
+      ],
+    },
+  },
 ]);

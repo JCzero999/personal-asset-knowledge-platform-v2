@@ -1,7 +1,7 @@
 import type { LogtoNextConfig } from "@logto/next";
 import { getLogtoContext } from "@logto/next/server-actions";
 
-import type { Session, SessionPort } from "../../ports/session";
+import type { SessionIdentity, SessionPort } from "../../ports/session";
 
 /**
  * Logto 适配器。
@@ -47,7 +47,7 @@ export function createLogtoConfig(): LogtoNextConfig {
 export class LogtoSessionAdapter implements SessionPort {
   constructor(private readonly config: LogtoNextConfig) {}
 
-  async getCurrentSession(): Promise<Session | null> {
+  async getCurrentSession(): Promise<SessionIdentity | null> {
     let context;
 
     try {

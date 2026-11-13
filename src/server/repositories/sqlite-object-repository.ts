@@ -1,22 +1,29 @@
-import { and, asc, desc, eq, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
 
 import {
+  isCategory,
   isLibrary,
-  isWorkFormat,
   isWorkStatus,
   type BusinessObject,
-  type WorkFormat,
+  type Category,
   type WorkStatus,
 } from "../../domain/objects";
+import { normalizeCategory, normalizeTag } from "../../domain/vocabulary";
 import { ConflictError, DomainError, NotFoundError, ValidationError } from "../../domain/errors";
 import { assertTransition } from "../../domain/workflow";
+import type { ActorContext } from "../authz";
+import { writeAudit } from "../services/audit-service";
 import type { AppDatabase } from "../db/client";
 import { ulid } from "../db/id";
 import { translateSqliteError } from "./sqlite-errors";
+import { replaceObjectTags } from "./tag-links";
 import {
+  categories,
   libraryEvents,
+  objectTags,
   objects,
   syncJobs,
+  tags,
   type LibraryEventRow,
   type NewObjectRow,
   type ObjectRow,
@@ -25,11 +32,16 @@ import type {
   ChangeLibraryInput,
   ChangeStatusInput,
   CreateObjectInput,
+  LexicalCandidate,
+  LexicalSearchInput,
+  LexicalSearchResult,
+  LexicalTermFilter,
   LibraryChangeEvent,
   ListObjectsQuery,
   ObjectRepository,
   UpdateObjectInput,
 } from "../ports/object-repository";
+import { normalizeSearchText } from "../../lib/search-query";
 
 /** better-sqlite3 事务里的 drizzle 句柄，仅供同步写入使用。 */
 type Tx = Parameters<Parameters<AppDatabase["transaction"]>[0]>[0];
@@ -72,6 +84,44 @@ function enqueueSyncJob(
  * - 时间字段一律由调用方或统一 now() 注入，避免领域层依赖时钟。
  */
 
+/**
+ * 一个检索词的 SQL 条件（ADR-024 第 1、3 条）。
+ *
+ * 全部是参数化 `instr()` 子串匹配：中文没有空格分词，2 字词用 FTS5
+ * 反而失效；`instr` 也不需要转义 `%` / `_`。分类 / 标签读 `normalized`
+ * 列，改名后立即生效，没有第二套索引要同步。
+ */
+function lexicalTermCondition(term: LexicalTermFilter): SQL {
+  const fields = term.field ? [term.field] : (["title", "description", "category", "tag"] as const);
+  const parts: SQL[] = [];
+
+  for (const field of fields) {
+    switch (field) {
+      case "title":
+        parts.push(sql`instr(coalesce(${objects.titleNorm}, ''), ${term.value}) > 0`);
+        break;
+      case "description":
+        parts.push(sql`instr(coalesce(${objects.descriptionNorm}, ''), ${term.value}) > 0`);
+        break;
+      case "category":
+        parts.push(sql`instr(coalesce(${categories.normalized}, ''), ${term.value}) > 0`);
+        break;
+      case "tag":
+        parts.push(sql`exists (
+          select 1 from ${objectTags}
+          inner join ${tags} on ${tags.id} = ${objectTags.tagId}
+          where ${objectTags.objectId} = ${objects.id}
+            and instr(${tags.normalized}, ${term.value}) > 0
+        )`);
+        break;
+    }
+  }
+
+  const any = sql.join(parts, sql` or `);
+
+  return term.negated ? sql`not (${any})` : sql`(${any})`;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -81,7 +131,33 @@ function likePattern(value: string): string {
   return `%${value.replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
 }
 
-function toObject(row: ObjectRow): BusinessObject {
+/**
+ * 标签水合：对外仍是 `tags: string[]`（ADR-016 第 4 条），真相源改成
+ * `object_tags` 多对多。一次查询取回这批对象的全部标签，再在内存里分组。
+ */
+function loadTagLabels(db: AppDatabase, objectIds: string[]): Map<string, string[]> {
+  const grouped = new Map<string, string[]>();
+
+  if (objectIds.length === 0) return grouped;
+
+  const rows = db
+    .select({ objectId: objectTags.objectId, label: tags.label })
+    .from(objectTags)
+    .innerJoin(tags, eq(tags.id, objectTags.tagId))
+    .where(inArray(objectTags.objectId, objectIds))
+    .orderBy(asc(tags.sortOrder), asc(tags.label))
+    .all();
+
+  for (const row of rows) {
+    const list = grouped.get(row.objectId) ?? [];
+    list.push(row.label);
+    grouped.set(row.objectId, list);
+  }
+
+  return grouped;
+}
+
+function toObject(row: ObjectRow, tagLabels: string[]): BusinessObject {
   const base = {
     id: row.id,
     title: row.title,
@@ -89,9 +165,8 @@ function toObject(row: ObjectRow): BusinessObject {
     library: row.library as BusinessObject["library"],
     source: row.source as BusinessObject["source"],
     origin: row.origin as BusinessObject["origin"],
-    primaryCategory: row.primaryCategory,
-    categories: row.categories ?? [],
-    tags: row.tags ?? [],
+    category: row.categoryCode,
+    tags: tagLabels,
     priority: row.priority as BusinessObject["priority"],
     archivedAt: row.archivedAt,
     libraryChangedAt: row.libraryChangedAt,
@@ -106,7 +181,7 @@ function toObject(row: ObjectRow): BusinessObject {
     return {
       ...base,
       type: "work",
-      format: row.format as WorkFormat,
+      category: row.categoryCode as Category,
       status: row.status as WorkStatus,
       sourceNote: row.sourceNote,
     };
@@ -115,7 +190,7 @@ function toObject(row: ObjectRow): BusinessObject {
   return {
     ...base,
     type: "asset",
-    format: null,
+    category: row.categoryCode,
     status: null,
     sourceNote: null,
   };
@@ -138,17 +213,20 @@ export class SqliteObjectRepository implements ObjectRepository {
 
   async create(input: CreateObjectInput): Promise<BusinessObject> {
     const now = input.now ?? nowIso();
-    const categories = [...(input.categories ?? [])];
     const isWork = input.type === "work";
 
-    if (!isWork && (input.format ?? input.sourceNote) != null) {
-      throw new ValidationError("资产不允许携带 format / sourceNote", {
+    if (!isWork && input.sourceNote != null) {
+      throw new ValidationError("资产不允许携带 sourceNote", {
         type: input.type,
       });
     }
 
-    if (isWork && !isWorkFormat(input.format)) {
-      throw new ValidationError("作品必须提供合法的 format", { format: input.format });
+    if (isWork && !isCategory(input.category)) {
+      throw new ValidationError("作品必须提供合法的 category", { category: input.category });
+    }
+
+    if (!isWork && input.category != null && !isCategory(input.category)) {
+      throw new ValidationError("非法的分类", { category: input.category });
     }
 
     const row: NewObjectRow = {
@@ -156,12 +234,13 @@ export class SqliteObjectRepository implements ObjectRepository {
       type: input.type,
       title: input.title,
       description: input.description ?? null,
+      // 影子列与主列同一函数生成（ADR-024 风险 S1）。
+      titleNorm: normalizeSearchText(input.title),
+      descriptionNorm: input.description ? normalizeSearchText(input.description) : null,
       library: input.library,
       source: input.source ?? "handwritten",
       origin: input.origin ?? "self",
-      primaryCategory: categories[0] ?? null,
-      categories,
-      tags: [...(input.tags ?? [])],
+      categoryCode: input.category ?? null,
       priority: input.priority ?? "medium",
       archivedAt: null,
       libraryChangedAt: null,
@@ -170,14 +249,19 @@ export class SqliteObjectRepository implements ObjectRepository {
       createdAt: now,
       updatedAt: now,
       deletedAt: null,
-      format: isWork ? (input.format as WorkFormat) : null,
       status: isWork ? "draft" : null,
       sourceNote: isWork ? (input.sourceNote ?? null) : null,
     };
 
     try {
-      const [created] = await this.db.insert(objects).values(row).returning();
-      return toObject(created);
+      // 对象与标签链接同事务：不能出现「对象写进去了、标签没写」。
+      const created = this.db.transaction((tx) => {
+        const inserted = tx.insert(objects).values(row).returning().get();
+        replaceObjectTags(tx, inserted.id, input.tags ?? []);
+        return inserted;
+      });
+
+      return toObject(created, loadTagLabels(this.db, [created.id]).get(created.id) ?? []);
     } catch (error) {
       return translateSqliteError(error);
     }
@@ -190,7 +274,9 @@ export class SqliteObjectRepository implements ObjectRepository {
       .where(and(eq(objects.id, id), isNull(objects.deletedAt)))
       .limit(1);
 
-    return row ? toObject(row) : null;
+    if (!row) return null;
+
+    return toObject(row, loadTagLabels(this.db, [row.id]).get(row.id) ?? []);
   }
 
   async list(query: ListObjectsQuery = {}): Promise<BusinessObject[]> {
@@ -230,14 +316,23 @@ export class SqliteObjectRepository implements ObjectRepository {
     }
 
     if (query.category) {
+      // ADR-023：按 code 匹配；旧书签里是中文名称时按 normalized 解析。
+      const normalized = normalizeCategory(query.category);
       conditions.push(
-        sql`exists (select 1 from json_each(${objects.categories}) where json_each.value = ${query.category})`,
+        sql`${objects.categoryCode} in (select ${categories.code} from ${categories}
+             where ${categories.code} = ${query.category}
+                or ${categories.normalized} = ${normalized})`,
       );
     }
 
     if (query.tag) {
+      // 标签已词表化：按归一化键解析到 tag_id 再 join，不再扫 objects.tags 的 JSON。
+      const normalized = normalizeTag(query.tag);
       conditions.push(
-        sql`exists (select 1 from json_each(${objects.tags}) where json_each.value = ${query.tag})`,
+        sql`exists (select 1 from ${objectTags}
+                   join ${tags} on ${tags.id} = ${objectTags.tagId}
+                   where ${objectTags.objectId} = ${objects.id}
+                     and ${tags.normalized} = ${normalized})`,
       );
     }
 
@@ -256,7 +351,54 @@ export class SqliteObjectRepository implements ObjectRepository {
       .limit(query.limit ?? 100)
       .offset(query.offset ?? 0);
 
-    return rows.map(toObject);
+    const tagGroups = loadTagLabels(
+      this.db,
+      rows.map((row) => row.id),
+    );
+
+    return rows.map((row) => toObject(row, tagGroups.get(row.id) ?? []));
+  }
+
+  async lexicalSearch(input: LexicalSearchInput): Promise<LexicalSearchResult> {
+    const limit = Math.max(1, Math.min(input.limit ?? 500, 500));
+
+    const conditions: SQL[] = [
+      eq(objects.ownerSub, input.ownerSub),
+      isNull(objects.deletedAt),
+      isNull(objects.archivedAt),
+    ];
+
+    if (input.library) {
+      conditions.push(eq(objects.library, input.library));
+    }
+
+    for (const term of input.terms) {
+      conditions.push(lexicalTermCondition(term));
+    }
+
+    // 多取一条判断是否被截断（ADR-024 第 9 条）。
+    const rows = this.db
+      .select({ object: objects, categoryLabel: categories.label })
+      .from(objects)
+      .leftJoin(categories, eq(categories.code, objects.categoryCode))
+      .where(and(...conditions))
+      .orderBy(desc(objects.updatedAt), asc(objects.id))
+      .limit(limit + 1)
+      .all();
+
+    const truncated = rows.length > limit;
+    const visible = truncated ? rows.slice(0, limit) : rows;
+    const tagGroups = loadTagLabels(
+      this.db,
+      visible.map((row) => row.object.id),
+    );
+
+    const candidates: LexicalCandidate[] = visible.map((row) => ({
+      object: toObject(row.object, tagGroups.get(row.object.id) ?? []),
+      categoryLabel: row.categoryLabel,
+    }));
+
+    return { candidates, truncated };
   }
 
   async update(id: string, input: UpdateObjectInput): Promise<BusinessObject> {
@@ -266,34 +408,40 @@ export class SqliteObjectRepository implements ObjectRepository {
       throw new NotFoundError("对象不存在或已删除", { id });
     }
 
-    const categories =
-      input.categories === undefined ? current.categories : [...input.categories];
+    const nextTitle = input.title ?? current.title;
+    const nextDescription =
+      input.description === undefined ? current.description : input.description;
 
     const patch: Partial<NewObjectRow> = {
-      title: input.title ?? current.title,
-      description:
-        input.description === undefined ? current.description : input.description,
+      title: nextTitle,
+      description: nextDescription,
+      titleNorm: normalizeSearchText(nextTitle),
+      descriptionNorm: nextDescription ? normalizeSearchText(nextDescription) : null,
       source: (input.source ?? current.source) as NewObjectRow["source"],
       origin: (input.origin ?? current.origin) as NewObjectRow["origin"],
-      categories,
-      primaryCategory: categories[0] ?? null,
-      tags: input.tags === undefined ? current.tags : [...input.tags],
       priority: (input.priority ?? current.priority) as NewObjectRow["priority"],
       updatedAt: input.now ?? nowIso(),
       revision: current.revision + 1,
     };
 
-    if (current.type === "work") {
-      if (input.format !== undefined) {
-        if (!isWorkFormat(input.format)) {
-          throw new ValidationError("非法的作品 format", { format: input.format });
+    if (input.category !== undefined) {
+      if (input.category === null) {
+        if (current.type === "work") {
+          throw new ValidationError("作品必须有分类", { category: null });
         }
-        patch.format = input.format;
+        patch.categoryCode = null;
+      } else {
+        if (!isCategory(input.category)) {
+          throw new ValidationError("非法的分类", { category: input.category });
+        }
+        patch.categoryCode = input.category;
       }
+    }
 
+    if (current.type === "work") {
       patch.sourceNote = input.sourceNote === undefined ? current.sourceNote : input.sourceNote;
-    } else if (input.format !== undefined || input.sourceNote !== undefined) {
-      throw new ValidationError("资产不允许携带 format / sourceNote", { type: current.type });
+    } else if (input.sourceNote !== undefined) {
+      throw new ValidationError("资产不允许携带 sourceNote", { type: current.type });
     }
 
     try {
@@ -327,10 +475,15 @@ export class SqliteObjectRepository implements ObjectRepository {
           patch.updatedAt as string,
         );
 
+        // 标签是独立的多对多表：整组替换，与对象写入同事务。
+        if (input.tags !== undefined) {
+          replaceObjectTags(tx, id, input.tags);
+        }
+
         return row;
       });
 
-      return toObject(updated);
+      return toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []);
     } catch (error) {
       return translateSqliteError(error);
     }
@@ -398,13 +551,17 @@ export class SqliteObjectRepository implements ObjectRepository {
         });
       }
 
-      return toObject(updated);
+      return toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []);
     } catch (error) {
       return translateSqliteError(error);
     }
   }
 
-  async softDelete(id: string, at: string = nowIso()): Promise<void> {
+  async softDelete(
+    id: string,
+    at: string = nowIso(),
+    actor?: ActorContext,
+  ): Promise<void> {
     const current = await this.findById(id);
 
     if (!current) {
@@ -425,6 +582,18 @@ export class SqliteObjectRepository implements ObjectRepository {
           throw new NotFoundError("对象不存在或已删除", { id });
         }
 
+        // 审计与业务写同事务：删了对象却没有删除记录是不可接受的。
+        if (actor) {
+          writeAudit(tx, {
+            actor,
+            action: "object.delete",
+            targetType: "object",
+            targetId: id,
+            detail: { type: current.type, title: current.title },
+            createdAt: at,
+          });
+        }
+
         enqueueSyncJob(tx, current.type, id, "delete", at);
       });
     } catch (error) {
@@ -435,7 +604,11 @@ export class SqliteObjectRepository implements ObjectRepository {
     }
   }
 
-  async archive(id: string, at: string = nowIso()): Promise<BusinessObject> {
+  async archive(
+    id: string,
+    at: string = nowIso(),
+    actor?: ActorContext,
+  ): Promise<BusinessObject> {
     const row = this.db.transaction((tx) => {
       const updated = tx
         .update(objects)
@@ -445,6 +618,16 @@ export class SqliteObjectRepository implements ObjectRepository {
         .get();
 
       if (updated) {
+        if (actor) {
+          writeAudit(tx, {
+            actor,
+            action: "object.archive",
+            targetType: "object",
+            targetId: id,
+            detail: { title: updated.title },
+            createdAt: at,
+          });
+        }
         enqueueSyncJob(tx, updated.type as "asset" | "work", id, "upsert", at);
       }
 
@@ -452,7 +635,7 @@ export class SqliteObjectRepository implements ObjectRepository {
     });
 
     if (row) {
-      return toObject(row);
+      return toObject(row, loadTagLabels(this.db, [row.id]).get(row.id) ?? []);
     }
 
     // 已归档则原样返回；不存在才报错。
@@ -464,7 +647,11 @@ export class SqliteObjectRepository implements ObjectRepository {
     return existing;
   }
 
-  async unarchive(id: string, at: string = nowIso()): Promise<BusinessObject> {
+  async unarchive(
+    id: string,
+    at: string = nowIso(),
+    actor?: ActorContext,
+  ): Promise<BusinessObject> {
     const row = this.db.transaction((tx) => {
       const updated = tx
         .update(objects)
@@ -474,6 +661,16 @@ export class SqliteObjectRepository implements ObjectRepository {
         .get();
 
       if (updated) {
+        if (actor) {
+          writeAudit(tx, {
+            actor,
+            action: "object.unarchive",
+            targetType: "object",
+            targetId: id,
+            detail: { title: updated.title },
+            createdAt: at,
+          });
+        }
         enqueueSyncJob(tx, updated.type as "asset" | "work", id, "upsert", at);
       }
 
@@ -481,7 +678,7 @@ export class SqliteObjectRepository implements ObjectRepository {
     });
 
     if (row) {
-      return toObject(row);
+      return toObject(row, loadTagLabels(this.db, [row.id]).get(row.id) ?? []);
     }
 
     const existing = await this.findById(id);
@@ -569,12 +766,27 @@ export class SqliteObjectRepository implements ObjectRepository {
           })
           .run();
 
+        // library_events 是领域记录，audit_events 是操作断言，两条一起写（ADR-019）。
+        writeAudit(tx, {
+          actor: { sub: input.actorSub, userId: input.actorUserId ?? null },
+          action: "object.library.change",
+          targetType: "object",
+          targetId: input.objectId,
+          detail: {
+            from: current.library,
+            to: input.to,
+            reason: input.reason,
+            title: current.title,
+          },
+          createdAt: now,
+        });
+
         enqueueSyncJob(tx, row.type as "asset" | "work", input.objectId, "upsert", now);
 
-        return toObject(row);
+        return row;
       });
 
-      return updated;
+      return toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []);
     } catch (error) {
       return translateSqliteError(error);
     }

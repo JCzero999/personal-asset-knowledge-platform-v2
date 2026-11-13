@@ -2,6 +2,7 @@ import { ValidationError } from "@/domain/errors";
 import { getDb } from "@/server/db/client";
 import { created, fail, fromError, ok } from "@/server/http/respond";
 import { listObjectContent, uploadObjectContent } from "@/server/services/content-service";
+import { requirePermission } from "@/server/authz";
 import { getSession } from "@/server/session";
 
 export const runtime = "nodejs";
@@ -13,11 +14,12 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getSession();
-  if (!session) return fail("UNAUTHORIZED", "请先登录");
+  const denied = requirePermission(session, "object:read");
+  if (denied) return denied;
 
   try {
     const { id } = await params;
-    return ok(await listObjectContent(getDb(), session.sub, id));
+    return ok(await listObjectContent(getDb(), session!.sub, id));
   } catch (error) {
     return fromError(error);
   }
@@ -29,14 +31,15 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getSession();
-  if (!session) return fail("UNAUTHORIZED", "请先登录");
+  const denied = requirePermission(session, "object:write");
+  if (denied) return denied;
 
   try {
     const { id } = await params;
     const formData = await request.formData().catch(() => {
       throw new ValidationError("请求体必须是 multipart/form-data");
     });
-    return created(await uploadObjectContent(getDb(), session.sub, id, formData));
+    return created(await uploadObjectContent(getDb(), session!.sub, id, formData));
   } catch (error) {
     return fromError(error);
   }

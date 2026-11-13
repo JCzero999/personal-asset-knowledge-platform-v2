@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识图谱 V2 · 视觉示意</title>
+<style>
+  :root{
+    --void:#050408; --canvas:#06050a; --surface:#0e0c13; --surface2:#16131d; --surface3:#1d1926;
+    --text1:#f3efe7; --text2:#c2b8ac; --text3:#93897e;
+    --line:#2a2433; --line-soft:#1c1824; --hairline:rgba(243,239,231,.10);
+    --gold:#e9c08a; --gold-300:#c79e68; --gold-700:#f6e3c6; --gold-050:#16110b;
+    --concept:#e9c08a; --person:#a99bc1; --org:#b08a6a; --work:#8fa6b8; --method:#9db39a; --other:#7c7385;
+    --glass:rgba(10,8,15,.78);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--void);color:var(--text1);
+    font-family:Inter,ui-sans-serif,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .caption{color:var(--text3);font-size:12px;letter-spacing:.04em;padding:14px 24px 8px}
+  .frame{width:1440px;height:900px;display:grid;grid-template-columns:76px 224px 1fr;
+    background:var(--void);overflow:hidden;position:relative}
+  .frame.mobile{width:390px;height:844px;grid-template-columns:76px 1fr;margin:0 24px 32px}
+  /* rail */
+  .rail{background:#0b0912;border-right:1px solid var(--line-soft);display:flex;flex-direction:column;
+    align-items:center;padding:16px 0;gap:6px}
+  .brand{width:36px;height:36px;border-radius:10px;border:1px solid var(--line);display:grid;place-items:center;margin-bottom:18px}
+  .brand span{width:14px;height:14px;border:1.5px solid var(--gold);border-radius:50%;position:relative}
+  .brand span:after{content:"";position:absolute;width:14px;height:14px;border:1.5px solid var(--gold);border-radius:50%;left:6px;top:4px;opacity:.6}
+  .rail a{width:44px;height:44px;border-radius:10px;display:grid;place-items:center;color:var(--text2);text-decoration:none;position:relative}
+  .rail a svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.6}
+  .rail a.on{background:var(--gold-050);color:var(--gold);border:1px solid #2b2117}
+  .rail .grow{flex:1}
+  .avatar{width:32px;height:32px;border-radius:50%;background:var(--surface3);border:1px solid var(--line);
+    display:grid;place-items:center;font-size:12px;color:var(--text2)}
+  /* directory */
+  .dir{background:var(--surface);border-right:1px solid var(--line);padding:20px 14px}
+  .dir h2{font-size:16px;font-weight:600;margin:2px 0 2px 8px;letter-spacing:-.01em}
+  .dir .sub{font-size:12px;color:var(--text3);margin:0 0 22px 8px}
+  .dir .grp{font-size:11px;letter-spacing:.08em;color:var(--text3);margin:18px 0 6px 8px}
+  .dir button{display:flex;width:100%;align-items:center;justify-content:space-between;gap:8px;
+    background:none;border:0;color:var(--text2);font:inherit;font-size:13px;text-align:left;
+    padding:9px 10px;border-radius:8px;cursor:pointer}
+  .dir button:hover{background:var(--surface2);color:var(--text1)}
+  .dir button.on{background:var(--gold-050);color:var(--gold-700);font-weight:600;box-shadow:inset 2px 0 0 var(--gold)}
+  .dir .count{font-size:11px;color:var(--text3)}
+  .dir .foot{font-size:11px;color:var(--text3);line-height:1.7;border-top:1px solid var(--line-soft);
+    padding:12px 8px 0;margin-top:18px}
+  /* content */
+  .content{padding:16px;display:flex;flex-direction:column;gap:12px;min-width:0;position:relative}
+  .toolbar{height:56px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 8px}
+  .toolbar h1{font-size:20px;font-weight:600;letter-spacing:-.015em;margin:0;display:flex;align-items:baseline;gap:12px}
+  .toolbar h1 small{font-size:12px;font-weight:400;letter-spacing:0;color:var(--text3)}
+  .tools{display:flex;align-items:center;gap:10px}
+  .chip{height:28px;display:inline-flex;align-items:center;gap:7px;padding:0 11px;border-radius:999px;
+    background:var(--surface);border:1px solid var(--line);font-size:12px;color:var(--text2)}
+  .dot{width:7px;height:7px;border-radius:50%;background:#8fd3ae;box-shadow:0 0 8px rgba(143,211,174,.35)}
+  .btn{height:36px;padding:0 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface);
+    color:var(--text1);font:inherit;font-size:13px;display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+  .btn:hover{border-color:#3a3244;background:var(--surface2)}
+  /* stage */
+  .stage-wrap{display:flex;gap:12px;flex:1;min-height:0}
+  .stage{position:relative;flex:1;min-width:0;border-radius:14px;border:1px solid var(--line);overflow:hidden;
+    background:
+      radial-gradient(620px 520px at 78% 18%, rgba(233,192,138,.045), transparent 62%),
+      radial-gradient(520px 460px at 12% 82%, rgba(126,113,140,.05), transparent 60%),
+      var(--canvas);
+    box-shadow:inset 0 1px 0 rgba(243,239,231,.03), inset 0 0 80px rgba(0,0,0,.35)}
+  .stage svg.graph{position:absolute;inset:0;width:100%;height:100%}
+  .stars{position:absolute;inset:0;pointer-events:none;opacity:.9}
+  /* overlays */
+  .search{position:absolute;left:16px;top:16px;width:300px;height:40px;border-radius:10px;
+    background:var(--glass);border:1px solid var(--line);display:flex;align-items:center;gap:8px;
+    padding:0 12px;color:var(--text3);font-size:13px;backdrop-filter:blur(14px)}
+  .search .k{margin-left:auto;font-size:11px;border:1px solid var(--line);border-radius:5px;padding:1px 5px;color:var(--text3)}
+  .chips{position:absolute;left:16px;top:68px;display:flex;flex-wrap:wrap;gap:6px;max-width:420px}
+  .tchip{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px 0 8px;border-radius:999px;
+    background:rgba(14,12,19,.72);border:1px solid var(--line);color:var(--text2);font-size:12px;cursor:pointer;backdrop-filter:blur(10px)}
+  .tchip.on{background:var(--gold-050);border-color:#4a3a25;color:var(--gold-700)}
+  .tchip i{width:8px;height:8px;display:block;border-radius:50%}
+  .tchip .sq{border-radius:2px}
+  .tchip .dia{transform:rotate(45deg);border-radius:1px}
+  .tchip .hex{clip-path:polygon(50% 0,93% 25%,93% 75%,50% 100%,7% 75%,7% 25%);border-radius:0;width:9px;height:9px}
+  .tchip .ring{border-radius:50%;background:transparent!important;border:1.5px solid var(--person);width:9px;height:9px}
+  .zoomer{position:absolute;right:16px;top:16px;width:40px;border-radius:10px;overflow:hidden;
+    background:var(--glass);border:1px solid var(--line);backdrop-filter:blur(14px)}
+  .zoomer button{width:40px;height:40px;display:grid;place-items:center;background:none;border:0;color:var(--text2);font-size:17px;cursor:pointer}
+  .zoomer button+button{border-top:1px solid var(--line-soft)}
+  .zoomer button:hover{background:var(--surface2);color:var(--text1)}
+  .minimap{position:absolute;right:16px;bottom:76px;width:180px;height:116px;border-radius:10px;
+    background:rgba(8,7,13,.86);border:1px solid var(--line);overflow:hidden;backdrop-filter:blur(12px)}
+  .minimap svg{width:100%;height:100%}
+  .mini-view{fill:none;stroke:rgba(233,192,138,.55);stroke-width:1}
+  .dock{position:absolute;left:50%;transform:translateX(-50%);bottom:16px;width:560px;height:48px;
+    border-radius:12px;background:var(--glass);border:1px solid var(--line);display:flex;align-items:center;
+    gap:10px;padding:0 8px 0 14px;backdrop-filter:blur(14px);box-shadow:0 12px 32px rgba(0,0,0,.35)}
+  .dock .spark{color:var(--gold);display:grid;place-items:center}
+  .dock p{margin:0;font-size:13px;color:var(--text3);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dock .send{height:34px;padding:0 14px;border-radius:8px;background:var(--gold);color:#17110a;font-size:12px;font-weight:600;border:0}
+  .hint{position:absolute;left:16px;bottom:18px;font-size:11px;color:var(--text3);letter-spacing:.04em}
+  /* inspector */
+  .inspector{width:340px;flex:0 0 340px;background:var(--surface);border:1px solid var(--line);border-radius:14px;
+    padding:18px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+  .insp-head{display:flex;align-items:flex-start;justify-content:space-between}
+  .type-badge{font-size:11px;letter-spacing:.06em;color:var(--gold);border:1px solid #4a3a25;background:var(--gold-050);
+    border-radius:999px;padding:3px 9px}
+  .insp-close{color:var(--text3);font-size:16px;line-height:1;background:none;border:0}
+  .insp h2{font-size:17px;font-weight:600;margin:2px 0 0;letter-spacing:-.01em}
+  .meta{font-size:12px;color:var(--text3);margin-top:4px}
+  .rule{height:1px;background:var(--line-soft)}
+  .desc{font-size:13px;line-height:1.8;color:var(--text2);margin:0}
+  .rels{display:flex;flex-direction:column;gap:2px;overflow:hidden}
+  .rel{display:flex;align-items:center;gap:9px;height:42px;border-radius:8px;padding:0 8px;font-size:13px;color:var(--text2)}
+  .rel:hover{background:var(--surface2);color:var(--text1)}
+  .rel .n{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .rel .verb{font-size:11px;color:var(--text3);margin-left:auto;padding-left:8px;white-space:nowrap}
+  .rel .arrow{color:var(--text3);font-size:12px}
+  .insp-actions{display:flex;gap:8px;margin-top:auto;padding-top:14px}
+  .insp-actions .btn{flex:1;justify-content:center;height:34px;font-size:12px}
+  .insp-actions .primary{background:var(--gold);border-color:var(--gold);color:#17110a;font-weight:600}
+  /* svg */
+  .edge{fill:none;stroke:rgba(243,239,231,.18);stroke-width:1}
+  .edge.strong{stroke:rgba(243,239,231,.30);stroke-width:1.25}
+  .edge.hot{stroke:rgba(233,192,138,.72);stroke-width:1.6}
+  .edge.faint{opacity:.35}
+  .label{font-size:11px;fill:var(--text2);paint-order:stroke;stroke:var(--canvas);stroke-width:3px;stroke-linejoin:round}
+  .label.center{font-size:12px;font-weight:600;fill:var(--text1)}
+  .node{cursor:pointer}
+  .node .body{transition:stroke .12s ease, fill .12s ease}
+  .node:hover .body{stroke-width:2}
+  .node.dim{opacity:.3}
+  .core{pointer-events:none}
+  .sel-ring{fill:none;stroke:var(--gold);stroke-width:1.5}
+  .halo{opacity:.14}
+  /* mobile bits */
+  .mobile .content{padding:0 12px}
+  .mobile .toolbar{height:48px;padding:0 2px}
+  .mobile .toolbar h1{font-size:17px;gap:8px}
+  .mobile .toolbar h1 small{display:none}
+  .mobile .chip{height:24px;font-size:11px;padding:0 9px}
+  .mobile .stage{border-radius:12px}
+  .mobile .search{left:12px;top:12px;width:266px;height:38px;font-size:12px}
+  .mobile .chips{display:none}
+  .mobile .zoomer{display:none}
+  .mobile .minimap{display:none}
+  .mobile .dock{width:calc(100% - 24px);height:46px;bottom:12px;border-radius:11px}
+  .mobile .dock p{font-size:12px}
+  .mobile .hint{display:none}
+  .mobile .fab{position:absolute;right:12px;bottom:74px;width:44px;height:44px;border-radius:50%;
+    background:var(--gold);color:#17110a;display:grid;place-items:center;font-size:20px;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+  .note{width:1440px;padding:0 24px 10px;font-size:11px;color:var(--text3);line-height:1.7}
+  @media (max-width:600px){
+    body{width:390px;overflow-x:hidden}
+    .frame:not(.mobile), .note, .caption:first-of-type{display:none}
+    .frame.mobile{margin:0;width:390px;height:844px;border:0}
+    .caption{padding:10px 12px 6px}
+  }
+</style>
+</head>
+<body>
+
+<div class="caption">知识图谱 V2 · 桌面 1440×900（选中「品牌色」· 示意图，数据为虚构）</div>
+<div class="frame">
+  <aside class="rail">
+    <div class="brand"><span></span></div>
+    <a href="#" title="工作台"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></a>
+    <a href="#" title="检索"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></a>
+    <a href="#" class="on" title="图谱"><svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M12 6.7v4.1M12 10.8L6.4 16M12 10.8l5.6 5.2"/></svg></a>
+    <a href="#" title="系统"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg></a>
+    <div class="grow"></div>
+    <div class="avatar">林</div>
+  </aside>
+
+  <aside class="dir">
+    <h2>知识图谱</h2>
+    <p class="sub">实体与关系</p>
+    <div class="grp">浏览</div>
+    <button>工作台</button>
+    <button class="on">实体与关系</button>
+    <button>问图谱</button>
+    <div class="grp">词表</div>
+    <button>管理形态 <span class="count">7</span></button>
+    <button>管理标签 <span class="count">14</span></button>
+    <div class="foot">图谱来自已解析内容的实体抽取，本机抽取较慢。</div>
+  </aside>
+
+  <main class="content">
+    <header class="toolbar">
+      <h1>知识图谱 <small>36 个实体 · 128 条关系</small></h1>
+      <div class="tools">
+        <span class="chip"><span class="dot"></span>已同步 36</span>
+        <button class="btn">同步</button>
+      </div>
+    </header>
+
+    <div class="stage-wrap">
+      <section class="stage">
+        <svg class="stars" width="100%" height="100%">
+          <defs>
+            <pattern id="dust" width="230" height="230" patternUnits="userSpaceOnUse">
+              <circle cx="24" cy="38" r=".8" fill="#f3efe7" opacity=".18"/>
+              <circle cx="118" cy="82" r=".6" fill="#f3efe7" opacity=".12"/>
+              <circle cx="188" cy="26" r="1" fill="#e9c08a" opacity=".14"/>
+              <circle cx="72" cy="160" r=".7" fill="#f3efe7" opacity=".14"/>
+              <circle cx="204" cy="188" r=".6" fill="#c2b8ac" opacity=".10"/>
+              <circle cx="150" cy="212" r=".9" fill="#f3efe7" opacity=".10"/>
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#dust)"/>
+        </svg>
+
+        <svg class="graph" viewBox="0 0 756 812" preserveAspectRatio="xMidYMid meet" aria-label="知识图谱示意">
+          <defs>
+            <radialGradient id="haloGold"><stop offset="0" stop-color="#e9c08a" stop-opacity=".55"/><stop offset="1" stop-color="#e9c08a" stop-opacity="0"/></radialGradient>
+            <radialGradient id="haloViolet"><stop offset="0" stop-color="#a99bc1" stop-opacity=".5"/><stop offset="1" stop-color="#a99bc1" stop-opacity="0"/></radialGradient>
+          </defs>
+
+          <!-- edges -->
+          <g>
+            <path class="edge hot" d="M232 392 C 310 360, 360 336, 424 316"/>
+            <path class="edge strong" d="M232 392 C 300 430, 330 486, 372 534"/>
+            <path class="edge" d="M232 392 C 180 330, 150 290, 128 252"/>
+            <path class="edge" d="M232 392 C 180 450, 140 500, 112 548"/>
+            <path class="edge" d="M424 316 C 470 270, 505 248, 548 232"/>
+            <path class="edge" d="M424 316 C 470 350, 505 380, 552 402"/>
+            <path class="edge" d="M372 534 C 430 560, 480 570, 530 566"/>
+            <path class="edge faint" d="M548 232 C 600 280, 610 330, 552 402"/>
+            <path class="edge" d="M128 252 C 170 210, 220 196, 270 200"/>
+            <path class="edge faint" d="M112 548 C 160 600, 230 620, 300 614"/>
+            <path class="edge" d="M372 534 C 320 580, 300 600, 300 614"/>
+            <path class="edge faint" d="M552 402 C 620 420, 650 450, 660 480"/>
+          </g>
+
+          <!-- nodes -->
+          <!-- center -->
+          <g class="node">
+            <circle cx="232" cy="392" r="49" fill="url(#haloGold)" opacity=".10"/>
+            <circle class="body" cx="232" cy="392" r="26" fill="#16131d" stroke="#e9c08a" stroke-width="2"/>
+            <circle class="core" cx="232" cy="392" r="8" fill="#e9c08a"/>
+            <text class="label center" x="232" y="440" text-anchor="middle">设计系统</text>
+          </g>
+          <!-- selected 品牌色 -->
+          <g class="node">
+            <circle cx="424" cy="316" r="34" fill="url(#haloGold)" class="halo"/>
+            <circle class="sel-ring" cx="424" cy="316" r="20"/>
+            <circle class="body" cx="424" cy="316" r="15" fill="#16131d" stroke="#e9c08a" stroke-width="2"/>
+            <circle class="core" cx="424" cy="316" r="4.5" fill="#e9c08a"/>
+            <text class="label center" x="424" y="350" text-anchor="middle">品牌色</text>
+          </g>
+          <!-- hop1 -->
+          <g class="node">
+            <rect class="body" x="352" y="514" width="26" height="26" rx="8" fill="#16131d" stroke="#8fa6b8" stroke-width="1.5"/>
+            <circle class="core" cx="365" cy="527" r="3.4" fill="#8fa6b8"/>
+            <text class="label" x="365" y="562" text-anchor="middle">组件库</text>
+          </g>
+          <g class="node">
+            <polygon class="body" points="128,228 148,252 128,276 108,252" fill="#16131d" stroke="#9db39a" stroke-width="1.5"/>
+            <circle class="core" cx="128" cy="252" r="3" fill="#9db39a"/>
+            <text class="label" x="128" y="296" text-anchor="middle">设计原则</text>
+          </g>
+          <g class="node">
+            <polygon class="body" points="112,530 129,538 129,558 112,566 95,558 95,538" fill="#16131d" stroke="#9db39a" stroke-width="1.5"/>
+            <circle class="core" cx="112" cy="548" r="3" fill="#9db39a"/>
+            <text class="label" x="112" y="588" text-anchor="middle">字体规范</text>
+          </g>
+          <!-- hop2 -->
+          <g class="node">
+            <circle class="body" cx="548" cy="232" r="12" fill="#16131d" stroke="#e9c08a" stroke-width="1.5"/>
+            <circle class="core" cx="548" cy="232" r="3.6" fill="#e9c08a"/>
+            <text class="label" x="548" y="264" text-anchor="middle">暖金</text>
+          </g>
+          <g class="node">
+            <circle class="body" cx="552" cy="402" r="13" fill="#16131d" stroke="#e9c08a" stroke-width="1.5"/>
+            <circle class="core" cx="552" cy="402" r="3.9" fill="#e9c08a"/>
+            <text class="label" x="552" y="434" text-anchor="middle">深空主题</text>
+          </g>
+          <g class="node">
+            <circle class="body" cx="530" cy="566" r="11" fill="#16131d" stroke="#e9c08a" stroke-width="1.5"/>
+            <circle class="core" cx="530" cy="566" r="3.3" fill="#e9c08a"/>
+            <text class="label" x="530" y="597" text-anchor="middle">对比度</text>
+          </g>
+          <g class="node">
+            <circle class="body" cx="270" cy="200" r="10" fill="#16131d" stroke="#e9c08a" stroke-width="1.5"/>
+            <circle class="core" cx="270" cy="200" r="3" fill="#e9c08a"/>
+            <text class="label" x="270" y="230" text-anchor="middle">排版网格</text>
+          </g>
+          <g class="node">
+            <circle class="body" cx="300" cy="614" r="12" fill="#16131d" stroke="#a99bc1" stroke-width="1.6"/>
+            <text class="label" x="300" y="646" text-anchor="middle">林一</text>
+          </g>
+          <g class="node dim">
+            <rect class="body" x="648" y="468" width="24" height="24" rx="7" fill="#16131d" stroke="#b08a6a" stroke-width="1.5"/>
+            <circle class="core" cx="660" cy="480" r="3.2" fill="#b08a6a"/>
+            <text class="label" x="660" y="512" text-anchor="middle">设计小组</text>
+          </g>
+        </svg>
+
+        <div class="search">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+          搜索实体
+          <span class="k">⌘K</span>
+        </div>
+
+        <div class="chips" role="list">
+          <button class="tchip on">全部 <span style="color:var(--text3)">12</span></button>
+          <button class="tchip"><i style="background:var(--concept)"></i>概念</button>
+          <button class="tchip"><i class="ring"></i>人物</button>
+          <button class="tchip"><i class="sq" style="background:var(--org)"></i>组织</button>
+          <button class="tchip"><i class="dia" style="background:var(--work)"></i>作品</button>
+          <button class="tchip"><i class="hex" style="background:var(--method)"></i>方法</button>
+        </div>
+
+        <div class="zoomer">
+          <button aria-label="放大">+</button>
+          <button aria-label="缩小">−</button>
+          <button aria-label="适配" style="font-size:13px">⤢</button>
+        </div>
+
+        <div class="minimap">
+          <svg viewBox="0 0 180 116">
+            <g transform="translate(20 8) scale(1.12)">
+              <path d="M40 58 L96 42 M40 58 L78 82 M40 58 L26 34 M40 58 L22 84 M96 42 L122 28 M96 42 L124 62 M78 82 L112 84 M26 34 L52 26 M22 84 L54 92" stroke="rgba(243,239,231,.16)" stroke-width=".6" fill="none"/>
+              <circle cx="40" cy="58" r="3.2" fill="#e9c08a"/>
+              <circle cx="96" cy="42" r="2" fill="#e9c08a"/>
+              <circle cx="78" cy="82" r="2" fill="#8fa6b8"/>
+              <circle cx="26" cy="34" r="1.8" fill="#9db39a"/>
+              <circle cx="22" cy="84" r="1.8" fill="#9db39a"/>
+              <circle cx="122" cy="28" r="1.5" fill="#e9c08a"/>
+              <circle cx="124" cy="62" r="1.6" fill="#e9c08a"/>
+              <circle cx="112" cy="84" r="1.5" fill="#e9c08a"/>
+              <circle cx="52" cy="26" r="1.4" fill="#e9c08a"/>
+              <circle cx="54" cy="92" r="1.4" fill="#a99bc1"/>
+            </g>
+            <rect class="mini-view" x="34" y="20" width="96" height="72" rx="2"/>
+          </svg>
+        </div>
+
+        <div class="dock">
+          <span class="spark"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"/></svg></span>
+          <p>问图谱：例如「设计系统里品牌色是怎么定义的？」</p>
+          <button class="send">提问</button>
+        </div>
+
+        <div style="position:absolute;right:68px;top:26px;font-size:11px;color:var(--text3);letter-spacing:.04em;white-space:nowrap;pointer-events:none">滚轮缩放 · 拖拽平移 · 双击展开</div>
+      </section>
+
+      <aside class="inspector">
+        <div class="insp-head">
+          <span class="type-badge">概念</span>
+          <button class="insp-close" aria-label="关闭">×</button>
+        </div>
+        <div>
+          <h2>品牌色</h2>
+          <div class="meta">度 6 · 1 跳邻居 4 · 来源 3 个对象</div>
+        </div>
+        <div class="rule"></div>
+        <p class="desc">全站唯一的强调色，用于主按钮、选中态与焦点环。深空主题下取暖金 #E9C08A，金色面积不超过单屏 5%。</p>
+        <div class="rule"></div>
+        <div style="font-size:11px;letter-spacing:.06em;color:var(--text3);margin-bottom:4px">关系 6</div>
+        <div class="rels">
+          <div class="rel"><span class="n" style="background:var(--concept)"></span>设计系统<span class="verb">属于</span><span class="arrow">→</span></div>
+          <div class="rel"><span class="n" style="background:var(--method)"></span>对比度<span class="verb">约束于</span><span class="arrow">→</span></div>
+          <div class="rel"><span class="n" style="background:var(--work)"></span>组件库<span class="verb">使用</span><span class="arrow">→</span></div>
+          <div class="rel"><span class="n" style="background:var(--concept)"></span>暖金<span class="verb">取值为</span><span class="arrow">→</span></div>
+          <div class="rel"><span class="n" style="background:var(--concept)"></span>深空主题<span class="verb">属于</span><span class="arrow">→</span></div>
+        </div>
+        <div class="insp-actions">
+          <button class="btn primary">以此为中心</button>
+          <button class="btn">钉住</button>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+<div class="note">视觉说明：画布 #06050a + 固定星尘；节点为「深色盘 + 类型色细描边 + 30% 内核」；选中仅加一圈金环与 ≤16% 光晕；类型同时用形状编码。所有数据与实体名均为示意。</div>
+
+<div class="caption">移动 390×844（默认 1 跳 · 底部问答 · 抽屉收起）</div>
+<div class="frame mobile">
+  <aside class="rail">
+    <div class="brand"><span></span></div>
+    <a href="#"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></a>
+    <a href="#"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></a>
+    <a href="#" class="on"><svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path d="M12 6.7v4.1M12 10.8L6.4 16M12 10.8l5.6 5.2"/></svg></a>
+    <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></svg></a>
+    <div class="grow"></div>
+    <div class="avatar">林</div>
+  </aside>
+  <main class="content">
+    <header class="toolbar">
+      <h1>知识图谱</h1>
+      <span class="chip"><span class="dot"></span>已同步</span>
+    </header>
+    <section class="stage">
+      <svg class="stars" width="100%" height="100%"><rect width="100%" height="100%" fill="url(#dust)"/></svg>
+      <svg class="graph" viewBox="0 0 290 724" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="haloGoldM"><stop offset="0" stop-color="#e9c08a" stop-opacity=".55"/><stop offset="1" stop-color="#e9c08a" stop-opacity="0"/></radialGradient>
+        </defs>
+        <g>
+          <path class="edge strong" d="M140 380 C 168 350, 188 316, 210 280"/>
+          <path class="edge hot" d="M140 380 C 166 420, 188 470, 208 505"/>
+          <path class="edge" d="M140 380 C 112 348, 92 300, 72 250"/>
+          <path class="edge" d="M140 380 C 112 430, 86 490, 68 530"/>
+          <path class="edge" d="M210 280 C 228 254, 244 226, 260 200"/>
+          <path class="edge faint" d="M208 505 C 222 540, 238 570, 252 590"/>
+        </g>
+        <g class="node">
+          <circle cx="140" cy="380" r="46" fill="url(#haloGoldM)" opacity=".10"/>
+          <circle class="body" cx="140" cy="380" r="26" fill="#16131d" stroke="#e9c08a" stroke-width="2"/>
+          <circle class="core" cx="140" cy="380" r="7.8" fill="#e9c08a"/>
+          <text class="label center" x="140" y="424" text-anchor="middle">设计系统</text>
+        </g>
+        <g class="node">
+          <circle cx="210" cy="280" r="26" fill="url(#haloGoldM)" class="halo"/>
+          <circle class="sel-ring" cx="210" cy="280" r="17"/>
+          <circle class="body" cx="210" cy="280" r="13" fill="#16131d" stroke="#e9c08a" stroke-width="2"/>
+          <circle class="core" cx="210" cy="280" r="3.9" fill="#e9c08a"/>
+          <text class="label center" x="210" y="311" text-anchor="middle">品牌色</text>
+        </g>
+        <g class="node">
+          <rect class="body" x="196" y="493" width="24" height="24" rx="7" fill="#16131d" stroke="#8fa6b8" stroke-width="1.5"/>
+          <circle class="core" cx="208" cy="505" r="3.2" fill="#8fa6b8"/>
+          <text class="label" x="208" y="538" text-anchor="middle">组件库</text>
+        </g>
+        <g class="node">
+          <polygon class="body" points="72,232 88,240 88,260 72,268 56,260 56,240" fill="#16131d" stroke="#9db39a" stroke-width="1.5"/>
+          <circle class="core" cx="72" cy="250" r="2.8" fill="#9db39a"/>
+          <text class="label" x="72" y="290" text-anchor="middle">设计原则</text>
+        </g>
+        <g class="node">
+          <polygon class="body" points="68,512 83,519 83,537 68,544 53,537 53,519" fill="#16131d" stroke="#9db39a" stroke-width="1.5"/>
+          <circle class="core" cx="68" cy="530" r="2.6" fill="#9db39a"/>
+          <text class="label" x="68" y="568" text-anchor="middle">字体规范</text>
+        </g>
+        <g class="node">
+          <circle class="body" cx="260" cy="200" r="11" fill="#16131d" stroke="#e9c08a" stroke-width="1.5"/>
+          <circle class="core" cx="260" cy="200" r="3.3" fill="#e9c08a"/>
+          <text class="label" x="260" y="230" text-anchor="middle">暖金</text>
+        </g>
+        <g class="node dim">
+          <circle class="body" cx="252" cy="590" r="12" fill="#16131d" stroke="#a99bc1" stroke-width="1.6"/>
+          <text class="label" x="252" y="622" text-anchor="middle">林一</text>
+        </g>
+      </svg>
+      <div class="search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+        搜索实体
+      </div>
+      <div class="fab">+</div>
+      <div class="dock">
+        <span class="spark"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8z"/></svg></span>
+        <p>问图谱…</p>
+        <button class="send">提问</button>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

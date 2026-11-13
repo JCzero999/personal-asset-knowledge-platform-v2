@@ -4,7 +4,6 @@ import {
   isObjectType,
   isWorkStatus,
   libraries,
-  workFormatValues,
   workStatuses,
   objectOrigins,
   priorities,
@@ -14,9 +13,15 @@ import {
   type ObjectSource,
   type ObjectType,
   type Priority,
-  type WorkFormat,
   type WorkStatus,
 } from "../../domain/objects";
+import {
+  MAX_TAG_LENGTH,
+  MAX_TAGS_PER_OBJECT,
+  normalizeTagList,
+  tagLabelProblem,
+} from "../../domain/vocabulary";
+import type { ActorContext } from "../authz";
 import type { AppDatabase } from "../db/client";
 import type {
   CreateObjectInput,
@@ -25,6 +30,7 @@ import type {
   UpdateObjectInput,
 } from "../ports/object-repository";
 import { SqliteObjectRepository } from "../repositories/sqlite-object-repository";
+import { listActiveCategoryCodes } from "./vocabulary-service";
 
 /**
  * 业务对象服务：把 HTTP 输入收敛成合法的创建参数，再交给仓储。
@@ -33,8 +39,6 @@ import { SqliteObjectRepository } from "../repositories/sqlite-object-repository
 
 const MAX_TITLE = 200;
 const MAX_DESCRIPTION = 5_000;
-const MAX_COLLECTION_ITEMS = 20;
-const MAX_ITEM_LENGTH = 40;
 
 function asRecord(body: unknown): Record<string, unknown> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -69,35 +73,37 @@ function readString(value: unknown, field: string, max: number, required = false
   return trimmed || null;
 }
 
-function readList(value: unknown, field: string): string[] {
+/**
+ * 标签：先按全局归一化规则去重（R2 规则 1–5），再校验长度与数量。
+ * 标签的真相源是 `object_tags`，写入由仓储在事务里完成。
+ */
+function readTags(value: unknown): string[] {
   if (value === undefined || value === null) {
     return [];
   }
 
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new ValidationError(`${field} 必须是字符串数组`, { field });
+    throw new ValidationError("tags 必须是字符串数组", { field: "tags" });
   }
 
-  const cleaned = value
-    .map((item) => (item as string).trim())
-    .filter((item) => item.length > 0)
-    .map((item) => {
-      if (item.length > MAX_ITEM_LENGTH) {
-        throw new ValidationError(`${field} 的单项不能超过 ${MAX_ITEM_LENGTH} 个字符`, {
-          field,
-          item,
-        });
-      }
-      return item;
+  const cleaned = normalizeTagList(value as string[]);
+
+  for (const label of cleaned) {
+    const problem = tagLabelProblem(label);
+
+    if (problem) {
+      throw new ValidationError(problem, { field: "tags", tag: label, max: MAX_TAG_LENGTH });
+    }
+  }
+
+  if (cleaned.length > MAX_TAGS_PER_OBJECT) {
+    throw new ValidationError(`最多 ${MAX_TAGS_PER_OBJECT} 个标签`, {
+      field: "tags",
+      max: MAX_TAGS_PER_OBJECT,
     });
-
-  const unique = [...new Set(cleaned)];
-
-  if (unique.length > MAX_COLLECTION_ITEMS) {
-    throw new ValidationError(`${field} 最多 ${MAX_COLLECTION_ITEMS} 项`, { field });
   }
 
-  return unique;
+  return cleaned;
 }
 
 function readEnum<T extends string>(
@@ -120,6 +126,22 @@ function readEnum<T extends string>(
   return value as T;
 }
 
+/**
+ * ADR-023：`format` / `categories` 已合并为单值 `category`。
+ * 旧客户端若继续提交旧字段，直接报错而不是静默丢弃——否则用户会以为改成功了。
+ */
+function rejectLegacyCategoryFields(record: Record<string, unknown>): void {
+  if ("format" in record) {
+    throw new ValidationError("format 已更名为 category（分类）", { field: "format" });
+  }
+
+  if ("categories" in record) {
+    throw new ValidationError("一个对象只能属于一个分类，请改用 category", {
+      field: "categories",
+    });
+  }
+}
+
 export interface CreateObjectParams extends Omit<CreateObjectInput, "ownerSub"> {
   ownerSub: string;
 }
@@ -127,12 +149,12 @@ export interface CreateObjectParams extends Omit<CreateObjectInput, "ownerSub"> 
 /** 把外部请求体解析成创建参数；作品固定从 draft 开始，不接受外部指定状态。 */
 export function parseCreateObjectBody(body: unknown, ownerSub: string): CreateObjectParams {
   const record = asRecord(body);
+  rejectLegacyCategoryFields(record);
   const type: ObjectType = readEnum(record.type, "type", ["asset", "work"] as const);
   const library: Library = readEnum(record.library, "library", libraries);
   const title = readString(record.title, "title", MAX_TITLE, true) as string;
   const description = readString(record.description, "description", MAX_DESCRIPTION);
-  const categories = readList(record.categories, "categories");
-  const tags = readList(record.tags, "tags");
+  const tags = readTags(record.tags);
   const priority: Priority = readEnum(record.priority, "priority", priorities, "medium");
   const source = record.source === undefined
     ? undefined
@@ -146,7 +168,6 @@ export function parseCreateObjectBody(body: unknown, ownerSub: string): CreateOb
     title,
     description,
     library,
-    categories,
     tags,
     priority,
     ownerSub,
@@ -154,14 +175,17 @@ export function parseCreateObjectBody(body: unknown, ownerSub: string): CreateOb
     ...(origin ? { origin } : {}),
   };
 
+  // 分类（ADR-023）：作品必填、资产可空。这里只检查「是个非空 code」，
+  // 是否存在 / 是否启用由 createObject / updateObject 查词表判定。
+  const category = readString(record.category, "category", 64);
+
   if (type === "asset") {
-    if (record.format !== undefined && record.format !== null) {
-      throw new ValidationError("资产没有 format 字段", { field: "format" });
-    }
-    return base;
+    return { ...base, ...(category ? { category } : {}) };
   }
 
-  const format: WorkFormat = readEnum<WorkFormat>(record.format, "format", workFormatValues);
+  if (!category) {
+    throw new ValidationError("作品必须选择一个分类", { field: "category" });
+  }
 
   if (record.status !== undefined && record.status !== null) {
     throw new ValidationError("新建作品固定从 draft 开始，状态迁移请用专用接口", {
@@ -171,17 +195,23 @@ export function parseCreateObjectBody(body: unknown, ownerSub: string): CreateOb
 
   return {
     ...base,
-    format,
+    category,
     sourceNote: readString(record.sourceNote, "sourceNote", MAX_DESCRIPTION),
   };
 }
 
 export async function createObject(
   db: AppDatabase,
-  ownerSub: string,
+  actor: ActorContext,
   body: unknown,
 ): Promise<BusinessObject> {
-  const params = parseCreateObjectBody(body, ownerSub);
+  const params = parseCreateObjectBody(body, actor.sub);
+
+  // 停用 / 不存在的分类拒绝新建；资产没有分类时跳过。
+  if (params.category && !listActiveCategoryCodes(db).includes(params.category)) {
+    throw new NotFoundError("分类不存在或已停用", { category: params.category });
+  }
+
   return new SqliteObjectRepository(db).create(params);
 }
 
@@ -228,12 +258,12 @@ async function requireOwned(
  */
 export async function changeObjectStatus(
   db: AppDatabase,
-  ownerSub: string,
+  actor: ActorContext,
   objectId: string,
   body: unknown,
 ): Promise<BusinessObject> {
   const repo = new SqliteObjectRepository(db);
-  await requireOwned(repo, ownerSub, objectId);
+  await requireOwned(repo, actor.sub, objectId);
 
   return repo.changeStatus({ objectId, ...parseChangeStatusBody(body) });
 }
@@ -243,6 +273,7 @@ const immutableUpdateFields = ["type", "library", "status"] as const;
 /** 编辑请求体：可改字段都按「缺席不变、显式 null 清空」处理。 */
 export function parseUpdateObjectBody(body: unknown): UpdateObjectInput {
   const record = asRecord(body);
+  rejectLegacyCategoryFields(record);
   const expected = record.expectedRevision;
 
   if (typeof expected !== "number" || !Number.isInteger(expected) || expected < 1) {
@@ -263,11 +294,12 @@ export function parseUpdateObjectBody(body: unknown): UpdateObjectInput {
   if ("description" in record) {
     patch.description = readString(record.description, "description", MAX_DESCRIPTION);
   }
-  if ("categories" in record) {
-    patch.categories = readList(record.categories, "categories");
+  if ("category" in record) {
+    // 显式 null 表示清空分类，只有资产允许；作品的分类型约束由仓储兜底。
+    patch.category = record.category === null ? null : readString(record.category, "category", 64);
   }
   if ("tags" in record) {
-    patch.tags = readList(record.tags, "tags");
+    patch.tags = readTags(record.tags);
   }
   if ("priority" in record) {
     patch.priority = readEnum(record.priority, "priority", priorities);
@@ -278,9 +310,6 @@ export function parseUpdateObjectBody(body: unknown): UpdateObjectInput {
   if ("origin" in record) {
     patch.origin = readEnum<ObjectOrigin>(record.origin, "origin", objectOrigins);
   }
-  if ("format" in record) {
-    patch.format = readEnum<WorkFormat>(record.format, "format", workFormatValues);
-  }
   if ("sourceNote" in record) {
     patch.sourceNote = readString(record.sourceNote, "sourceNote", MAX_DESCRIPTION);
   }
@@ -290,24 +319,32 @@ export function parseUpdateObjectBody(body: unknown): UpdateObjectInput {
 
 export async function updateObject(
   db: AppDatabase,
-  ownerSub: string,
+  actor: ActorContext,
   objectId: string,
   body: unknown,
 ): Promise<BusinessObject> {
   const repo = new SqliteObjectRepository(db);
-  await requireOwned(repo, ownerSub, objectId);
+  const current = await requireOwned(repo, actor.sub, objectId);
+  const patch = parseUpdateObjectBody(body);
 
-  return repo.update(objectId, parseUpdateObjectBody(body));
+  // 停用分类允许「保持原值」，但不允许把对象改成停用 / 不存在的分类。
+  if (patch.category !== undefined && patch.category !== null && patch.category !== current.category) {
+    if (!listActiveCategoryCodes(db).includes(patch.category)) {
+      throw new NotFoundError("分类不存在或已停用", { category: patch.category });
+    }
+  }
+
+  return repo.update(objectId, patch);
 }
 
 export async function deleteObject(
   db: AppDatabase,
-  ownerSub: string,
+  actor: ActorContext,
   objectId: string,
 ): Promise<void> {
   const repo = new SqliteObjectRepository(db);
-  await requireOwned(repo, ownerSub, objectId);
-  await repo.softDelete(objectId);
+  await requireOwned(repo, actor.sub, objectId);
+  await repo.softDelete(objectId, undefined, actor);
 }
 
 export interface ChangeLibraryParams {
@@ -336,16 +373,17 @@ export function parseChangeLibraryBody(body: unknown): ChangeLibraryParams {
 
 export async function changeObjectLibrary(
   db: AppDatabase,
-  ownerSub: string,
+  actor: ActorContext,
   objectId: string,
   body: unknown,
 ): Promise<BusinessObject> {
   const repo = new SqliteObjectRepository(db);
-  await requireOwned(repo, ownerSub, objectId);
+  await requireOwned(repo, actor.sub, objectId);
 
   return repo.changeLibrary({
     objectId,
-    actorSub: ownerSub,
+    actorSub: actor.sub,
+    actorUserId: actor.userId,
     ...parseChangeLibraryBody(body),
   });
 }
@@ -353,7 +391,7 @@ export async function changeObjectLibrary(
 /** 归档 / 取消归档：请求体 `{ "archived": true | false }`。 */
 export async function setObjectArchived(
   db: AppDatabase,
-  ownerSub: string,
+  actor: ActorContext,
   objectId: string,
   body: unknown,
 ): Promise<BusinessObject> {
@@ -364,9 +402,11 @@ export async function setObjectArchived(
   }
 
   const repo = new SqliteObjectRepository(db);
-  await requireOwned(repo, ownerSub, objectId);
+  await requireOwned(repo, actor.sub, objectId);
 
-  return record.archived ? repo.archive(objectId) : repo.unarchive(objectId);
+  return record.archived
+    ? repo.archive(objectId, undefined, actor)
+    : repo.unarchive(objectId, undefined, actor);
 }
 
 /** 列表筛选参数只接受已知取值，非法值直接报错，不做静默忽略。 */

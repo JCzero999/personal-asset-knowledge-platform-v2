@@ -10,7 +10,9 @@ export type IconName =
   | "clock"
   | "database"
   | "download"
+  | "edit"
   | "file"
+  | "galaxy"
   | "grid"
   | "graph"
   | "inbox"
@@ -35,7 +37,17 @@ const paths: Record<IconName, ReactNode> = {
   clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
   database: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></>,
   download: <><path d="M12 4v12m-5-5 5 5 5-5"/><path d="M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></>,
+  edit: <><path d="M4 20h4l10.5-10.5a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></>,
   file: <><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5M9 12h6m-6 4h6"/></>,
+  galaxy: (
+    <>
+      <ellipse cx="12" cy="12" rx="9.2" ry="3.6" transform="rotate(-24 12 12)" opacity=".35"/>
+      <path d="M12 12c1.6-2.6 4.9-3.4 7.1-1.5 2.3 2 1.9 5.6-.8 7.2-3 1.8-7 .5-8.4-2.7-1.2-2.8.3-6 3-7.4"/>
+      <path d="M12 12c-1.6 2.6-4.9 3.4-7.1 1.5-2.3-2-1.9-5.6.8-7.2 3-1.8 7-.5 8.4 2.7 1.2 2.8-.3 6-3 7.4" opacity=".75"/>
+      <circle cx="12" cy="12" r="2.1" fill="currentColor" stroke="none"/>
+      <circle cx="19.2" cy="6.6" r=".9" fill="currentColor" stroke="none" opacity=".7"/>
+    </>
+  ),
   grid: <><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></>,
   graph: <><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="12" cy="18" r="3"/><path d="m8.5 7.5 2.3 7.6m4.7-7.6-2.3 7.6M9 6h6"/></>,
   inbox: <><path d="M4 13h4l2 3h4l2-3h4"/><path d="M5.5 4h13l2.5 9v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l2.5-9Z"/></>,
@@ -51,7 +63,15 @@ const paths: Record<IconName, ReactNode> = {
   x: <><path d="m6 6 12 12M18 6 6 18"/></>,
 };
 
-export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
+export function Icon({
+  name,
+  size = 20,
+  strokeWidth = 1.7,
+}: {
+  name: IconName;
+  size?: number;
+  strokeWidth?: number;
+}) {
   return (
     <svg
       aria-hidden="true"
@@ -62,7 +82,7 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
       stroke="currentColor"
       strokeLinecap="round"
       strokeLinejoin="round"
-      strokeWidth="1.7"
+      strokeWidth={strokeWidth}
     >
       {paths[name]}
     </svg>

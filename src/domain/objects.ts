@@ -24,24 +24,30 @@ export type ObjectSource = (typeof objectSources)[number];
 export const objectOrigins = ["self", "imported"] as const;
 export type ObjectOrigin = (typeof objectOrigins)[number];
 
-/** 作品形态六值全保留（沿用旧项目既有取值）。 */
-export const workFormats = [
-  { value: "article", label: "文章" },
-  { value: "script", label: "音视频脚本" },
-  { value: "course", label: "课程" },
-  { value: "live", label: "直播" },
-  { value: "consult", label: "咨询" },
-  { value: "flomo", label: "外部笔记" },
+/**
+ * 内置分类种子（ADR-016 建立，ADR-023 改名）。
+ *
+ * 分类已经词表化：真相源是数据库里的 `categories`，运行时一律通过
+ * `GET /api/vocabulary` / `listVocabulary()` 读取。这里只剩「迁移种子 +
+ * 测试 fixture」两种用途，禁止在业务代码里 import。
+ */
+export const SYSTEM_CATEGORY_SEEDS = [
+  { code: "article", label: "文章" },
+  { code: "script", label: "音视频脚本" },
+  { code: "course", label: "课程" },
+  { code: "live", label: "直播" },
+  { code: "consult", label: "咨询" },
+  { code: "flomo", label: "外部笔记" },
+  { code: "uncategorized", label: "未分类" },
 ] as const;
 
-export type WorkFormat = (typeof workFormats)[number]["value"];
-
-export const workFormatValues: readonly WorkFormat[] = workFormats.map((item) => item.value);
+/** 分类 code 由词表维护，领域层只保证它是非空字符串（合法性由外键兜底）。 */
+export type Category = string;
 
 export const workStatuses = ["draft", "finished", "published", "practiced"] as const;
 export type WorkStatus = (typeof workStatuses)[number];
 
-/** 公共字段；`status` / `format` / `sourceNote` 仅作品有值，资产恒为 null。 */
+/** 公共字段；`status` / `sourceNote` 仅作品有值，资产恒为 null；分类两者都可有。 */
 export interface ObjectBase {
   /** ULID，业务唯一身份。 */
   id: string;
@@ -51,9 +57,8 @@ export interface ObjectBase {
   library: Library;
   source: ObjectSource;
   origin: ObjectOrigin;
-  /** 主分类（写入时由 categories[0] 派生）。 */
-  primaryCategory: string | null;
-  categories: string[];
+  /** 分类 code（ADR-023）：作品必有、资产可空。 */
+  category: string | null;
   tags: string[];
   priority: Priority;
   /** 归档时间；归档只改元数据，不移动内容（ADR-007）。 */
@@ -72,14 +77,14 @@ export interface ObjectBase {
 
 export interface AssetObject extends ObjectBase {
   type: "asset";
-  format: null;
+  category: string | null;
   status: null;
   sourceNote: null;
 }
 
 export interface WorkObject extends ObjectBase {
   type: "work";
-  format: WorkFormat;
+  category: Category;
   status: WorkStatus;
   /** 转资产 / 外部导入时的来源说明。 */
   sourceNote: string | null;
@@ -91,8 +96,9 @@ export function isWorkStatus(value: unknown): value is WorkStatus {
   return typeof value === "string" && (workStatuses as readonly string[]).includes(value);
 }
 
-export function isWorkFormat(value: unknown): value is WorkFormat {
-  return typeof value === "string" && (workFormatValues as readonly string[]).includes(value);
+export function isCategory(value: unknown): value is Category {
+  // 取值域已经搬进 categories 词表：这里只挡住空值，具体 code 是否存在由外键保证。
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 export function isLibrary(value: unknown): value is Library {

@@ -1,34 +1,40 @@
 export default function WorkspaceLoading() {
   return (
-    <div className="app-shell">
-      <aside className="sidebar" aria-hidden="true">
-        <div className="brand">
+    <div className="app-frame has-list" aria-busy="true" aria-label="正在加载工作台">
+      <aside className="nav-rail" aria-hidden="true">
+        <span className="rail-brand">
           <span className="brand-mark">
             <span />
             <span />
             <span />
           </span>
-          <span className="brand-copy">
-            <strong>知产工作台</strong>
-            <small>ASSET &amp; KNOWLEDGE</small>
-          </span>
-        </div>
-        <div className="main-nav">
-          <p className="nav-label">工作空间</p>
-          <span className="skeleton sk-nav" />
-          <span className="skeleton sk-nav" />
-          <span className="skeleton sk-nav" />
-        </div>
+        </span>
       </aside>
-
-      <main className="workspace" aria-busy="true" aria-label="正在加载工作台">
-        <div className="workspace-loading">
+      <aside className="directory" aria-hidden="true">
+        <div className="dir-head">
+          <strong>工作台</strong>
+        </div>
+        <span className="skeleton sk-dir" />
+        <span className="skeleton sk-dir" />
+        <span className="skeleton sk-dir" />
+      </aside>
+      <section className="record-list" aria-hidden="true">
+        <div className="record-list-head">
           <div className="skeleton sk-title" />
-          <div className="skeleton sk-sub" />
-          <div className="skeleton sk-overview" />
-          <div className="skeleton sk-panel" />
-          <div className="dashboard-grid">
-            <div className="skeleton sk-panel tall" />
+        </div>
+        <div className="record-scroll">
+          <span className="skeleton sk-row" />
+          <span className="skeleton sk-row" />
+          <span className="skeleton sk-row" />
+          <span className="skeleton sk-row" />
+        </div>
+      </section>
+      <main className="record-detail">
+        <div className="detail-scroll">
+          <div className="workspace workspace-loading">
+            <div className="skeleton sk-title" />
+            <div className="skeleton sk-sub" />
+            <div className="skeleton sk-overview" />
             <div className="skeleton sk-panel" />
           </div>
         </div>

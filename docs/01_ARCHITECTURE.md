@@ -6,7 +6,7 @@
 ## 1. 项目一句话
 以 RAGFlow 为统一内容存储与检索底座，在其上实现资产管理和四阶段工作流，结合 LightRAG 提供知识图谱能力，通过 Logto 提供登录注册的个人知识工作台。
 
-> **实现状态（ADR-006 / ADR-009 / ADR-010）**：业务侧 Next.js 骨架已落地（App Router + TypeScript），**数据层与 HTTP 接口均已实现**：SQLite + Drizzle 持久化（见第 5 节）、`/api/objects` 系列的对象 CRUD、作品状态迁移、跨库迁移与归档、内容上传、内容引用列表、内容原文下载、内容检索 `GET /api/search`、解析触发与状态轮询 `POST /api/parse/run`、`/api/health` 健康检查，以及 `/workspace`、`/search`、`/graph` 三个页面。登录态来自 `AUTH_MODE`：`mock`（开发默认）使用固定本地身份，`logto` 走 Logto 真实登录（三条 `/api/logto/*` 路由）。**RAGFlow 已接入**：内容上传、`sync_jobs` outbox 投递（进程内 worker）、解析状态轮询、检索与下载均已实现，上传 → 解析 → 检索 → 下载 → 归档后检索为 0 的链路已在真实 RAGFlow v0.20.5 上端到端跑通。**LightRAG 知识图谱已接入**：本机 Python 进程 + Ollama + 复用 RAGFlow 的 Embedding，`/api/graph/*` 五条接口与 `/graph` 页可用，实体抽取与 `mix` 问答已实测（见 5.7）。**尚未实现**：图谱多用户隔离（LightRAG 单 workspace）、图谱自动同步、基于 RAGFlow 的多轮问答会话（需要 chat model）。接口契约见 [06_API.md](06_API.md)。当前 `src/` 是新建实现，不是旧系统代码。
+> **实现状态（ADR-006 / ADR-009 / ADR-010）**：业务侧 Next.js 骨架已落地（App Router + TypeScript），**数据层与 HTTP 接口均已实现**：SQLite + Drizzle 持久化（见第 5 节）、`/api/objects` 系列的对象 CRUD、作品状态迁移、跨库迁移与归档、内容上传、内容引用列表、内容原文下载、内容检索 `GET /api/search`、解析触发与状态轮询 `POST /api/parse/run`、`/api/health` 健康检查，以及 `/workspace`、`/search`、`/graph`、`/admin` 加两个词表管理页共六个页面（共用三栏框架，ADR-013）。**形态与标签已词表化**（ADR-016，见 5.9）：内置 6 种形态之外可自定义，标签是全站共用的词表，`GET /api/vocabulary` 是唯一读取入口；管理页 `/admin/vocabulary/formats` 与 `/admin/vocabulary/tags`（ADR-019）从第二列目录底部的「管理」分组进入，仅管理员可见。登录态来自 `AUTH_MODE`：`mock`（开发默认）使用固定本地身份，`logto` 走 Logto 真实登录（三条 `/api/logto/*` 路由）。**RAGFlow 已接入**：内容上传、`sync_jobs` outbox 投递（进程内 worker）、解析状态轮询、检索与下载均已实现，上传 → 解析 → 检索 → 下载 → 归档后检索为 0 的链路已在真实 RAGFlow v0.20.5 上端到端跑通。**LightRAG 知识图谱已接入**：本机 Python 进程 + Ollama + 复用 RAGFlow 的 Embedding，`/api/graph/*` 五条接口与 `/graph` 页可用，实体抽取与 `mix` 问答已实测（见 5.7）。**尚未实现**：图谱多用户隔离（LightRAG 单 workspace）、图谱自动同步、基于 RAGFlow 的多轮问答会话（需要 chat model）。接口契约见 [06_API.md](06_API.md)。当前 `src/` 是新建实现，不是旧系统代码。
 
 ## 2. 逻辑架构（高层）
 
@@ -75,12 +75,12 @@ Knowledge Graph (LightRAG)
 |----|------|------|----------|
 | **domain** | `src/domain/` | 纯类型、取值集合与规则：`objects.ts`（Asset / Work 类型与取值）、`content-ref.ts`（内容引用）、`workflow.ts`（四阶段状态机）、`errors.ts`（带稳定错误码的 `DomainError`） | 不引入任何 IO，不依赖数据库或框架 |
 | **server.ports** | `src/server/ports/` | 仓储端口接口：`ObjectRepository`、`ContentStore` | 不做权限、不发起外部调用 |
-| **server.db** | `src/server/db/` | 连接与表结构：`client.ts`（单例连接 + 迁移）、`schema.ts`（四张表）、`id.ts`（ULID） | 不写业务判断 |
-| **server.repositories** | `src/server/repositories/` | 端口的 SQLite 实现：`SqliteObjectRepository`、`SqliteContentStore`；负责把数据库约束错误翻译成领域错误 | 不调用 RAGFlow |
+| **server.db** | `src/server/db/` | 连接与表结构：`client.ts`（单例连接 + 迁移）、`schema.ts`（七张表）、`id.ts`（ULID） | 不写业务判断 |
+| **server.repositories** | `src/server/repositories/` | 端口的 SQLite 实现：`SqliteObjectRepository`、`SqliteContentStore`、`tag-links.ts`（对象 ↔ 标签的写入，按归一化键复用或新建标签）；负责把数据库约束错误翻译成领域错误 | 不调用 RAGFlow |
 | **server.http** | `src/server/http/` | 统一响应信封 `ok` / `created` / `empty` / `fail` / `fromError`，错误码→HTTP 状态映射 | 不写业务逻辑 |
 | **server.adapters.ragflow** | `src/server/adapters/ragflow/` | RAGFlow 的**唯一**外部入口（ADR-009）：dataset 查询/创建、文档上传/改名/删除、`meta_fields` 整体更新、文档状态列表（解析进度）、触发解析、分块原文读取、检索、下载 | 不做业务映射、重试或 outbox；归属、归档与库别过滤在服务层 |
 | **server.adapters.lightrag** | `src/server/adapters/lightrag/` | LightRAG 的**唯一**外部入口（ADR-010）：文本入库、文档分页与删除、实体标签、邻域子图、`mix` 问答；API Key 走 `X-API-Key`，慢请求超时 180 秒 | 不做归属过滤或图文本构造，那些在服务层 |
-| **server.services** | `src/server/services/` | 用例编排：`object-service.ts`（请求解析、字段校验、归属校验）、`content-service.ts`（上传、替换、列表、下载）、`sync-service.ts`（outbox 投递）、`parse-service.ts`（解析状态轮询）、`search-service.ts`（检索参数校验、召回与归属/归档/库别过滤）、`graph-service.ts`（图谱文本、同步判重、邻域与问答引用回映射） | 不直接拼 SQL，不绕过适配器调用 RAGFlow / LightRAG |
+| **server.services** | `src/server/services/` | 用例编排：`object-service.ts`（请求解析、字段校验、归属校验）、`content-service.ts`（上传、替换、列表、下载）、`sync-service.ts`（outbox 投递）、`parse-service.ts`（解析状态轮询）、`search-service.ts`（检索编排、参数校验、混合召回与降级）、`lexical-search-service.ts`（SQLite 词法检索与六级排序）、`graph-service.ts`（图谱文本、同步判重、邻域与问答引用回映射）、`vocabulary-service.ts`（形态与标签的读写、使用次数、迁移与合并） | 不直接拼 SQL，不绕过适配器调用 RAGFlow / LightRAG |
 
 调用方向是单向的：`route handler → services → ports ← repositories → db`。`domain` 被所有上层引用，自己不知道谁在用它。route handler 的厚度上限为 15 行（ADR-009）。
 
@@ -91,14 +91,17 @@ Knowledge Graph (LightRAG)
 - 连接固定开启 `journal_mode = WAL`、`foreign_keys = ON`、`busy_timeout = 5000`。
 - 打开连接时执行 `drizzle/` 下的迁移，因此迁移可重复执行；测试用 `openDatabase({ file: ":memory:" })` 建内存库，不碰真实文件。
 
-### 5.2 四张表
+### 5.2 七张表
 
 | 表 | 承担什么 | 要点 |
 |----|----------|------|
-| **`objects`** | 资产与作品的业务主表，两者**同表**、由 `type`（`asset` / `work`）区分 | 作品才有 `format`、`status`、`source_note`，资产三列恒为 `NULL`；`library` / `source` / `origin` 三个正交字段按 ADR-008 拆分；`primary_category` 由写入时的 `categories[0]` 派生；软删除走 `deleted_at`，不物理删行；`revision` 作乐观锁；索引为 `(type, status)`、`library`、`updated_at` |
+| **`objects`** | 资产与作品的业务主表，两者**同表**、由 `type`（`asset` / `work`）区分 | 作品才有 `category_code`、`status`、`source_note`，资产 `status` / `source_note` 恒为 `NULL`、分类可空；`category_code` 是指向 `categories(code)` 的**外键**（ADR-023），作品必填、资产可空；`tags` / `categories` JSON 列已删除，标签走向 `object_tags`；`library` / `source` / `origin` 三个正交字段按 ADR-008 拆分；软删除走 `deleted_at`，不物理删行；`revision` 作乐观锁；索引为 `(type, status)`、`library`、`updated_at` |
 | **`content_refs`** | 业务对象与 RAGFlow 文档之间的映射，独立成表而非 JSON 字段（ADR-007） | `provider` 固定为 `ragflow`（单一内容底座）；`document_id` 是**可变指针**，`content_key` 才是幂等键；`role` 为 `primary` / `attachment`，用部分唯一索引保证**每个对象最多一个有效主引用**；`parse_status` 与 `sync_state` 分别跟踪解析进度和同步对账 |
 | **`library_events`** | 跨库迁移的审计流水 | 记录 `from_library` / `to_library` / `reason` / `actor_sub`；`reason` 必填，因为「内库 = 已验证」是承诺，必须可追溯；与对象更新**同事务**写入，不出现「库别已变但没有记录」 |
 | **`sync_jobs`** | 内容同步的 outbox | 内容变更即入队（`action` 为 `upsert` / `delete`），`state` 走 `pending → running → done / failed`，带 `attempts`、`last_error` 与可延迟的 `available_at`；索引 `(state, available_at)` 供 worker 取任务。落队与投递同属本期：`sync-service` 消费、进程内 worker 定时推进 |
+| **`categories`** | 分类词表（ADR-023，原 `work_formats`） | `code` 是主键且**创建后不可改**，对象只存 code，所以改名只需改一行、全站立即生效；`normalized` 唯一，重名判定与标签同一套归一化规则；`state` 为 `active` / `archived`（CHECK 限定），停用项不进新建 / 编辑面板但历史对象照常显示；`is_system = 1` 的 7 个种子分类（含兜底 `uncategorized`）不能删除，`uncategorized` 也不能停用，它是删除分类时的迁移目标；启用分类上限 30 个，`sort_order` 决定面板顺序 |
+| **`tags`** | 标签词表 | `normalized`（全角转半角、空白压缩、小写）**唯一**，查重与合并都按它；`label` 保留首次创建时的写法；重命名只改这一行，因为 `object_tags` 存的是 `tag_id` |
+| **`object_tags`** | 对象 ↔ 标签的多对多链接 | 复合主键 `(object_id, tag_id)`，两侧外键级联删除；**软删对象保留链接**，使用次数靠 `join objects ... deleted_at IS NULL` 排除，否则「看不见的引用」会挡住标签删除 |
 
 ### 5.3 两条 CHECK 约束（数据库兜底）
 
@@ -126,6 +129,7 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 ### 5.5 HTTP 接口层
 
 - `src/app/api/objects/**` 的 route handler 只做四件事：取会话 → 解析 JSON → 调 `object-service` → 用统一信封返回；业务校验集中在服务层，路由不写业务规则（ADR-009 的「路由厚度上限」）。
+- `src/app/api/vocabulary/**` 同构，只是多一道 `adminGuard`（`src/server/http/guard.ts`）：写接口一律先判管理员，再交给 `vocabulary-service`；读接口 `GET /api/vocabulary` 对登录用户开放。
 - 身份统一由 `src/server/session.ts` 解析：`AUTH_MODE=mock` 是固定本地身份，`logto` 读 Logto 会话，其他取值视为无身份（接口 401，页面跳回首页）。
 - 端点清单、请求字段、错误码映射与 curl 示例见 [06_API.md](06_API.md)。该文档只写代码中真实存在的路由；未实现能力单独列出。
 
@@ -136,7 +140,8 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **解析轮询**：`parse-service.pollParsingOnce` 每轮取最多 50 条 `pending` / `running` 引用，按 dataset 调用 `GET /documents?page=&page_size=`，把 `UNSTART / RUNNING / SCHEDULE / DONE / FAIL / CANCEL` 映射为应用侧 `parseStatus`；`FAIL` / `CANCEL` 的 `parseError` 取 `progress_msg` 最后一行，文档已不存在则直接标 `failed`。单条或单个 dataset 失败只进 `errors`，不影响整轮。
 - **投递**：`sync-service.runSyncOnce` 原子认领到期任务；`upsert` 按 `content_key` 认回文档并整体重写 `meta_fields`，`delete` 删除文档并软删本地引用；文档已不存在视为达到目标状态，其它失败按指数退避重试，达上限置 `failed`。
 - **下载**：`content-service.downloadObjectContent` 先校验对象归属与 `refId` 归属，再透传 RAGFlow `GET /documents/{id}` 的文件流；该路径是文件流而不是 JSON 详情接口，不能当元数据查询用。
-- **检索**：`search-service.searchContent` 让 RAGFlow 召回（默认阈值 0.2，多取 `limit × 3`、上限 50），再按 `document_id` 认回 `content_refs`，过滤掉不属于当前用户与已归档的对象，按 `library` 二次筛选。**业务过滤不能下沉到 RAGFlow**，否则会越过归属隔离。
+- **检索**（ADR-024）：`search-service.searchContent` 先解析检索语法（`src/lib/search-query.ts`），再按 `mode` 并行两条召回——**词法层** `lexical-search-service` 在 SQLite 里用 `instr()` 匹配 `title_norm` / `description_norm` / 分类名 / 标签名（归一化只有一个实现：NFKC → 空白折叠 → trim → 小写，写入、回填、查询共用），按六级权重打分；**语义层**让 RAGFlow 召回（默认阈值 0.2，多取 `limit × 3`、上限 50），按 `document_id` 认回 `content_refs`，过滤掉不属于当前用户与已归档的对象，按 `library` 二次筛选。语义侧 3 秒硬超时，超时或报错只降级为词法结果（`semantic.status = timeout / unavailable`），不向前端抛错。合并按对象 id 去重，`score` 取两侧较高者。**业务过滤不能下沉到 RAGFlow**，否则会越过归属隔离；正文不在 SQLite，词法层搜不到正文，这是明确边界。
+- **首页预览**：`useSearchPreview`（`src/hooks/`）+ 纯函数层 `src/lib/search-preview.ts`（防抖、请求令牌、键盘下标、响应清洗），只请求 `mode=lexical&limit=8`，200ms 防抖、IME 合成期不请求、`AbortController` 丢弃过期响应。
 - **调度**：`POST /api/sync/run` 与 `POST /api/parse/run` 可分别手动跑一轮；`src/instrumentation.ts` 在配置了 `RAGFLOW_BASE_URL` 与 `RAGFLOW_API_KEY` 时挂进程内定时 worker（默认 30 秒，`SYNC_WORKER_ENABLED=false` 可关闭），每轮先投递 outbox 再轮询解析。
 - **实测边界**：上传、迁移、删除、解析、检索、下载均已在真实 RAGFlow v0.20.5 上验证——上传后立即 `running`，约 9–12 秒 `succeeded`（`chunk_count = 1`）；检索相似度约 0.38–0.48，归档后同一检索返回 0 条；下载内容与上传文件逐字节一致。生产模式下 `instrumentation` 的实际挂载未单独验证；解析失败与投递重试路径仍只有假网关单测。
 
@@ -146,9 +151,29 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **构图**：`graph-service.buildGraphText` 把对象元数据（标题、类型、库别、状态、描述、分类、标签）与 RAGFlow 已解析主内容的**分块原文**拼成一段文本；只取 `role=primary`、`parseStatus=succeeded`、未删除的引用。没有可用正文的对象计入 `skipped`。
 - **身份与版本**：`file_source = pakp:obj:{objectId}:{sha256(text) 前 12 位}`。哈希相同视为未变；内容变化时先删除该对象的旧版本文档再写入新版本，避免同一对象在图中叠加多份。
 - **同步**：`POST /api/graph/sync` 手动触发，单轮最多 50 个对象；LightRAG 收到文本后异步抽取，状态经 `GET /api/graph/status` 查看（`pending` / `processing` / `processed` / `failed`）。
-- **查询**：`GET /api/graph` 读实体邻域（深度 1–3，节点上限 150）；`POST /api/graph/query` 用 `mix` 模式（图谱 + 向量）问答，答案引用按 `pakp:` 前缀解析回业务对象并校验归属，不是本系统写入的文档不返回。
-- **前端**：`/graph` 是服务端组件，首屏取标签与初始邻域；`GraphExplorer` 负责实体切换、SVG 同心圆布局、邻域详情、问答与同步状态轮询（只在 `pending` / `processing` 时每 15 秒刷新）。布局与标签排序是纯函数，单测覆盖。
+- **查询**：`GET /api/graph` 读实体邻域（深度 1–3，`maxNodes` 50–600、默认 150）；`POST /api/graph/query` 用 `mix` 模式（图谱 + 向量）问答，答案引用按 `pakp:` 前缀解析回业务对象并校验归属，不是本系统写入的文档不返回。
+- **前端**：`/graph` 是服务端组件，首屏取标签与初始邻域；`GraphExplorer` 负责实体切换、三种视图（2D 聚焦 / 3D 星系 / 列表）、邻域详情、问答与同步状态轮询（只在 `pending` / `processing` 时每 15 秒刷新）。模型层是冻结件 `graph-model.ts` / `graph-quality.ts` / `graph-selectors.ts`：2D 与 3D 只消费同一份 `GraphViewModel` 与 `GraphHighlight`（含 `dimmedEdges`）；2D 用 `graph-layout-2d.ts` 的确定性力导向，3D 用 `graph-layout-3d.ts` 的三层盘播种 + 松弛布局（>300 节点在 `src/workers/graph-layout.worker.ts` 里跑，默认 400ms 预算），渲染层见 `src/components/graph/`（节点 / 边 / 标签各一次 instanced 绘制，预算 ≤8 次 draw call）。档位只降不升：容器按 `onStats` 的帧时连续两个窗口超阈值降一档，并在超预算时用 `decimate` 只抽稀 3D 视图。布局与标签排序是纯函数，单测覆盖。
 - **已知限制**：LightRAG 的图 / 问答路由绑定单实例默认 workspace，`LIGHTRAG-WORKSPACE` 头只覆盖部分接口，因此图谱是**单租户**；`/graphs` 只沿有向出边遍历，只有入边的实体返回空图；本机 CPU 上 118 字文档抽取约 226 秒、问答约 94 秒。
+
+### 5.8 前端应用框架（ADR-013 / ADR-014 / ADR-015）
+
+- **统一网格**：`.app-frame` 为 `76px + 模块目录 + 内容区`；页面里存在 `.directory` 时由 `:has(> .directory)` 切三列，工作台再加 `.record-list` 变四列。六个页面（`/workspace`、`/search`、`/graph`、`/admin`、`/admin/vocabulary/formats`、`/admin/vocabulary/tags`）只组合 `NavRail`、各自的 `*Directory` 与内容区，不传布局参数；两个词表页共用 `VocabularyPage` 骨架，只在标题与列表类型上不同。
+- **状态单一来源**：工作台列表与详情共用 URL 上的 `q / type / library / status / sort / archived`；点列表项只换右栏内容，服务端仍按同一份筛选渲染。目录项同一路径只换 hash 时用原生 `<a>`（Next `<Link>` 不会滚动）。
+- **响应式**：≤1100px 隐藏目录；≤900px 用 `.app-frame.has-list[data-selected]` 让列表与详情互斥；≤560px 导航只留图标。
+- **正文类型**：详情页编辑器顶栏切换 `纯文本 / Markdown`；Markdown 预览由 `src/lib/markdown.ts` 解析为块与行内片段，`MarkdownPreview` 渲染 React 元素（不使用 `dangerouslySetInnerHTML`，链接只放行 `http/https/mailto` 与站内相对地址）。保存仍以源码（`text/markdown` 或 `text/plain`）上传，RAGFlow 是内容唯一真相源。
+- **批量操作**：列表行由客户端组件 `RecordList` 渲染，行内复选框 + 筛选下方的批量条（顺序「标题 → 筛选 → 批量 → 列表」）；归档、删除对每条复用 `POST /api/objects/{id}/archive` 与 `DELETE /api/objects/{id}`，前端汇总结果。导出在浏览器取内容引用，`src/lib/export-markdown.ts` 拼成一份 Markdown 下载，不新增服务端路由。
+- **删除的旧壳**：`app-sidebar.tsx`、`workspace-shell.tsx` 与 `.app-shell` / `.sidebar` 样式已移除，避免两套侧栏并存。
+
+### 5.9 形态与标签词表化（ADR-016）
+
+- **两处硬编码变成数据**：`objects.format` 的 `CHECK (format IN (...))` 换成指向 `work_formats(code)` 的外键；`objects.tags`（JSON 文本数组）这列在 `drizzle/0005_vocabulary.sql` 重建 `objects` 时删除，标签改为 `tags` + `object_tags` 真多对多，JSON 不再是标签的真相源。
+- **唯一读取入口**：`GET /api/vocabulary` 返回 `{ formats, tags }`，含 `label` / `sortOrder` / `state` / `usage`；服务端页面直接调 `listVocabulary()`，浏览器侧走同一份数据。对象的 `tag` 筛选先按归一化键解析成 `tag_id` 再 join，不再扫 JSON。
+- **唯一写入入口**：`/api/vocabulary/**` 的 8 条路由，`adminGuard` 前置，非管理员 403（ADR-019）。对象写入时出现的**新标签**由 `tag-links.ts` 在同一事务内补齐，不存在第二条写路径。
+- **管理界面**：`/admin/vocabulary/formats` 与 `/admin/vocabulary/tags` 两个页面（组件 `VocabularyPage` + `VocabularyManager`）只调上面 8 条接口，成功后 `router.refresh()` 重读服务端数据，不在客户端维护副本；删除被引用项时服务端 409 带 `details.usage`，界面据此把「删除」变成「迁移到…」（形态）或「合并到…」（标签），不提供强删。入口 `TaxonomyDirectoryGroup` 挂在每个模块目录底部，仅管理员渲染。
+- **7 处硬编码已清除**：`domain/objects.ts`、`create-object-dialog`、`object-detail`、`record-list`、`search/page`、`export-markdown`、`object-service` 原来各自抄一份形态名单；现在只有 `domain/objects.ts` 的 `SYSTEM_FORMAT_SEEDS` 作为**迁移种子与测试 fixture** 存在，UI 一律消费词表，读不到就显示 code（`src/lib/format-labels.ts`），没有「回退到旧常量」的兜底。
+- **守卫**：ESLint `no-restricted-imports` 禁止 `src/**` 从 `@/domain/objects` 导入 `SYSTEM_FORMAT_SEEDS`（只有定义文件自身豁免），把「改一处漏一处」变成 lint 错误。
+- **对外形状不变**：`BusinessObject.tags` 仍是 `string[]`（元素是 label），仓储读取时再水合并发一次查询分组，UI / 导出 / 筛选 / 既有测试的契约不变。
+- **迁移注意**：`0005` 要重建 `objects`（删列 + 加外键），而 `objects` 被 `library_events.object_id` 引用；SQLite 的 `PRAGMA foreign_keys = OFF` 在事务内无效，必须由 `openDatabase()` 放在迁移事务外层，迁移后再跑 `PRAGMA foreign_key_check`，结果非空即拒绝启动。
 
 ## 6. 主要数据流
 
@@ -157,9 +182,10 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
    - 业务侧写入元数据 + 状态，并在同一事务里入队 `sync_jobs`
    - 内容经 `POST /api/objects/{id}/content` 提交至 RAGFlow（单一 Dataset），并保存 `content_refs` 映射
    - worker 消费 `sync_jobs`，把库别、归档等元数据同步进 RAGFlow `meta_fields`；删除对象时删除对应文档
-3. **检索** → 前端调 `GET /api/search`；RAGFlow 负责语义召回，服务层按 `content_refs` 做归属、归档与库别过滤后再返回。问答会话（多轮上下文 + 生成）尚未实现。
+3. **检索** → 前端调 `GET /api/search`（默认 `mode=hybrid`）；词法层在 SQLite 里匹配元数据，语义层由 RAGFlow 召回正文，服务层按 `content_refs` 做归属、归档与库别过滤后按对象合并返回。首页预览走 `mode=lexical&limit=8`，不碰 RAGFlow。问答会话（多轮上下文 + 生成）尚未实现。
 4. **知识图谱构建 / 查询** → 手动 `POST /api/graph/sync` 把已解析主内容经 RAGFlow 分块原文送进 LightRAG；抽取完成后 `/graph` 读取实体邻域，或调 `POST /api/graph/query` 做图增强问答。
 5. **四阶段流转** → 仅更新业务侧状态；内容仍留在 RAGFlow，不随状态物理移动文件。
+6. **形态 / 标签维护** → 管理员改词表只写 `work_formats` / `tags` / `object_tags`，对象本身不动（改名是 O(1)）；只有「删除仍被引用的形态」会在同一事务里把引用迁到目标形态、`revision + 1` 并逐条入队 `sync_jobs`，worker 再把新 `format` 投递进 RAGFlow 的 `meta_fields`。标签的删除 / 合并按调用方选择处理 `object_tags`，不触碰内容底座。
 
 ## 7. 与旧系统的关键差异
 

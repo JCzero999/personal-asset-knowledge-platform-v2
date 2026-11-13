@@ -232,8 +232,9 @@ export function buildMetaFields(
     source: object.source,
   };
 
-  if (object.format) {
-    meta.format = object.format;
+  // ADR-023：键名 format 是 RAGFlow 外部索引契约，保留不动；值改取分类 code。
+  if (object.category) {
+    meta.format = object.category;
   }
 
   return meta;

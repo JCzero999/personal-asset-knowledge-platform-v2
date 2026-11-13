@@ -2,7 +2,7 @@
 
 > **读者**：接手本项目的开发者 / AI、需要评估进度的协作者。
 > **写法**：只记录仓库里能核实的事实（提交、文件、测试、实测端口）。无法核实的标「未验证」，不写规划口吻的完成状态。
-> **快照时间**：2026-11-11 22:30（Asia/Shanghai），本轮联调改动提交前 HEAD `85c6093`，分支 `master`。测试基线 **19 个文件 216 项**（typecheck / lint / test / build 均在本轮复跑通过）。真实登录、前端冒烟与图谱归属隔离的操作过程见 [08_RUN_LOG.md](08_RUN_LOG.md)。
+> **快照时间**：2026-11-12 12:35（Asia/Shanghai），本轮形态与标签词表化（界面落地：弹窗 / 目录管理区 / 标签筛选 / 管理页）改动在工作区未提交，HEAD `208d518`，分支 `master`。测试基线 **25 个文件 259 项**（typecheck / lint / test 在本轮复跑通过）。真实登录、前端冒烟与图谱归属隔离的操作过程见 [08_RUN_LOG.md](08_RUN_LOG.md)。
 > **与其他文档的关系**：阶段定义以 [02_PHASES.md](02_PHASES.md) 为准，决策以 [03_DECISIONS.md](03_DECISIONS.md) 为准，接口以 [06_API.md](06_API.md) 为准。本文件不重复契约，只讲「怎么做的、踩过什么、怎么验证」。
 
 ---
@@ -207,6 +207,81 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 34 | 新增的 `scripts\*.ps1` 一运行就报「字符串缺少终止符」等解析错误 | Windows PowerShell 5.1 把无 BOM 的 UTF-8 当 ANSI 读，中文字符串被截断 | 用 Node 在文件头写入 `U+FEFF` 后另存为带 BOM 的 UTF-8；`-Check` 复测正常 | 含中文的 `.ps1` 显式存为带 BOM 的 UTF-8，或改用 `pwsh`；编码问题先看字节头，不先怀疑语法 |
 | 35 | `schtasks /create` 注册开机自启返回「拒绝访问」 | 注册计划任务需要管理员权限 | 改为在当前用户「启动」文件夹放快捷方式（`scripts/install-autostart.ps1`），免提权，`-Remove` 可撤销 | 非提权场景优先用启动文件夹；确需系统级任务时再提权 |
 | 36 | 冒烟脚本报告「创建资产失败」，但数据库里对象已建成 | 断言读 `body.data.id`，接口实际返回顶层 `id` | 改为 `body.id ?? body.data.id`，复跑 9 项全过 | 冒烟失败先打印并核对响应体结构，再怀疑业务逻辑 |
+| 37 | 内容检索的输入框占位文字被一个圆圈 / 放大镜叠在第一个字上 | `.text-input` 与 `.filter-input` 都设了 `padding`，后者的 `padding-left: 34px` 被前者的 `padding` 简写整体覆盖（同优先级、后者声明更早） | CSS 选择器提到 `.text-input.filter-input`（更高优先级）显式给出 34 / 32 px；同时隐藏 `::-webkit-search-cancel-button` / `::-webkit-search-decoration` 原生清除图标 | 复用的基类若用 `padding` 简写，修饰类不要只写单边 `padding-left`；组件级覆盖用「基类 + 修饰类」组合选择器钉死 |
+| 38 | 侧栏点「最近内容」「作品进程」没反应，地址栏 hash 变了但页面不滚动 | Next 的 `<Link>` 在同一路径、仅 hash 变化时不会触发滚动（App Router 把它当作同一路由的软导航） | 页内锚点改成原生 `<a href="/workspace#recent">`；目标区块加 `scroll-margin-top`，避开吸顶工具条 | 页内锚点一律用原生 `<a>`；跨页数据导航才用 `<Link>` |
+| 39 | `npx` / `npm run` 在项目路径 `D:\projects\Personal Asset & Knowledge PlatformV2` 下报 `'Knowledge' 不是内部或外部命令`，或 `Cannot find module 'D:\projects\next\dist\bin\next'` | 路径含空格**和** `&`：`.cmd` 中间层把 `&` 当命令分隔符，npx 又按空格拆路径 | 脚本与临时命令都走 `node node_modules/next/dist/bin/next …`、`node node_modules/vitest/vitest.mjs …`，不再经过任何 `.cmd` shim | 含 `&` 的目录里不使用 npx / 全局 bin；用 `node <绝对 bin 路径>` 直调 |
+| 40 | 想另起一个实例验证生产构建：第二个 `next dev` 被拒绝；复制项目目录后 Turbopack 构建报 `Could not find the Next.js package … Files outside of the workspace root are not compiled` | Next 16 同一目录只允许一个 dev（`Another next dev server is already running… PID`）；临时目录里的 `node_modules` 是指向原仓库的 junction，Turbopack 拒绝解析工作区外的包 | 不碰在跑的 dev 服务：复制到临时目录后用 `next build --webpack`（webpack 不限制包在工作区外），再 `next start -p 3211` 改端口验证；验证完清理临时目录 | 需要第二实例时复制目录 + `--webpack` + 换端口；先 `netstat` 看端口占用，不 kill 用户的 dev 进程 |
+| 41 | 三栏框架上线后，导航栏被撑到 346px 高、目录横跨 1604px，第三列掉到下一行 | `.app-frame` 只声明了两列 `76px minmax(0,1fr)`，出现第三个子元素时 grid 自动换行，目录被塞进剩余宽度 | 用 `.app-frame:has(> .directory)` 显式声明三列 `76px 224px minmax(0,1fr)`，含列表时 `.has-list` 再声明四列 `76px 224px 340px minmax(0,1fr)`；≤1100px 的媒体查询同步改成两列 | 结构性布局用「根容器 + 子元素存在性」表达列数；改列数时同时改断点里的声明，并用无头浏览器读 `getBoundingClientRect` 核对实际列宽 |
+| 42 | 工作台服务端 HTML 是 `class="filters"`，客户端水合后变成 `class="filters is-compact"`，Next 开发浮层出现「1 Issue」并报 hydration mismatch | Turbopack 内存模块图里仍是旧编译的 `ObjectFilters`（chunk 里签名还是 `function ObjectFilters({ filters })`），清 `.next` 缓存文件与 touch 源文件都无效 | 重启 dev server（结束 `npm run dev` 的进程树后重新拉起），水合告警消失 | 改了组件 props / 条件类名却只有服务端渲染对、客户端不对时，先排除构建缓存，再怀疑逻辑；重启 dev 比反复改代码快 |
+| 43 | 删除 `workspace/[id]/page.tsx`、`workspace/page.tsx` 后 `tsc --noEmit` 报 `.next/types/validator.ts` 找不到模块，即使源码已无引用 | `.next/types/validator.ts`、`routes.d.ts`、`root-params.d.ts` 是上一次构建生成的路由类型，仍指向已删除的路由文件 | 删除这三个生成文件后重跑 typecheck（或清 `.next` 重新生成） | 删路由后先清生成类型再跑类型检查；`.next/types` 只是产物，不要改它来「修」错误 |
+| 44 | Markdown 预览里标题和正文一样大，「一级标题」看不出层级 | `.previewPane` 的标题字号引用了 `--fs-22` / `--fs-18`，但 `globals.css` 只定义到 `--fs-20` 与 `--fs-26`；未定义变量让整条 `font-size` 声明失效 | 改为已定义的 `--fs-26` / `--fs-20`；同时检查模块样式里其它 `--fs-*` 引用 | 新写 `var(--token)` 前先 grep 定义；设计令牌的失效是静默的，靠截图验收而不是只读代码 |
+| 45 | 批量列表用 `useEffect` 把选中集合与最新 `objects` 求交集，ESLint 报 `react-hooks/set-state-in-effect`，提示级联渲染 | 在 effect 里同步 `setState` 属于反模式；这里本可以直接由 props 推导 | 改成渲染期派生：`selectedIds = pickedIds.filter(id => objects.some(...))`，动作与计数都用派生值，不再回写状态 | 能从 props / state 推导的值不要放进 effect；只有同步外部系统（DOM、订阅）才用 effect |
+| 46 | 无头 Chromium 里点「批量导出」出现成功 toast，但下载目录里没有文件 | `chrome-headless-shell` 不落盘普通下载（即使 `Browser.setDownloadBehavior` + `userGesture`）；断言方式错了，不是功能坏了 | 在页面里替换 `URL.createObjectURL` 捕获 Blob，读取 `blob.text()` 验证内容与类型（`text/markdown`）；真实浏览器里仍是标准 `<a download>` 行为 | 无头环境断言「生成了什么」而不是「文件落在哪」；下载类功能要么捕获 Blob，要么在真实浏览器里点一次 |
+| 47 | 浏览器里打开工作台，Next 开发浮层报 hydration mismatch，diff 只有 `<body>` 上的 `data-atm-ext-installed="1.30.02"` | 浏览器扩展在 React 加载前往 `<body>` / `<html>` 挂私有属性，服务端 HTML 里没有，属于外部注入而不是应用渲染差异 | `src/app/layout.tsx` 给 `<html>` 与 `<body>` 加 `suppressHydrationWarning`，只屏蔽这两个元素自身的属性 / 文本比对；子树水合问题照常报告。用「在应用脚本前注入同名属性」的无头测试复测：属性存在、控制台零告警、列表与顺序正常 | 水合 diff 只涉及 `<html>` / `<body>` 自身属性时先怀疑扩展（`data-*-ext-*`、`cz-shortcut-listen` 等）；`suppressHydrationWarning` 只加在根元素，不要扩大范围 |
+| 48 | 正文编辑器贴长文后完全不能上下滚，工作台列表也看不到垂直滚动条 | ① `.markdownPane` 只声明了列轨道，隐式行高是 `auto`，被 240 行正文撑到 14900px，再由 `overflow: hidden` 裁掉，左右两栏都拿不到有界高度；② `.writePane` / `.previewPane` / `.input` / `.previewScroll` 缺 `min-height: 0`，flex 子项的自动最小高度等于内容高度；③ Windows 11 的 Chromium 默认是覆盖式滚动条，静止时不绘制滑块，长列表看起来就像「没有滚动条」 | `.app-frame` 与 `.markdownPane` 显式 `grid-template-rows: minmax(0, 1fr)`；书写区、预览区、textarea 补 `min-height: 0`；列表与编辑器滚动区用 `::-webkit-scrollbar` 换成 10px 常驻细条，`.record-scroll` 加 `scrollbar-gutter: stable`。实测 240 行正文两栏独立滚动，45 条数据在 1680 / 1280 / 860 宽均能滚到底 | 由 flex / grid 容器负责滚动的区域，容器必须有确定高度（`minmax(0,1fr)`）+ 子项 `min-height: 0`；判断滚动条是否存在看 `offsetWidth - clientWidth`，不要只看截图——无头 Chromium 截图不绘制滚动条滑块；也不要同时写 `scrollbar-width` / `scrollbar-color`，Chromium 会因此忽略 `::-webkit-scrollbar` |
+
+| 49 | `0005` 迁移里 `DROP TABLE objects` 直接失败：`FOREIGN KEY constraint failed`，即使 SQL 里先写了 `PRAGMA foreign_keys = OFF` | Drizzle 的 migrator 把**整批迁移包在一个事务**里执行；SQLite 的 `PRAGMA foreign_keys` 在事务内是空操作，改不动当前连接的外键状态，`library_events.object_id → objects.id` 仍然生效 | 外键开关移到 `migrate()` 外层：`sqlite.pragma("foreign_keys = OFF")` → `migrate(...)` → `finally` 里恢复 `ON`；迁移后跑 `PRAGMA foreign_key_check`，非空即抛错拒绝启动 | 任何需要重建 SQLite 表的迁移都不能依赖迁移文件内的 PRAGMA；开关放在调用方，并用 `foreign_key_check` 做收尾断言，别假设「脚本写了就生效」 |
+| 50 | 迁移在真实库上跑坏了才发现问题，回滚无从下手 | 初版只想着「迁移写对」，没有迁移前备份 | `openDatabase` 在有未应用迁移时先用 `VACUUM INTO` 备份为 `<db>.bak-<ISO>`（WAL 下也是完整快照），再执行迁移；演练脚本 `scripts/rehearse-vocabulary-migration.mjs` 在副本上先跑一遍 | 破坏性迁移固定三段式：**备份 → 副本演练 → 真库执行**；演练脚本与自动化测试各留一份 |
+| 51 | 标签在不同入口写进去变成多条记录（`工具类` / `工具类 ` / `ＴＯＯＬ` / `tool`） | 归一化逻辑散落在表单、服务、迁移三处，规则各写各的 | 抽 `src/domain/vocabulary.ts` 为唯一实现：分隔符 → trim → 空白折叠 → NFKC → 小写键 → 按键去重 → 长度；`tags.normalized` 建唯一索引，写入用 `ON CONFLICT DO NOTHING` 后回查 | 「同一概念只有一份规则实现」优先于「各处就地校验」；唯一索引是并发下的最终兜底，测试要同时覆盖纯函数与直写数据库 |
+| 52 | 词表使用次数把已软删的对象也算进去，删除保护误报「仍被引用」 | 计数只按 `objects.format` / `object_tags` 聚合，漏掉了 `deleted_at` 条件 | 计数统一 `join objects ... and objects.deleted_at is null`；单测固定一条「软删后计数归零、标签可删」的用例 | 软删是全局语义，任何统计、导出、校验都要显式带 `deleted_at is null`；把这条写进领域文档，而不是每个查询自己记 |
+| 54 | 词表管理页的「↑ / ↓」点了没反应，序号与列表顺序都不变 | 新排序值按「相邻行 ∓10」算（`neighbour.sortOrder - direction * 10`），上移时方向为 -1，结果等于 `prev.sortOrder + 10`，正好是当前行的下一个位置，PATCH 后列表原地不动；`sort_order` 手动改过、间隔不足或相等的两行也是同样结果 | 改成交换相邻两行的 `sort_order`；两行值相等时先按当前顺序把整表重排为 10、20、30…，再交换。真实登录实测 up/up/down 三次位置均正确 | 做「交换两条记录的顺序」时不要用相对偏移推算新值，除非能保证取值互不相同且间隔足够；行序操作的测试要断言**整表顺序**，只断言「接口返回 200」会漏掉这类静默失败 |
+| 55 | 管理页删除被引用项时拿不到引用数量，弹不出「迁移到… / 合并到…」 | `src/lib/api-error.ts` 的 `apiRequest` 只把 `{error:{code,message}}` 拼成一句人话，`details`（含 `usage`）在解析时被丢掉，客户端无从判断是 409 还是普通失败 | 词表管理页不再走 `apiRequest`，自写 `request<T>()` 保留 `code` 与 `details`，`isConflict()` 按 `code === "CONFLICT"` 判定后再读 `usage` | 统一错误信封的价值在于 `details` 能被消费端读到；凡是需要按错误码分支的页面，先确认手里的客户端没把结构化信息压平成字符串 |
+| 56 | 词表管理页的验收必须用管理员，但 `ADMIN_SUBS` 里只有用户本人的 `sub`，且其账号从未在应用内登录过 | 管理员判定读环境变量；测试账号 `pakp_test` 不在名单里，进 `/admin/vocabulary/*` 只能看到 403 兜底 | 备份 `.env.local`，临时把测试账号 `sub` 加入 `ADMIN_SUBS` 并重启开发服务，用无头 Chromium 跑完整实测；结束后从备份还原、再重启一次并访问 `/workspace` 确认 200 | 后台功能的自动化验收需要一个可登录的管理员身份，这件事要提前规划；临时提权必须「备份 → 改 → 重启 → 验 → 还原 → 再重启」，并在报告里写明，不能让它变成永久配置 |
+| 57 | 实测脚本判定「控制台无报错」，实际控制台里有两条 409 | 删除被引用项的 409 是**预期业务冲突**，浏览器会把失败的 fetch 记成 `console error` | 断言时把这些 URL / 状态码排除，只对剩余条目判定为 0；报告里单独说明「两条预期 409」 | 「无报错」这类断言要写清口径：网络层的 4xx 与真正的 JS 异常不是一回事，先分类再计数 |
+
+| 58 | 升级到「本地六表授权」后，所有人第一次登录都只拿到只读，后台没有人能进 | 原实现把 `ADMIN_SUBS` 当管理员名单（环境变量即授权）；改成表驱动后，老账号在 `users` 里还不存在，若引导只在「已有 owner」时补角色，第一登录者会落到默认 `viewer` | `resolveSessionAccess` 在 `countActiveOwners() === 0` 且 `sub` 在 `ADMIN_SUBS` 里时授予 `owner` 并写 `user.bootstrap`；owner 落库后环境变量退出授权；另留 `npm run admin:grant -- <sub> [role]` 离线恢复。实测：真实库迁移后本人成为 owner，清空 `ADMIN_SUBS` 再登录仍是 owner | 换授权模型时必须设计「空库 / 老库第一次登录」路径，并单独验证「清空环境变量后老 owner 仍能进」；演练在真实库副本上跑一次引导，不只看测试库 |
+| 59 | 迁移演练时用户建出来了，却没有 `user.bootstrap` 审计；后台显示「无审计记录」 | 新建分支写成「插入用户与角色后 `return`」，drizzle 的同步事务回调提前结束，末尾统一写审计的代码被跳过 | 去掉分支里的 `return`：新建时只插入目标角色，已有用户走 `onConflictDoNothing` 追加，审计固定放在事务末尾 | 事务回调保持单出口；分支里不要 `return`，否则后续语句（审计、关联、计数）会被静默跳过，而且业务写已经成功，很难从结果反推 |
+| 60 | `admin:grant` 新建的 owner 同时带 `owner` 与 `viewer` 两个角色 | 脚本照搬「新用户先给默认 viewer，再追加目标角色」，把默认角色当成了必填 | 新建时只写目标角色；只有已存在用户才追加。用例断言完整角色集合 `["owner"]`，不是「包含 owner」 | 「默认角色」只适用于普通首次登录；管理入口创建账号时角色由参数决定。角色断言写全量集合，避免并集掩盖多余角色 |
+| 61 | 路由里加了守卫后，TS 仍报 `session` 可能为 null，只能用 `session!.sub` | `requirePermission` 返回「响应或 null」，编译器无法据此收窄传入的另一个变量 | 路由固定顺序「先取会话 → 守卫 → 通过后使用 `session!`」；页面侧改用 `hasPermission(session, key)` 分支渲染 `AdminForbidden` | 类型收窄不跨函数；非空断言只放在守卫已通过的分支，不要用它掩盖真正的空会话路径 |
+| 62 | 未登录态搜索框是 `disabled`，点上去什么也不发生，用户不知道要去登录 | 禁用控件不派发 click / 不接收指针事件，`onClick` 挂在输入框上等于没有 | 在输入框上叠一层绝对定位的透明 `button`（`.galaxy-search-login-layer`）指向登录地址，`aria-label` 写「登录后可检索内容」 | 任何「点这里去登录 / 去某处」都要挂在覆盖层或包裹元素上，不能挂在被禁用的控件上；禁用态同时保留 `aria-disabled` |
+| 63 | 验收脚本读 `__galaxyStats` 一直是 `frameSamples: 0` / `avgFrameMs: 0`，看起来像画布没跑 | 统计只在第 180 帧发布一次，而脚本在 60 帧左右就读了 | 改为每 30 帧发布一次、第 180 帧定格（`frameSamples === 180 \|\| frameSamples % 30 === 0`） | 运行期读数要留「早期快照」；看到空数据先分清「没运行」和「没上报」 |
+| 64 | CDP 里 `form.requestSubmit()` 和 `Input.dispatchKeyEvent` 都没触发跳转，同一页面在 agent 浏览器里按回车却正常 | 无头 target 未获得焦点时输入事件会被丢弃；脚本合成 submit 与真实按键路径也不等价 | 先 `Page.bringToFront`，再用 `Input.insertText` + keyDown/keyUp，并 `waitFor('location.pathname === "/search"')` 再断言地址 | 键盘类断言必须走真实按键路径，成功条件用「地址 / DOM 真的变了」而不是固定 `sleep` 后读 URL |
+| 65 | 抽屉打开后焦点落在关闭按钮上，第一次 Tab 跳过头两项 | effect 取的是「DOM 顺序第一个可聚焦元素」，而 head 里的关闭按钮在 nav 之前 | 明确聚焦第一个 `.galaxy-drawer-item`，并在实测里断言 `document.activeElement` 的文本 | 焦点管理按「语义第一项」而不是「DOM 第一项」；抽屉 / 弹层的实测要连焦点一起断言 |
+| 66 | 移动端量到搜索框 `top=258`，设计稿是 264 | 眉标 `line-height` 与搜索框 `margin-top` 叠加后整体少 6px，靠「看起来差不多」调不出来 | 眉标显式 16px 行高、移动端搜索框 `margin-top: 16px` 后重测到 264 | 按设计稿逐元素量 `top / height / width`，差 2px 以上就找来源，不用肉眼验收 |
+| 67 | 星系画出来只有两道细弧线，没有「银河」的实体感 | 只实现了粒子层，漏掉设计稿与样稿里的盘面径向渐变与核心辉光两层 | `resize()` 时预建 disk / core 两个 `CanvasGradient`，`draw()` 先填盘面椭圆与核心椭圆再画粒子，不逐帧新建渐变 | 与设计稿对照要按「图层」逐层核，不能只看「星星有没有出现」；渐变缓存跟着尺寸重建 |
+| 68 | 移动端把触控区从 22px 撑到 44px 后，键盘聚焦时露出一个 44×56 的青色方框 | 焦点环画在按钮本体上，而可见三角只有 22px 宽，两者不再是同一个形状 | 触控区与视觉分离：`::before` 画三角（`clip-path`），焦点环改用不带 `clip-path` 的 `::after` 描边 26px | 放大触控区时要同步调整焦点指示的载体，否则无障碍焦点看起来像渲染缺陷 |
+| 69 | 主题切换组件在 `useEffect` 里同步 `setState`，React 19 的 `react-hooks/set-state-in-effect` 直接报 error | 想把首帧脚本写进 `<html>` 的主题同步到组件状态，但 effect 内同步写状态会触发级联渲染 | 改用 `useSyncExternalStore` 订阅 `<html data-theme>` 的 `MutationObserver`，组件不另存一份状态；`applyTheme` 写属性后自动重渲染 | 外部系统（DOM / localStorage）已有真相时用 `useSyncExternalStore`，不要在 effect 里镜像成 state |
+| 70 | 对比度校验在浅色主题下大面积误报：正文色拿来和深色导航底配对、金色用在白底上 | 配对表是按深色单主题写的，Phase 5b 加主题后同一语义令牌在不同主题的用途不同 | 校验脚本逐主题解析 token 块，新增 `text-on-dark*` / `rail-active-fg` / `accent-contrast` 等语义令牌，按实际用途重写 23 组配对 | 对比度校验必须按「令牌在页面上的真实用途」配对，而不是按颜色名猜；新增主题先跑校验再截图 |
+| 71 | 主题持久化与强刷防闪测试假失败：刷新后总是回到 galaxy | 截图脚本用 `Page.addScriptToEvaluateOnNewDocument` 预置 `localStorage`，这段脚本每次导航都执行，把用户新选的主题覆盖回初始值 | 预置脚本只在首屏用，加载后立刻 `Page.removeScriptToEvaluateOnNewDocument`；强刷前再单独写入用户选择 | 会随每次导航执行的注入脚本只用于「首屏初始状态」，测持久化前必须移除 |
+| 72 | 午夜蓝主题的 `--danger-bg` 写成 `rgba(...)`，对比度脚本无法解析 | 校验只接受十六进制色值 | 改成可解析的深色实色 `#2a171b`，并把 `--green-300` 调到 `#4b79b4` 以满足深底 3:1 | 参与自动校验的令牌统一用十六进制；半透明只用于遮罩 / 阴影，不用于需要算对比度的底色 |
+| 73 | 改完 `centerY` 后动画态位置正确，但 reduced-motion / 无 WebGL 的静态图仍停在旧位置 | poster 是预生成 JPG，构图参数改了但没有重出 | 把「构图 / 粒子 / 朝向变更 → 必须重出 poster」写进流程；新增 `measure` 命令比较三条路径的核球亮度质心 | 任何影响场景几何的改动都要重出 poster，并用像素实测而不是只看配置值验收 |
+| 74 | 星系翻到背面后自转看起来「倒着转」 | 绕 Y 轴 180° 会把局部 +Z 映射到世界 -Z，原来的正 Z 自转在屏幕上变成反向 | `resolveGalaxyComposition` 返回 `spinSign`，翻面时自转角度乘 -1；poster 定格角也走同一系数 | 任何整体镜像 / 翻面都要检查旋转方向，把方向修正放在配置换算层而不是靠手调参数 |
+| 75 | 构图放大后星盘越过视口，左右边缘像被切了一刀；同时 centerY 上移 7% 后亮核逼近搜索框 | 星盘直径被调到 100–112% 视口宽，旋臂粒子贴着浏览器边被打断；亮核纵向位置就等于 centerY，上移后净空只剩观感上的「差不多」 | `.galaxy-scene` 三层（静态图 / canvas / CSS 星点）统一加 `clamp(36px, 6vw, 88px)` 四边遮罩让外缘淡出；用 92% 峰值阈值量亮核上沿、和搜索框底边做差，桌面 70px / 移动 69px | 先量基线间距再动 centerY，别凭观感；越界放大必须配边缘柔化，否则浏览器边就是一条直线切口 |
+
+| 76 | 0007 分类统一迁移在演练副本上重建 `objects` 时失败：`FOREIGN KEY constraint failed` / 触发器找不到旧表 | `PRAGMA foreign_keys = OFF` 写在 `migrate()` 的事务里。SQLite 的该 pragma 在事务内是空操作，重建表时旧外键仍然生效 | 迁移脚本在 `migrate()` 之前、事务之外执行 `foreign_keys = OFF`，迁移结束后再 `ON`；`openDatabase()` 启动时仍默认开启外键 | 任何「重命名 / 重建表」迁移都先确认外键开关在事务外；演练脚本与自动化用例都要覆盖「旧结构 → 新结构」整条路径 |
+| 77 | 迁移后作品出现空分类，或列表里出现查不到的分类码 | 旧 `work_formats` 的兜底值、`objects.categories` 自由值、`format` 三套来源没有逐一兜底 | 迁移 SQL 先保证每个作品 `category_code` 非空（空则落 `uncategorized`），自由值主值建分类、其余转标签；配 ADR 验证查询：作品空分类 = 0、失联 code = 0、自由值全部能在分类或标签找到 | 迁移脚本把「不变量」写成显式断言，失败即退出码 2；真实库执行前必须先在副本上 `ok: true` |
+| 78 | 演练通过、真实库却漏了 WAL 里刚写入的数据 | 直接复制 `.db` 文件会丢掉未 checkpoint 的 `-wal` | 备份统一用 `VACUUM INTO`（一致快照、不带旁文件），再复制备份到临时目录演练；迁移前先停开发服务 | 备份脚本只用 `VACUUM INTO`，不从运行中的库 `cp`；迁移前后各记一次对象 / 分类 / 标签计数 |
+| 79 | 自定义新建分类的小弹窗一打开，控制台就报 `<form> cannot be a descendant of <form>`，并在输入框回车时把外层「新建内容」表单提交掉 | 小弹窗渲染在新建弹窗的 `<form className="dialog-form">` 内部，HTML 不允许表单嵌套 | 小弹窗改为 `div[role=group]`，保存按钮 `type="button"`，输入框 `Enter` 手动调用提交函数并 `preventDefault()` | 组件复用在弹窗里时先确认宿主是不是 `<form>`；用浏览器控制台 / CDP 抓 hydration 告警，别只看截图 |
+
+| 80 | 想用 SQLite FTS5 做「不少于 1 个字」的子串模糊查询，两字中文词却一条都查不到 | FTS5 默认分词器按空白 / 标点切 token，CJK 整句是一个 token；trigram 分词器又要求查询 ≥3 字符，「复盘」这类两字词直接无解 | 放弃 FTS5，用 `instr(coalesce(title_norm,''), ?)` 做子串匹配，配 `objects_owner_scope_idx` 收窄候选；1 万对象下词法 p95 ≈7–12ms | 中文子串检索先确认「最短查询长度」；两字词的方案不能依赖 trigram 或空格分词 |
+| 81 | `title_norm` 归一化在 JS 与 SQL 两边各写一遍，全角 / 大小写只在一侧生效，查「ＡＢＣ」找不到「abc」 | 写路径、回填、查询三处都各自调用 `toLowerCase()`，且 SQLite 没有 NFKC | 归一化收敛成一个 `normalizeSearchText`（NFKC → `\s+` 折叠 → trim → 小写），写路径、`backfillSearchNorm`、查询参数、内存打分全部调用它；SQL 里不做任何字符串变换 | 影子列方案的第一条规则：归一化只能有一个实现，SQL 侧只比较不计算 |
+| 82 | 搜索预览 hook 让全文件 20 条 `react-hooks/refs` 报错，另有一条 `set-state-in-effect` | hook 把 `rootRef` 塞进返回的状态对象里，编译器判定整个 `preview.*` 被 ref 污染；同时用 effect 同步打开下拉、重置状态 | `rootRef` 改由调用方传入；下拉开合 / 状态改成从 `requestable` / `settled` / `dismissedKey` 派生，不在 effect 里 `setState` | hook 返回对象里绝不带 ref；能用派生状态表达的就不要写 effect 同步 |
+| 83 | 截图里输入框有值，下拉却始终不出现；同一脚本在另一台机器偶尔正常 | 脚本在 hydration 完成前写入 `value`，React 首次渲染把受控输入重置回空串，之后的 `input` 事件也没了 | 等 `.galaxy-search-input` 出现后再等 900ms，然后 `typeStable()`：写值 → 300ms → 读回 `input.value`，不一致就重试（最多 6 次） | 受控输入的无头输入必须「写后读回」，一次写成功不代表 React 收到了 |
+| 84 | 语法错误块被压成窄条、末尾的 `^` 几乎看不见 | 错误块原来放在 `.search-query` 这个 `align-items: flex-end` 的 flex 行里，宽度被挤压；`^` 与正文同色，在两字中文之间对不齐也不显眼 | 错误块移到 `<form>` 末尾并给 `flex: 1 0 100%`；`^` 那一行单独加 `.search-syntax-caret`，用 `--warn-fg` 加粗，旁边补「第 N 个字符附近」 | flex 表单里的整行提示必须显式 `flex-basis: 100%`；位置指示类符号要单独给颜色，别指望正文色 |
+| 85 | mock 截图实例接上页面后，头像菜单永远点不开：`aria-expanded` 始终 `false`、`document.readyState` 在 `complete` / `interactive` 之间抖动、dev 日志每 300ms 一条 `✓ Compiled in 0ms` | `DATABASE_PATH` 放在项目目录内（`data/capture-6c.db`），SQLite 的 `-wal` 每次写入都改 mtime，Turbopack 判定「文件变了」→ 重编译 → HMR 整页 reload → 页面又发请求又写库 → 无限循环，菜单还没水合就被下一次导航清掉 | 把数据库移到项目目录外（`%TEMP%/pakp-capture-6c/`），重启 dev 后循环消失；截图脚本改为等触发按钮有非零尺寸、再等 1.5s 水合才点击 | dev server 监听的目录里不要放运行时会写的文件（SQLite / 日志 / 缓存）；「点击没反应」先看服务端日志有没有在刷重编译 |
+| 86 | 同一套主题色点，在弹层里显示成当前主题的颜色，换主题预览全部同色 | 色点改成读 `var(--bg)` 这类主题 token 后，token 的作用域是 `[data-theme]` 选择器；只在 `<html>` 上有当前主题，色点自然全部拿当前主题的值 | 每个主题选项的色点容器加 `data-theme={item.id}`，四个圆点分别读对应 token；截图脚本逐点比对 `getComputedStyle().backgroundColor`，16 个值全部等于迁移前的 hex | 变量作用域靠属性选择器时，跨作用域预览必须自己造一个带该属性的包裹元素，而不是在 JS 里换颜色 |
+| 87 | `check-theme` 按 ADR 写的基线 20 报违规，实际字面量 28 | ADR-021 定基线时还没做 Phase 5c 边缘柔化，后来 `.galaxy-scene*` 三层遮罩新增了 8 个 `#000`；静态基线不会跟着 CSS 演进 | 脚本基线取 **26 = 20（ADR）+ 8（柔化新增）− 2（本轮用 `color-mix` 清掉）**，算式写进常量注释；`03_DECISIONS.md` 不改 | 「基线型」规则要在脚本里写明每段差额的来历；数字对不上先查规则制定之后有没有新增同类写法，不要直接调大基线 |
+
+| 88 | 照抄 ADR-022 附录 A2 的 `GraphNode.hop: GraphHop`（1–3），单测里中心节点的 hop 实际是 0，类型靠 `as` 硬转，布局会按 1 跳把星核放进 85 半径的环 | 同一条规则里的 BFS 定义「从 center 出发」天然让中心距离为 0；类型区间是按「请求深度」写的，被复用到节点距离上 | 冻结件里单列 `GraphNodeHop = 0|1|2|3`（`GraphHop` 仍只用于 depth 与边所在环）；边的 hop 取两端更远的那个并夹在 1–2 | 冻结契约前先用最小例子跑一遍规则（单节点、中心 + 1 跳、碎图），类型对不上就地记录偏离，不要用 `as` 糊过去 |
+| 89 | 状态条分不清「构图进度接口请求失败」和「还没请求」：两种情况下 `status` 都是 null，`sources.status` 永远是 skipped | 契约把「没拿到」统一写成 null，但 A5.2 又要求 graph ok + status 失败时显示「构图进度暂不可用」 | `GraphBuildInput` 增可选 `statusFailed`，null + false → skipped、null + true → error；状态与数据仍分开传 | 接口的「null」一旦同时承担两种含义，就要在契约里补一个显式位，而不是让调用方猜 |
+| 90 | 窄屏（<760px）首帧所有节点挤在画布四条边上，之后怎么缩放都不恢复 | 首帧先用 `FALLBACK_SIZE`（760 宽）排一次，Layout 再按真实宽高把锚点 `clamp` 进 `padding` 并标 `pinned`；锚点一旦 pinned，后续 tick 不再松手，等于把「错误的位置」永久固化 | 首帧尺寸用 `null` 表示、不出图，等第一个 ResizeObserver 回调再排；`anchorsForSize` 在宽高变化时丢弃全部锚点、整图重排。回归测试与截图脚本都按 760 → 390 复现：旧锚点 >50% 贴边，重排后 0 个 | 任何「沿用上一帧位置」的缓存都要带尺寸版本；「首帧先估一个尺寸」看似稳，实际会把估算误差写进布局状态 |
+| 91 | 换中心失败时，标题和舞台把新中心配在旧的子图上 | 渲染用的中心直接取 URL 的 `focus`，而数据是上一次成功加载的子图；失败分支又没有区分「有没有旧图」 | 新增 `loadedCenter`（只在 fetch 成功时更新），标题 / 舞台 `focusId` / view-model 一律用它；加载中在舞台上浮「正在载入 X 的邻域…」；失败只出横幅并保留旧图。验收时发现 `__boom__` 根本不在「中心」下拉里——ADR-011 会过滤掉没有本账号内容参与的实体，于是改用真实标签 + mock 只打挂 2 层展开（1 层探测照常成功，标签才会留在列表里） | 「请求中的参数」与「已生效的参数」必须分开存；失败态验收要用真数据，专门造的假标签会被上游过滤掉 |
+| 92 | 显式 `?mode=2d` 时，无 WebGL / reduced-motion / 移动端 / 超大图四条降级分支与文案全都走不到 | 判定函数入参 `urlMode` 被塞成当前模式 `"2d"`，`selectGraphMode` 第一分支就返回 `url-2d`，后面的分支永远不执行 | `urlMode` 传 URL 原值；只在 `decision.mode === "3d" && !THREE_D_READY && decision.reason !== "url-3d"` 时回落 2D 一次，`reason` 保留判定函数的结论。保留 `url-3d` 分支是因为 3D 桩与「星系」按钮需要一个可达入口 | 判定类函数不要给它「当前结果」当输入——会把判定变成回声；回落逻辑写在调用方一次，并显式列出不回落的情形 |
+| 93 | 3D 星系默认就在自转，用户找不到关掉的开关 | 容器的 `autoRotate` 初值写成 `true`，且没有对外入口；ADR-022 A8 要求默认关闭 | 容器持有 `autoRotate` state，默认 `false`；工具条加「自动旋转」按钮（`aria-pressed`），reduced-motion 下整颗按钮不渲染；场景只收到 `autoRotate && !reducedMotion`。截图脚本断言 `aria-pressed="false"`，模拟 reduced-motion 后按钮消失 | 「默认值」也是需求，按 ADR 抄；动效开关要和 reduced-motion 用同一个条件 |
+| 94 | `three` / `react` 用 `^` 浮版本，`@react-three/fiber` 的 peer 范围与新 React 撞车 | 依赖写的是 caret 范围，装的时候 `react` 升到 19.3.1、`three` 到 0.187.0；fiber 9.x 的 peer 是 `react >=19 <19.4` | `package.json` 全部改成精确版本：`three` / `@types/three` `0.187.0`、`react` / `react-dom` `19.3.1`、`@react-three/fiber` `9.8.2`；`npm install` 后 `tsc --noEmit` 复跑。fiber 只安装、不 import，3D 由 B 线接 | 渲染 / 框架依赖一律锁精确版本并核 peer 范围；装完先跑 typecheck，再谈功能 |
+| 95 | 2D 阅读时边几乎看不见；浅色主题下更糟 | 2D 覆盖组沿用了 3D 背景细边的半透明色，alpha 合成到深色画布后对比度不足 1.5:1；而 3D 的细边本来就只是空间装饰 | 2D 覆盖组把普通边提到 42%（3.63:1）、强边 62%（6.91:1）；`check-contrast.mjs` 单独解析 `[data-surface="graph"][data-mode="2d"]` 块并按 3:1 校验；3D 背景细边明确标为「装饰纹理，非信息载体」，只要求可见 | 带 alpha 的颜色必须先合成到真实底色再算对比度；「同名令牌」在不同渲染面可能承担不同职责，验收要按渲染面分组 |
+| 96 | 验收脚本偶发「Runtime.evaluate 超时」或整轮跑十几分钟不结束，重启后又一切正常 | 上一轮被中断留下的 `next start-server` 与 headless Chrome 仍占着 3123 / 9338，新脚本的健康检查打到旧实例、CDP 连到旧浏览器，`Runtime.evaluate` 就挂住；另外失败态场景自己的 500 与服务端日志被当成错误计入 | 脚本加端口占用前置检查并直接报错、`Runtime.evaluate` 加 25 秒上限、失败态按 URL / 文本白名单放行、`PHASE6D_STEPS=` 支持只跑指定步骤；跑前清理残留进程（问题 91 的排查过程也依赖这一步） | 截图脚本的端口与浏览器进程要当成「独占资源」：跑前检查、跑后回收；卡住时先看有没有旧进程，再怀疑被测代码 |
+| 97 | 截图里的页面永远是「半张」：`window.__graphStats` 不存在、DOM 在工具栏中间截断、点击 / 下拉 / `?mode=3d` 全部无效，但 SSR HTML 与接口都是 200 | 脚本用 `http://127.0.0.1:3123` 访问，而 Next dev 的 origin 白名单按 `localhost` 记；`/_next/hmr` 等 dev 资源被判跨源后拦掉，RSC 载荷没有执行，React 从未水合，只剩静态 SSR | 验收实例统一用 `http://localhost:<port>`（脚本里的 `BASE`）；确认水合以 `window.__graphStats` 出现为准，并在失败时打印 readyState / script 列表 / 资源诊断 | dev 模式（尤其 HMR 资源）必须与 `next dev` 输出里的 host 完全一致；「页面能打开、接口 200」不等于前端在跑，先验证一个只有客户端才会写入的标记 |
+| 98 | 开发环境一切正常，生产构建里图谱每 30 帧把整棵 `GraphExplorer` 重渲染一次 | `handleStats` 写 ref 之后还顺手 `setDebugVersion(v+1)`，只为让 `__graphStats` 效果重跑；这个 setState 没和环境绑定 | `setDebugVersion` 只在 `process.env.NODE_ENV !== "production"` 时调用，ref 照写；`__graphStats` 效果本身早就是开发态专用 | 「为了调试而 setState」必须显式关在生产环境之外；判定写在调用点，别指望消费端挡 |
+| 99 | 自适应降档要么永不触发，要么降得太猛来回抖 | 只看单帧或单次窗口的 `avgFrameMs`，还把「没出帧」的窗口算进去——静止 demand 渲染 frames 不增长、avgFrameMs 为 0，窗口永远不过阈值 | 只认 `mode === "3d" && stats.rafActive` 且帧数前进的窗口；连续两个 stats 窗口（≈60 帧）平均帧时 >20ms 才降一档，任一窗口回到 20ms 内就清零；按 `TIER_ORDER` 取下一档、最多 2 次、间隔 ≥3s、降后清零；档位上限经 `previousTier` 交给 `selectGraphMode`，不持久化 | 帧时类降级必须定义「窗口、迟滞、冷却、上限」四件事，并排除不出帧的时段；触发验证用 CDP `Emulation.setCPUThrottlingRate` 真实压出来，别只写单测 |
+| 100 | 抽稀后 3D 点不中、标签错位，2D 也跟着少点 | 把 `decimate` 的结果直接写回 `view`；场景与标签层都靠 `view.nodeIndex` 反查节点，抽稀后没有重建索引 | 3D 分支单独生成 `renderView`（`decimate` + 重建 `nodeIndex`），2D / 列表 / 检查器 / highlight 继续用完整 `view`；提示条补「另有 N 个实体未显示」；`keepIds` 必须含中心 / 选中 / hover / 路径端点 | 同一个模型给两个渲染面用时，「只读视图」在容器里分叉；派生数据（索引）跟着派生结果一起重建 |
+| 101 | mock 切到宽图后，下拉里还是上一份数据的实体，宽图断言全对不上 | 服务端标签列表有 60 秒缓存，`mock.setMode("wide")` 只影响 `/graphs`，首屏 `/graph/label/list` 命中旧缓存 | 宽夹具步骤独占一个 dev 进程：`stopApp` → `setMode("wide")` → 重新 `startApp`；`?maxNodes=` 的透传用「切 2D 后换中心」发出的客户端请求验证（首屏是 SSR 预取，浏览器里没有请求记录） | 验收脚本里「切数据源」不只是切 mock，任何服务端缓存都要算进去；SSR 预取的页面要靠后续交互请求做传递性断言 |
+| 102 | `>300` 节点时 Worker 创建失败，出 `chunk-failed` 横幅、退回主线程 | `graph-scene-3d.tsx` 的 `new URL("../workers/graph-layout.worker.ts", import.meta.url)` 按 `src/components/graph/` 解析，正确相对路径是 `../../workers/...`；`next dev` 日志已报 `Module not found` | 2026-11-13 已修：URL 改为 `../../workers/...`；`GRAPH_PERF_NODES=600` 真 Worker 验收通过（373 节点、Worker 内 56.2–59.6ms/150 ticks、端到端 795ms），见 08 第 16 节 | 相对 `import.meta.url` 的路径按文件所在目录算，`src/components/*` 与 `src/components/<x>/*` 差一层；`next dev` 的 Module not found 不能当噪音忽略 |
+| 103 | 用户卡两秒 → 停手十几秒 → 再卡一次，画质立刻从 high 掉到 balanced，看起来像「两次连续慢窗口」 | `handleStats` 只在「有新帧且 3D / rafActive」时才写 `slowWindows`；2D、后台标签页、同一窗口重复发布、帧计数回绕统统直接 `return`，既不清零也不推进，上一次的慢窗口计数跨空闲保留了下来 | 四条早退路径都改成先 `guard.frames = next.frames` 再 `guard.slowWindows = 0`（回绕 / 非 3D / 帧数没涨）；只有真有新帧才累计或清零。窗口大小、20ms 阈值、2 次上限、3s 冷却、只降不升未动 | 「迟滞窗口」这类状态机，早退分支必须明确「保持」还是「重置」，默认应该是重置；空闲、切模式、换数据源都是不连续的边界。验证时用 `PHASE6D_DROP_PROBE=1` 看每个采样点的 `frames` / `avg`，先确认是「帧没涨」还是「窗口没跨阈值」，再怀疑逻辑 |
+
+| 104 | 生产构建里什么都验不了：`window.__graphStats` 是 `undefined`，标签框调试钩子也消失，脚本一律超时 | `__graphStats` / `__graphLabelBoxes` 都按 `NODE_ENV !== "production"` 早退，这正是「生产不写调试全局」的本意，但验收脚本仍按 dev 口径断言 | 生产态只断言可见 DOM：`data-mode`、`[data-mode="3d"] canvas`、工具条 `aria-pressed`、提示条、`.meta-chip` 档位、`.g3-stub`、`.graph-note-error`、`.sr-only` 播报；再用截图像素统计（尺寸 / 平均亮度 / 亮像素占比 / 颜色桶）防「画布在但没画东西」。`PHASE6D_PROD=1` 走独立的构建 + `next start` 流程 | 调试钩子被生产守卫关掉不是缺陷，是契约；「生产可验证」要在设计断言时就用 DOM 说话，别依赖任何 window 上的读数 |
+| 105 | 生产验收的图谱永远是空的，或标签全是「未连通」 | mock LightRAG 的夹具对象用自造 `filePath`，而 ADR-011 的读侧过滤按「本账号内容是否参与」判归属，不认识这些 id | 真实库只读备份到 `%TEMP%`，在**副本**上播夹具对象，让 `filePath` / 对象 id 对上；源库全程不打开写入，验证后删副本 | 图谱验收的夹具必须和归属过滤对齐；「接口 200 但图是空」先查归属过滤，别查渲染 |
+| 106 | `.next-build` 存在时跑 `eslint .` 报出近千条错误，删掉目录就恢复 | 自定义构建产物目录不在 ESLint 的默认忽略里，被当成源码扫描 | `.gitignore` 加 `/.next-build`，`eslint.config.mjs` 的 `globalIgnores` 同步加 `.next-build/**`；门禁一律在干净树上跑 | 任何自定义构建 / 导出目录都要同时进 git 忽略与 lint 忽略，否则「本地全绿」和「门禁全绿」不是同一件事 |
 
 **通用预防**（比单条修复更重要）：
 
@@ -218,16 +293,20 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 
 ## 5. 验证流程
 
-### 5.1 提交前四条（全部在项目根目录执行）
+### 5.1 提交前五条（全部在项目根目录执行）
 
 ```bash
-npm run typecheck   # node node_modules/typescript/bin/tsc --noEmit
-npm run lint        # node node_modules/eslint/bin/eslint.js .
-npm test            # node node_modules/vitest/vitest.mjs run
-npm run build       # 改动涉及构建配置或路由时执行
+npm run typecheck    # node node_modules/typescript/bin/tsc --noEmit
+npm run lint         # node node_modules/eslint/bin/eslint.js .
+npm test             # node node_modules/vitest/vitest.mjs run
+npm run check:theme  # 主题契约：四块 98 名相等、几何只在 :root、字面量不超基线、theme.ts 零 hex
+npm run check:contrast  # 四套主题的对比度；改图谱 / 主题色时必跑
+npm run build        # 改动涉及构建配置或路由时执行
 ```
 
-通过标准：typecheck / lint 无输出、测试全绿。当前基线是 **19 个测试文件 216 项**（Phase 3 结束时 2026-11-11 复跑确认）；`next build` 同期通过。
+通过标准：typecheck / lint 无输出、测试全绿、`check:theme` 打印四行 `98 tokens PASS` 且退出 0、`check:contrast` 37/37。当前基线是 **46 个测试文件 675 项**（672 通过 + 3 项基准默认跳过，2026-11-13 Phase 6D 收尾复跑确认）。
+
+> 本机（Windows，内存偏紧）直接 `npm test` 会因 Vitest 默认 worker 池占满内存而崩（`FATAL ERROR: Committing semi space failed`，Exit 134，多个 worker "exited unexpectedly"）。门禁与本地复跑一律用 `node ./node_modules/vitest/vitest.mjs run --maxWorkers=2`；这不是测试失败，别去改代码。
 
 ### 5.2 本地起服务与健康检查
 
@@ -320,6 +399,66 @@ curl -s --max-time 180 -X POST $BASE/api/graph/query \
 - `0004_library_events_cross_check.sql` 给 `library_events` 加了 `from_library <> to_library` 的 CHECK；服务层本就拒绝同库迁移，这条是直写数据库时的兜底。
 - 手工核对时，`drizzle/meta/000N_snapshot.json` 是「应然」，`.sql` 是「实然」，两者不一致以能执行且测试通过的 SQL 为准，并回头修快照。
 
+**破坏性迁移（重建表 / 删列，如 `0005_vocabulary.sql`）三段式**：
+
+```bash
+# ① 备份：openDatabase 在检测到未应用迁移时会自动 VACUUM INTO 一份
+#    data/app.db.bak-<ISO>；手工再备一份更保险（含 WAL）
+cp data/app.db "data/app.db.manual-$(date +%Y%m%d-%H%M%S)"
+
+# ② 副本演练：复制 → 完整迁移 → 前后计数 → 外键自检 → 删副本
+node scripts/rehearse-vocabulary-migration.mjs
+#  输出 JSON：before/after 的对象数、各 format 计数、work_formats / tags /
+#  object_tags 行数、foreignKeyCheck（必须为 0）、elapsedMs
+
+# ③ 真库执行：重启开发服务（或任何打开数据库的进程），
+#    迁移在 openDatabase 里一次性跑完；日志会打印备份路径
+node node_modules/next/dist/bin/next dev   # 或 restart 现有 dev server
+
+# 收尾核对（真库）
+node -e "const D=require('better-sqlite3');const d=new D('data/app.db',{readonly:true});console.log(d.prepare('select type,count(*) n from objects group by type').all(),d.prepare('select format,count(*) n from objects where type=\'work\' group by format').all(),d.prepare('select count(*) n from work_formats').get(),d.prepare('pragma foreign_key_check').all())"
+```
+
+注意：重建表时 `PRAGMA foreign_keys` 必须在 `migrate()` **外层**切换（见问题 49），迁移文件里写是空操作。
+
+### 5.4.1 词表界面验收（真实登录，无头浏览器）
+
+数据层与接口的验收用 `AUTH_MODE=mock` 的 HTTP 冒烟就够；**界面**验收必须用真实登录态，因为目录管理区、管理页与弹窗的显隐都读 session。整套流程不碰用户本人的 Chrome（问题 56 / `08_RUN_LOG.md` 里的边界）：
+
+1. **准备身份**：管理员页需要管理员。若 `ADMIN_SUBS` 只有用户本人、而其账号不便使用，按问题 56 备份 `.env.local` → 临时加入测试账号 `sub` → 重启 dev 服务。
+2. **起无头 Chromium**：`chrome-headless-shell` + CDP（`--remote-debugging-port` + 独立 `--user-data-dir`），脚本与截图放临时目录，不入库。
+3. **登录**：导航 `/api/logto/sign-in` → 在 Logto（`localhost:3001`）填 identifier / password → 处理授权页 → 回到 `localhost:3000`。脚本里的密码从既有冒烟脚本 `set(pass, …)` 读取，不写进文档与日志。
+4. **管理页 CRUD**：`/admin/vocabulary/formats` 新增一个测试形态 → 确认出现在列表末尾 → 改名 → ↑ 两次 / ↓ 一次核对**整表顺序** → 删除（无引用时直删）。
+5. **弹窗与筛选同步**：回 `/workspace` 新建弹窗，确认形态 chips 与词表顺序一致、「管理」入口指向 `/admin/vocabulary/formats`；建一个作品 + 一个资产各打一个标签；第三列「标签」下拉只剩这两条。
+6. **改名穿透**：在管理页把标签改名，再回工作台确认筛选下拉、列表 chips 与详情页同步（靠 `revalidateVocabulary()`，无需硬刷新）。
+7. **409 路径**：建一个被引用的形态，删除 → 弹窗显示引用数量 → 选「迁移到…」完成；标签同理，验证「合并到…」后关联保留、源标签消失。
+8. **两种视口**：`Emulation.setDeviceMetricsOverride` 切 1280×800 与 860×1000，断言 `document.documentElement.scrollWidth <= clientWidth`、弹窗高度不超过视口且正文可滚。
+9. **收尾**：删除测试形态 / 标签（含迁移产生的关联），核对对象数回到基线（9，可见 7）、形态 7、标签 1、`object_tags` 3、`pragma foreign_key_check` 为空；把被排序测试改过的 `sort_order`（如「未分类」999）改回原值；还原 `.env.local` 并重启，访问 `/workspace` 确认 200。
+
+判定口径：控制台里删除被引用项的 409 属预期（问题 57），其余报错一律算失败。
+
+### 5.4.2 后台权限迁移验收（ADR-019）
+
+授权从环境变量搬进数据库，验收重点是「不丢数据、不断人」：
+
+1. **副本演练**：复制 `data/app.db`（含 `-wal` / `-shm`）→ 用 `openDatabase` 打开副本 → 断言对象 / 作品数与迁移前一致、角色 4 / 权限 13 / 关联 27、`foreign_key_check` 为空。
+2. **真实库**：`openDatabase` 会先 `VACUUM INTO` 备份（`data/app.db.bak-<ISO>`），再执行 0006；迁移后核对同样的计数。
+3. **引导**：以真实 `sub`（`gdv8t04dw4ca`）调一次 `resolveSessionAccess`（`authMode=logto`、`adminSubs` 取 `.env.local`），应得 `roles: ["owner"]` 与一条 `user.bootstrap`；再用 `adminSubs: ""` 调一次，仍是同一 `userId`、仍是 owner。
+4. **守卫**：用该会话依次调 `requirePermissionWith(..., "system:read" / "user:write" / "audit:read")`，应全部返回 `null`；陌生账号同项应得 403。
+5. **离线恢复**：把库复制一份，`DATABASE_PATH=<副本> npm run admin:grant -- <测试sub> editor`，确认只写入 `editor` 一个角色与 `cli:admin-grant` 的审计，完成后删除副本。
+6. **收尾**：真实库只保留本人 owner 记录；不改 `.env.local` 也能验证「清空 `ADMIN_SUBS` 仍可进入」，因此无需临时提权与还原。
+
+### 5.4.3 图谱 2D 验收截图（`scripts/phase6d-capture.mjs`）
+
+图谱界面的验收不依赖本机 LightRAG：脚本自建临时库与 mock 服务，用无头 Chrome 走一遍真实页面。
+
+1. **前置**：`APP_PORT`（默认 3123）与 CDP 端口（默认 9338）必须空闲。跑前先 `netstat -ano | findstr :3123`，有残留 `next start-server` 或上一轮的 headless Chrome 就先结束进程——残留会让脚本连到旧服务或直接报「端口已被占用」（问题 91）。
+2. **执行**：`node scripts/phase6d-capture.mjs`（6D-3 起全套约 2–3 分钟，3D 场景要等布局稳定）；调试时用 `PHASE6D_STEPS=center,status` 只跑指定步骤：`empty` / `desktop` / `center` / `list` / `mobile` / `3d` / `downgrade` / `maxnodes` / `overbudget` / `error` / `status`。`3d` 含桌面默认入口、移动端回落、低档三张图；`overbudget` 会重启一次 dev（宽夹具独占进程，见问题 101）。另有 B 线只读脚本 `node scripts/graph-perf.mjs`（自包含，3125 / CDP 9340）。
+3. **它做了什么**：临时库放 `%TEMP%`（放进项目会让 Turbopack 一直重编译，见问题 85）→ mock LightRAG 按场景切模式（`empty` / `full` / `graph-error` / `status-error` / `center-error`）→ `AUTH_MODE=mock` 的 dev（3123，`NEXT_DIST_DIR=.next-mock`）→ CDP 断言 + 截图。
+4. **断言口径**：横向溢出、console / page / network 错误默认都算失败；失败态场景里故意制造的 500 与对应的服务端日志按 URL / 文本白名单放行（问题 57 的同一口径）。
+5. **产物**：`docs/screenshots/phase6d-2d-{desktop,empty,list,mobile,error,center-error,status-unknown}.png` 与 `phase6d-3d-{default-entry,mobile-2d,low-tier,overbudget}.png`，桌面 1440×900、移动 390×844 dpr 2；`graph-perf.mjs` 另出 `phase6d-3d-{default,selection,low}.png`。均无水印。
+6. **读截图**：`center-error` 应保留旧图 + 一条红色横幅；`status-unknown` 应是「图谱状态暂时读不到」而不是「图谱还是空的」；`mobile` 不应有节点全贴在舞台边上。
+
 ### 5.5 外部服务连通性（已部署时）
 
 ```bash
@@ -381,6 +520,7 @@ curl -s http://127.0.0.1:9381/v1/models
 - **CPU 很慢**：118 字文档抽取约 3.8 分钟、`mix` 问答约 94 秒；长文档的等待时间未测，生产使用需评估 GPU 或云模型。
 - **真实 Logto 下的前端冒烟已完成**（2026-11-11）：无头浏览器走通登录 → `/workspace`、`/search`、`/graph`、`/workspace/{id}`，创建 201、非法请求 400、匿名 401。测试账号 `pakp_test` 可在 Logto 控制台删除。
 - **生产构建已复跑**：`next build` 通过；`next start`（3100 端口，`AUTH_MODE=logto`）实测 `/api/health 200`、`/ 200`、未登录 `/graph 307 → /`、`/api/logto/sign-in 307` 到 Logto。`MIGRATIONS_FOLDER` 指向仓库 `drizzle/` 的跨目录部署仍需在目标机器确认。
+- **图谱 3D 已在生产运行时（`next start`）复验**（2026-11-13）：默认入口进 3D、`?maxNodes=600` 走真 Worker（换中心后仍走）、低档抽稀计数与画布一致、24× 降速下真实降档且不回升。仍跑在 mock LightRAG 夹具 + 无头 SwiftShader 上；真实 LightRAG / 真实 Logto 会话未在 `next start` 下复测，Worker 消息流量未在生产构建下埋点。
 - **服务开机自启已配置**：`scripts\autostart.ps1` + 「启动」文件夹快捷方式；Logto / RAGFlow / LightRAG / embedding 四项开机拉起，Ollama 由现有自启项负责。
 - **验收标准与实现的端点名不一致**：产品验收标准使用 `/api/assets`、`/api/works`、`/api/auth/callback`、`/api/auth/sign-out`；实现是 `/api/objects` 与 `/api/logto/*`。验收前必须统一口径，否则「按标准测」会全部对不上。
 

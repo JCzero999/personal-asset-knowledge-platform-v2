@@ -14,6 +14,7 @@ const filters: WorkspaceFilters = {
   type: null,
   library: null,
   status: null,
+  tag: null,
   sort: "updated",
   archived: "active",
 };
@@ -40,6 +41,7 @@ describe("parseWorkspaceFilters", () => {
       type: "work",
       library: "external",
       status: "published",
+      tag: null,
       sort: "title",
       archived: "only",
     });
@@ -67,6 +69,12 @@ describe("parseWorkspaceFilters", () => {
   it("类型为全部或作品时保留状态", () => {
     expect(parseWorkspaceFilters({ status: "draft" }).status).toBe("draft");
     expect(parseWorkspaceFilters({ type: "work", status: "draft" }).status).toBe("draft");
+  });
+
+  it("标签参数去空格，空值视为未筛选", () => {
+    expect(parseWorkspaceFilters({ tag: "  工具类 " }).tag).toBe("工具类");
+    expect(parseWorkspaceFilters({ tag: "   " }).tag).toBeNull();
+    expect(hasActiveFilters(parseWorkspaceFilters({ tag: "工具类" }))).toBe(true);
   });
 
   it("重复参数取第一个", () => {
@@ -102,6 +110,13 @@ describe("buildWorkspaceHref", () => {
     expect(buildWorkspaceHref(withStatus, { type: "asset" })).toBe("/workspace?type=asset");
   });
 
+  it("标签写进 URL，清空时不留参数", () => {
+    expect(buildWorkspaceHref(filters, { tag: "工具类" })).toBe(
+      "/workspace?tag=%E5%B7%A5%E5%85%B7%E7%B1%BB",
+    );
+    expect(buildWorkspaceHref({ ...filters, tag: "工具类" }, { tag: null })).toBe("/workspace");
+  });
+
   it("切换归档范围保留其它筛选", () => {
     const current: WorkspaceFilters = { ...filters, q: "复盘", type: "work" };
     expect(buildWorkspaceHref(current, { archived: "only" })).toBe(
@@ -122,6 +137,7 @@ describe("buildWorkspaceHref", () => {
       type: "asset",
       library: "external",
       status: null,
+      tag: null,
       sort: "title",
       archived: "active",
     });
@@ -131,6 +147,14 @@ describe("buildWorkspaceHref", () => {
 describe("toListObjectsQuery", () => {
   it("默认只按更新时间排序并带 limit", () => {
     expect(toListObjectsQuery(filters, 100)).toEqual({ sort: "updated", limit: 100 });
+  });
+
+  it("标签沿用到仓储查询条件", () => {
+    expect(toListObjectsQuery({ ...filters, tag: "工具类" }, 20)).toEqual({
+      tag: "工具类",
+      sort: "updated",
+      limit: 20,
+    });
   });
 
   it("关键字映射为 search，归档视图映射为 archivedOnly", () => {
@@ -158,6 +182,7 @@ describe("activeFilterChips", () => {
         type: "work",
         library: "external",
         status: "published",
+        tag: "工具类",
         sort: "title",
         archived: "only",
       }),
@@ -166,6 +191,7 @@ describe("activeFilterChips", () => {
       { key: "type", label: "作品" },
       { key: "library", label: "外库" },
       { key: "status", label: "已发布" },
+      { key: "tag", label: "标签「工具类」" },
       { key: "archived", label: "已归档" },
       { key: "sort", label: "按标题排序" },
     ]);

@@ -36,6 +36,34 @@
       "when": 1794380329525,
       "tag": "0004_library_events_cross_check",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794456605102,
+      "tag": "0005_vocabulary",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794458427127,
+      "tag": "0006_admin_rbac",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794498391664,
+      "tag": "0007_categories",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794501292913,
+      "tag": "0008_search_norm",
+      "breakpoints": true
     }
   ]
 }

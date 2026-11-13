@@ -1,6 +1,7 @@
 import { getDb } from "@/server/db/client";
 import { fromError } from "@/server/http/respond";
 import { downloadObjectContent } from "@/server/services/content-service";
+import { requirePermission } from "@/server/authz";
 import { getSession } from "@/server/session";
 
 export const runtime = "nodejs";
@@ -12,11 +13,12 @@ export async function GET(
   { params }: { params: Promise<{ id: string; refId: string }> },
 ) {
   const session = await getSession();
-  if (!session) return new Response("请先登录", { status: 401 });
+  const denied = requirePermission(session, "object:read");
+  if (denied) return denied;
 
   try {
     const { id, refId } = await params;
-    const { ref, file } = await downloadObjectContent(getDb(), session.sub, id, refId);
+    const { ref, file } = await downloadObjectContent(getDb(), session!.sub, id, refId);
     // RAGFlow 回传的文件名可能只剩扩展名（非 ASCII 被它过滤过），
     // 本地记录的上传名才是用户认得的那个，优先用它。
     const filename = ref.documentName ?? file.filename ?? "content";

@@ -2,6 +2,7 @@ import { ValidationError } from "@/domain/errors";
 import { getDb } from "@/server/db/client";
 import { fail, fromError, ok } from "@/server/http/respond";
 import { changeObjectLibrary, listObjectLibraryEvents } from "@/server/services/object-service";
+import { requirePermission, toActor } from "@/server/authz";
 import { getSession } from "@/server/session";
 
 export const runtime = "nodejs";
@@ -12,11 +13,12 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getSession();
-  if (!session) return fail("UNAUTHORIZED", "请先登录");
+  const denied = requirePermission(session, "object:read");
+  if (denied) return denied;
 
   try {
     const { id } = await params;
-    return ok(await listObjectLibraryEvents(getDb(), session.sub, id));
+    return ok(await listObjectLibraryEvents(getDb(), session!.sub, id));
   } catch (error) {
     return fromError(error);
   }
@@ -27,14 +29,15 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getSession();
-  if (!session) return fail("UNAUTHORIZED", "请先登录");
+  const denied = requirePermission(session, "object:write");
+  if (denied) return denied;
 
   try {
     const body = await request.json().catch(() => {
       throw new ValidationError("请求体不是合法 JSON");
     });
     const { id } = await params;
-    return ok(await changeObjectLibrary(getDb(), session.sub, id, body));
+    return ok(await changeObjectLibrary(getDb(), toActor(session!), id, body));
   } catch (error) {
     return fromError(error);
   }

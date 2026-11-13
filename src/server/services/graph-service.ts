@@ -13,6 +13,7 @@ import { createRagflowClientFromEnv } from "../adapters/ragflow";
 import type { AppDatabase } from "../db/client";
 import { SqliteContentStore } from "../repositories/sqlite-content-store";
 import { getObject, listObjects } from "./object-service";
+import { listCategories } from "./vocabulary-service";
 
 /**
  * 知识图谱：把业务内容送进 LightRAG，再按实体查询。
@@ -24,6 +25,38 @@ import { getObject, listObjects } from "./object-service";
  */
 
 export const GRAPH_SOURCE_PREFIX = "pakp:obj:";
+
+/**
+ * `GET /api/graph` 的 `maxNodes` 边界（ADR-022 第 12 条 / 附录 A5.1）。
+ *
+ * 校验只有这一处：路由把原始字符串丢进来，服务层自己解析、越界即 `ValidationError`，
+ * 与 `depth` 同风格。`GraphGateway` 的 `maxNodes ?? 150` 只是兜底，不改。
+ */
+export const GRAPH_MAX_NODES_MIN = 50;
+export const GRAPH_MAX_NODES_MAX = 600;
+export const GRAPH_MAX_NODES_DEFAULT = 150;
+
+/**
+ * 解析并校验 `maxNodes`：缺省 150，整数 50–600。
+ * 空串、`"abc"`、`"2.5"`、越界都按 `ValidationError` 处理（`details.field = "maxNodes"`）。
+ */
+export function resolveGraphMaxNodes(raw: string | number | null | undefined): number {
+  if (raw === null || raw === undefined) return GRAPH_MAX_NODES_DEFAULT;
+  const value =
+    typeof raw === "string" ? (raw.trim() === "" ? Number.NaN : Number(raw.trim())) : raw;
+  if (
+    !Number.isInteger(value) ||
+    value < GRAPH_MAX_NODES_MIN ||
+    value > GRAPH_MAX_NODES_MAX
+  ) {
+    throw new ValidationError(
+      `maxNodes 必须是 ${GRAPH_MAX_NODES_MIN} 到 ${GRAPH_MAX_NODES_MAX} 的整数`,
+      { field: "maxNodes" },
+    );
+  }
+  return value;
+}
+
 
 export interface GraphGateway {
   insertText(input: { text: string; fileSource: string }): Promise<void>;
@@ -125,7 +158,11 @@ const statusLabel: Record<string, string> = {
  * 元数据头不是装饰：实体抽取靠共现，把标题、分类、标签写进同一段，
  * 才能让「是什么」和「属于哪里」出现在同一个上下文里。
  */
-export function buildGraphText(object: BusinessObject, content: string): string {
+export function buildGraphText(
+  object: BusinessObject,
+  content: string,
+  categoryLabel?: string | null,
+): string {
   const lines: string[] = [`《${object.title}》`];
 
   const meta: string[] = [object.type === "work" ? "作品" : "资产", libraryLabel[object.library]];
@@ -137,8 +174,9 @@ export function buildGraphText(object: BusinessObject, content: string): string 
   if (object.description?.trim()) {
     lines.push(`描述：${object.description.trim()}`);
   }
-  if (object.categories.length > 0) {
-    lines.push(`分类：${object.categories.join("、")}`);
+  const categoryName = categoryLabel ?? object.category;
+  if (categoryName) {
+    lines.push(`分类：${categoryName}`);
   }
   if (object.tags.length > 0) {
     lines.push(`标签：${object.tags.join("、")}`);
@@ -236,11 +274,17 @@ export async function syncGraph(
     return result;
   }
 
+  const categoryLabels = new Map(listCategories(db).map((item) => [item.code, item.label]));
+
   const existing = await loadGraphDocuments(client);
 
   for (const object of objects) {
     try {
-      const text = buildGraphText(object, await primaryText(content, db, object));
+      const text = buildGraphText(
+        object,
+        await primaryText(content, db, object),
+        object.category ? categoryLabels.get(object.category) : null,
+      );
       if (!text.includes("\n正文：\n")) {
         result.skipped.push({
           objectId: object.id,
@@ -390,13 +434,14 @@ export async function getGraphNeighborhood(
   if (!Number.isInteger(depth) || depth < 1 || depth > 3) {
     throw new ValidationError("depth 必须是 1 到 3 的整数", { field: "depth" });
   }
+  const maxNodes = resolveGraphMaxNodes(options.maxNodes);
 
   const client =
     options.client ?? (createLightragClientFromEnv(options.env ?? process.env) as GraphGateway);
   const graph = await client.getSubgraph({
     label: trimmed,
     maxDepth: depth,
-    maxNodes: options.maxNodes ?? 150,
+    maxNodes,
   });
 
   const owned = await ownerObjectIdSet(db, ownerSub);

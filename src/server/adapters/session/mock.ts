@@ -1,4 +1,4 @@
-import type { Session, SessionPort } from "../../ports/session";
+import type { SessionIdentity, SessionPort } from "../../ports/session";
 
 /**
  * 本地开发用的固定身份。
@@ -7,14 +7,14 @@ import type { Session, SessionPort } from "../../ports/session";
  * 没有真实 Logto 会话就不放行，避免把 Mock 身份当成已登录。
  */
 
-export const mockSession: Session = {
+export const mockSession: SessionIdentity = {
   sub: "mock-local-user",
   name: "林默",
   email: null,
 };
 
 export class MockSessionAdapter implements SessionPort {
-  async getCurrentSession(): Promise<Session | null> {
+  async getCurrentSession(): Promise<SessionIdentity | null> {
     return mockSession;
   }
 }

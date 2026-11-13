@@ -10,6 +10,7 @@ import {
   type Priority,
   type WorkStatus,
 } from "@/domain/objects";
+import type { VocabularyCategory, VocabularyTag } from "@/domain/vocabulary";
 import { allowedTransitions } from "@/domain/workflow";
 import {
   apiErrorMessage,
@@ -17,21 +18,11 @@ import {
   jsonBodyInit,
 } from "@/lib/api-client";
 import { libraryLabels, priorityLabels, statusLabels } from "@/lib/object-labels";
+import { CategoryPicker } from "./category-picker";
 import { Icon } from "./icon";
+import { TagField } from "./tag-field";
 
 type DialogMode = "edit" | "library" | "delete";
-
-
-function splitList(value: string): string[] {
-  return [
-    ...new Set(
-      value
-        .split(/[,，、]/)
-        .map((item) => item.trim())
-        .filter(Boolean),
-    ),
-  ];
-}
 
 /**
  * 单条内容的操作区：状态推进、跨库迁移、归档、编辑、删除。
@@ -39,7 +30,20 @@ function splitList(value: string): string[] {
  * 收起时只露出「下一步」与「更多」两个入口，展开后在行内铺开所有操作，
  * 这样五条列表仍然可以一眼扫读，不变成一排按钮。
  */
-export function ObjectActions({ object }: { object: BusinessObject }) {
+export function ObjectActions({
+  object,
+  categories,
+  tagSuggestions,
+  canManageVocabulary = false,
+}: {
+  object: BusinessObject;
+  /** 全站分类词表，编辑弹窗与新建弹窗共用。 */
+  categories: VocabularyCategory[];
+  /** 全站标签词表（按使用次数排序），编辑弹窗与新建弹窗共用。 */
+  tagSuggestions: VocabularyTag[];
+  /** 管理员可见「管理」入口，是否显示由服务端权限决定。 */
+  canManageVocabulary?: boolean;
+}) {
   const router = useRouter();
   const idPrefix = useId();
   const panelId = `${idPrefix}-panel`;
@@ -60,8 +64,8 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [categories, setCategories] = useState("");
-  const [tags, setTags] = useState("");
+  const [category, setCategory] = useState<string | null>(null);
+  const [tags, setTags] = useState<string[]>([]);
   const [priority, setPriority] = useState<Priority>("medium");
   const [reason, setReason] = useState("");
 
@@ -107,8 +111,8 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
     if (mode === "edit") {
       setTitle(object.title);
       setDescription(object.description ?? "");
-      setCategories(object.categories.join("，"));
-      setTags(object.tags.join("，"));
+      setCategory(object.category);
+      setTags(object.tags);
       setPriority(object.priority);
     }
     if (mode === "library") {
@@ -165,6 +169,11 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
       return;
     }
 
+    if (object.type === "work" && !category) {
+      setDialogError("请选择一个分类。");
+      return;
+    }
+
     setPending("edit");
     setDialogError(null);
 
@@ -175,8 +184,8 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
         body: JSON.stringify({
           title: title.trim(),
           description: description.trim() ? description.trim() : null,
-          categories: splitList(categories),
-          tags: splitList(tags),
+          category,
+          tags,
           priority,
           expectedRevision: object.revision,
         }),
@@ -434,6 +443,22 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
                     />
                   </div>
 
+                  <CategoryPicker
+                    value={category}
+                    onChange={setCategory}
+                    categories={categories}
+                    allowEmpty={object.type === "asset"}
+                    disabled={busy}
+                    canManageVocabulary={canManageVocabulary}
+                  />
+
+                  <TagField
+                    value={tags}
+                    onChange={setTags}
+                    suggestions={tagSuggestions}
+                    disabled={busy}
+                  />
+
                   <div className="field">
                     <label className="field-label" htmlFor={`${idPrefix}-description`}>
                       描述 <span className="field-note">选填</span>
@@ -447,36 +472,6 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
                       placeholder="补充用途、来源或下一步计划…"
                       onChange={(event) => setDescription(event.target.value)}
                     />
-                  </div>
-
-                  <div className="edit-grid">
-                    <div className="field">
-                      <label className="field-label" htmlFor={`${idPrefix}-categories`}>
-                        分类 <span className="field-note">逗号分隔</span>
-                      </label>
-                      <input
-                        id={`${idPrefix}-categories`}
-                        className="text-input"
-                        type="text"
-                        value={categories}
-                        placeholder="例如：写作，方法论"
-                        onChange={(event) => setCategories(event.target.value)}
-                      />
-                    </div>
-
-                    <div className="field">
-                      <label className="field-label" htmlFor={`${idPrefix}-tags`}>
-                        标签 <span className="field-note">逗号分隔</span>
-                      </label>
-                      <input
-                        id={`${idPrefix}-tags`}
-                        className="text-input"
-                        type="text"
-                        value={tags}
-                        placeholder="例如：笔记，复盘"
-                        onChange={(event) => setTags(event.target.value)}
-                      />
-                    </div>
                   </div>
 
                   <fieldset className="field">
@@ -517,7 +512,7 @@ export function ObjectActions({ object }: { object: BusinessObject }) {
                     maxLength={5000}
                     aria-invalid={dialogError !== null && !reason.trim()}
                     aria-describedby={dialogError ? dialogErrorId : undefined}
-                    placeholder="例如：来源已验证，转入内库长期复用。"
+                    placeholder="例如：来源可靠，转入内库长期复用。"
                     onChange={(event) => {
                       setReason(event.target.value);
                       if (dialogError) setDialogError(null);

@@ -1,0 +1,299 @@
+/* 分类 / 标签共用的选择器样式（ADR-023 第 8 条）：
+   左侧候选 chips + 过滤框，右侧固定「＋ 自定义」，不接受自由文本。 */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+}
+
+.labelRow {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+}
+
+.label {
+  color: var(--text-1);
+  font-size: var(--fs-13);
+  font-weight: var(--fw-medium);
+}
+
+.hint {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+}
+
+.count {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.countFull {
+  color: var(--text-2);
+  font-weight: var(--fw-medium);
+}
+
+.layout {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+
+.picker {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 26px;
+}
+
+.chip {
+  align-items: center;
+  background: var(--green-050);
+  border: 1px solid var(--green-100);
+  border-radius: var(--r-pill);
+  color: var(--green-700);
+  display: inline-flex;
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 4px 3px 10px;
+}
+
+.chipLabel {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  line-height: 1.35;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.chipRemove {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-pill);
+  color: var(--green-700);
+  cursor: pointer;
+  display: inline-flex;
+  height: 20px;
+  justify-content: center;
+  padding: 0;
+  width: 20px;
+}
+
+.chipRemove:hover {
+  background: var(--green-100);
+  color: var(--danger-fg);
+}
+
+.filter {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-1);
+  font-family: inherit;
+  font-size: var(--fs-13);
+  height: 40px;
+  padding: 0 12px;
+  width: 100%;
+}
+
+.filter::placeholder {
+  color: var(--text-3);
+}
+
+.filter:focus-visible {
+  border-color: var(--green-600);
+  box-shadow: 0 0 0 3px var(--green-100);
+  outline: none;
+}
+
+.filter:disabled {
+  background: var(--surface-2);
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 1px;
+}
+
+.chipButton {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-12);
+  max-width: 100%;
+  overflow: hidden;
+  padding: 6px 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chipButton:hover {
+  border-color: var(--green-300);
+  color: var(--text-1);
+}
+
+.chipActive {
+  background: var(--green-600);
+  border-color: var(--green-600);
+  color: #fff;
+  font-weight: var(--fw-medium);
+}
+
+.chipActive:hover {
+  border-color: var(--green-600);
+  color: #fff;
+}
+
+.chipButton:focus-visible {
+  box-shadow: 0 0 0 3px var(--green-100);
+  outline: none;
+}
+
+.chipButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.customButton {
+  align-items: center;
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: inherit;
+  font-size: var(--fs-12);
+  gap: 4px;
+  height: 40px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.customButton:hover {
+  border-color: var(--green-300);
+  color: var(--text-1);
+}
+
+.customButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.message {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  margin: 0;
+}
+
+.emptyHint {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  margin: 0;
+}
+
+.quickCreate {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  z-index: 20;
+}
+
+.quickHead {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.quickTitle {
+  color: var(--text-1);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+}
+
+.quickClose {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-pill);
+  color: var(--text-3);
+  cursor: pointer;
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  padding: 0;
+  width: 22px;
+}
+
+.quickClose:hover {
+  background: var(--surface-2);
+  color: var(--text-1);
+}
+
+.quickInput {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text-1);
+  font-family: inherit;
+  font-size: var(--fs-13);
+  height: 36px;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.quickInput:focus-visible {
+  border-color: var(--green-600);
+  box-shadow: 0 0 0 3px var(--green-100);
+  outline: none;
+}
+
+.quickActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.quickActions :global(.btn) {
+  font-size: var(--fs-12);
+  height: 32px;
+  padding: 0 12px;
+}
+
+.quickError {
+  color: var(--danger-fg);
+  font-size: var(--fs-12);
+  margin: 0;
+}

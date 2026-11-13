@@ -32,6 +32,8 @@ export interface WorkspaceFilters {
   type: ObjectType | null;
   library: Library | null;
   status: WorkStatus | null;
+  /** 标签名称（展示写法）；查询前由仓储按归一化键匹配。 */
+  tag: string | null;
   sort: WorkspaceSort;
   archived: ArchiveScope;
 }
@@ -41,6 +43,7 @@ export const defaultWorkspaceFilters: WorkspaceFilters = {
   type: null,
   library: null,
   status: null,
+  tag: null,
   sort: "updated",
   archived: "active",
 };
@@ -83,8 +86,9 @@ export function parseWorkspaceFilters(params: WorkspaceSearchParams): WorkspaceF
     : defaultWorkspaceFilters.sort;
 
   const archived: ArchiveScope = readParam(params, "archived") === "only" ? "only" : "active";
+  const tag = readParam(params, "tag").slice(0, 64) || null;
 
-  return { q: readParam(params, "q"), type, library, status, sort, archived };
+  return { q: readParam(params, "q"), type, library, status, tag, sort, archived };
 }
 
 /** 是否偏离了默认视图（决定标题、空状态文案与「清空筛选」是否出现）。 */
@@ -94,6 +98,7 @@ export function hasActiveFilters(filters: WorkspaceFilters): boolean {
     filters.type !== null ||
     filters.library !== null ||
     filters.status !== null ||
+    filters.tag !== null ||
     filters.sort !== defaultWorkspaceFilters.sort ||
     filters.archived !== defaultWorkspaceFilters.archived
   );
@@ -117,6 +122,7 @@ export function buildWorkspaceHref(
   if (next.type) params.set("type", next.type);
   if (next.library) params.set("library", next.library);
   if (next.status) params.set("status", next.status);
+  if (next.tag) params.set("tag", next.tag);
   if (next.sort !== "updated") params.set("sort", next.sort);
   if (next.archived === "only") params.set("archived", "only");
 
@@ -134,6 +140,7 @@ export function toListObjectsQuery(
     ...(filters.type ? { type: filters.type } : {}),
     ...(filters.library ? { library: filters.library } : {}),
     ...(filters.status ? { status: filters.status } : {}),
+    ...(filters.tag ? { tag: filters.tag } : {}),
     sort: filters.sort,
     ...(filters.archived === "only" ? { archivedOnly: true } : {}),
     limit,
@@ -158,6 +165,9 @@ export function activeFilterChips(filters: WorkspaceFilters): ActiveFilterChip[]
   }
   if (filters.status) {
     chips.push({ key: "status", label: statusLabels[filters.status] });
+  }
+  if (filters.tag) {
+    chips.push({ key: "tag", label: `标签「${filters.tag}」` });
   }
   if (filters.archived === "only") chips.push({ key: "archived", label: "已归档" });
   if (filters.sort !== "updated") {

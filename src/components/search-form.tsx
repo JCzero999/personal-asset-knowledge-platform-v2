@@ -11,6 +11,7 @@ import {
   MAX_SEARCH_QUESTION,
   thresholdOptionsFor,
 } from "@/lib/search-params";
+import { DEFAULT_SEARCH_MODE, type SearchMode } from "@/lib/search-query";
 import { Icon } from "./icon";
 
 /**
@@ -21,10 +22,15 @@ export function SearchForm({
   q: initialQ,
   library: initialLibrary,
   threshold: initialThreshold,
+  mode: initialMode,
+  syntaxError,
 }: {
   q: string;
   library: Library | null;
   threshold: number;
+  mode: SearchMode;
+  /** 服务端解析出的语法错误：原文 + 0 基位置，不发请求。 */
+  syntaxError?: { message: string; position: number } | null;
 }) {
   const router = useRouter();
   const idPrefix = useId();
@@ -32,6 +38,7 @@ export function SearchForm({
   const [q, setQ] = useState(initialQ);
   const [library, setLibrary] = useState<Library | null>(initialLibrary);
   const [threshold, setThreshold] = useState(initialThreshold);
+  const [mode, setMode] = useState<SearchMode>(initialMode);
 
   // 前进后退或点示例链接时，页面会用新的地址作为 key 重新挂载这个表单，
   // 初始值直接来自 URL，不需要再用 effect 回写状态。
@@ -39,7 +46,8 @@ export function SearchForm({
   const dirty =
     q !== initialQ
     || library !== initialLibrary
-    || threshold !== initialThreshold;
+    || threshold !== initialThreshold
+    || mode !== initialMode;
 
   function submit() {
     const question = q.trim();
@@ -47,7 +55,7 @@ export function SearchForm({
 
     startTransition(() => {
       router.push(
-        buildSearchHref({ q: question, library, threshold }),
+        buildSearchHref({ q: question, library, threshold, mode }),
         { scroll: false },
       );
     });
@@ -57,6 +65,7 @@ export function SearchForm({
     setQ("");
     setLibrary(null);
     setThreshold(DEFAULT_SEARCH_THRESHOLD);
+    setMode(DEFAULT_SEARCH_MODE);
     startTransition(() => router.push("/search"));
   }
 
@@ -101,6 +110,21 @@ export function SearchForm({
       </div>
 
       <label className="search-field">
+        <span className="filter-label">检索模式</span>
+        <span className="select-wrap">
+          <select
+            className="select"
+            value={mode}
+            onChange={(event) => setMode(event.target.value as SearchMode)}
+          >
+            <option value="hybrid">混合 · 关键词 + 语义</option>
+            <option value="lexical">仅关键词</option>
+            <option value="semantic">仅语义</option>
+          </select>
+        </span>
+      </label>
+
+      <label className="search-field">
         <span className="filter-label">库别</span>
         <span className="select-wrap">
           <select
@@ -119,7 +143,7 @@ export function SearchForm({
       </label>
 
       <label className="search-field">
-        <span className="filter-label">相似度阈值</span>
+        <span className="filter-label">相似度阈值（仅影响语义结果）</span>
         <span className="select-wrap">
           <select
             className="select"
@@ -144,7 +168,7 @@ export function SearchForm({
           {pending && <span className="spinner" aria-hidden="true" />}
           {pending ? "检索中…" : "检索"}
         </button>
-        {(initialQ || initialLibrary || initialThreshold !== DEFAULT_SEARCH_THRESHOLD) ? (
+        {(initialQ || initialLibrary || initialThreshold !== DEFAULT_SEARCH_THRESHOLD || initialMode !== DEFAULT_SEARCH_MODE) ? (
           <button className="btn btn-ghost" type="button" disabled={pending} onClick={clear}>
             清空
           </button>
@@ -154,6 +178,20 @@ export function SearchForm({
           </button>
         ) : null}
       </div>
+
+      {syntaxError ? (
+        <div className="search-syntax" role="alert">
+          <strong>{syntaxError.message}</strong>
+          <pre className="search-syntax-code" aria-label="出错位置">
+            <code>{q}</code>
+            {"\n"}
+            <code className="search-syntax-caret">
+              {" ".repeat(Math.max(0, syntaxError.position))}^
+            </code>
+          </pre>
+          <span className="search-syntax-pos">第 {syntaxError.position + 1} 个字符附近</span>
+        </div>
+      ) : null}
     </form>
   );
 }

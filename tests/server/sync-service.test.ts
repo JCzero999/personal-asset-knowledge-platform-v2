@@ -5,6 +5,7 @@ import type { DocumentMetaFields } from "../../src/server/adapters/ragflow";
 import { openDatabase, type DatabaseHandle } from "../../src/server/db/client";
 import { SqliteContentStore } from "../../src/server/repositories/sqlite-content-store";
 import { SqliteObjectRepository } from "../../src/server/repositories/sqlite-object-repository";
+import { seedTag } from "../helpers/seed";
 import {
   runSyncOnce,
   type SyncGateway,
@@ -56,9 +57,8 @@ async function seedWork() {
     type: "work",
     title: "如何做一门课",
     library: "internal",
-    format: "article",
+    category: "article",
     ownerSub: OWNER,
-    categories: ["写作"],
     tags: ["教学"],
   });
 
@@ -81,6 +81,8 @@ async function seedWork() {
 
 beforeAll(() => {
   handle = openDatabase({ file: ":memory:" });
+  // ADR-023：标签只能选词表已有项。
+  seedTag(handle, "教学");
 });
 
 afterEach(() => {

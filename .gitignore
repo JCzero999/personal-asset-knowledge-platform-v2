@@ -4,6 +4,8 @@
 
 # Next.js
 /.next
+/.next-mock
+/.next-build
 /out
 
 # production

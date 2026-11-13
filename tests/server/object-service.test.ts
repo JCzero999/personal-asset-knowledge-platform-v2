@@ -1,4 +1,6 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
+import { actor } from "../helpers/actor";
+import { seedCategory } from "../helpers/seed";
 
 import { NotFoundError, ValidationError } from "../../src/domain/errors";
 import { openDatabase, type DatabaseHandle } from "../../src/server/db/client";
@@ -49,66 +51,87 @@ describe("parseCreateObjectBody", () => {
     );
   });
 
-  it("作品必须提供合法 format", () => {
+  it("作品必须选择分类；是否存在由词表判定", () => {
     expect(() =>
       parseCreateObjectBody({ type: "work", title: "草稿", library: "external" }, "u1"),
-    ).toThrow(/format/);
+    ).toThrow(/分类/);
 
-    expect(() =>
+    // 分类已词表化（ADR-023）：解析层只挡空值，未知 code 由 createObject 查词表后报 NOT_FOUND。
+    expect(
       parseCreateObjectBody(
-        { type: "work", title: "草稿", library: "external", format: "podcast" },
+        { type: "work", title: "草稿", library: "external", category: "podcast" },
         "u1",
-      ),
-    ).toThrow(/format/);
+      ).category,
+    ).toBe("podcast");
   });
 
-  it("资产不接受 format", () => {
+  it("拒绝旧字段 format 与 categories", () => {
     expect(() =>
       parseCreateObjectBody(
         { type: "asset", title: "资产", library: "internal", format: "article" },
         "u1",
       ),
     ).toThrow(/format/);
+
+    expect(() =>
+      parseCreateObjectBody(
+        { type: "work", title: "草稿", library: "internal", categories: ["方法论"] },
+        "u1",
+      ),
+    ).toThrow(/category/);
   });
 
   it("新建作品固定为 draft", () => {
     expect(() =>
       parseCreateObjectBody(
-        { type: "work", title: "草稿", library: "internal", format: "article", status: "published" },
+        { type: "work", title: "草稿", library: "internal", category: "article", status: "published" },
         "u1",
       ),
     ).toThrow(/draft/);
   });
 
-  it("分类与标签去重并去掉空白项", () => {
+  it("分类是单值、标签去重并去掉空白项", () => {
     const parsed = parseCreateObjectBody(
       {
         type: "asset",
         title: "  知识管理  ",
         library: "internal",
-        categories: ["方法论", "方法论", "  "],
+        category: "  方法论 ",
         tags: ["a", " a "],
       },
       "u1",
     );
 
     expect(parsed.title).toBe("知识管理");
-    expect(parsed.categories).toEqual(["方法论"]);
+    expect(parsed.category).toBe("方法论");
     expect(parsed.tags).toEqual(["a"]);
     expect(parsed.priority).toBe("medium");
   });
 });
 
 describe("createObject / listObjects", () => {
+  it("未知分类在写入时被词表拒绝（NOT_FOUND）", async () => {
+    await expect(
+      createObject(handle.db, actor("u1"), {
+        type: "work",
+        title: "播客稿",
+        library: "internal",
+        category: "podcast",
+      }),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   it("写入后可按身份列出，且按 ownerSub 隔离", async () => {
-    await createObject(handle.db, "u1", {
+    const method = seedCategory(handle, "方法论", "method");
+
+    await createObject(handle.db, actor("u1"), {
       type: "asset",
       title: "个人方法论",
       library: "internal",
-      categories: ["方法论"],
+      category: method,
     });
 
-    await createObject(handle.db, "u2", {
+    await createObject(handle.db, actor("u2"), {
       type: "asset",
       title: "别人的资产",
       library: "external",
@@ -117,21 +140,21 @@ describe("createObject / listObjects", () => {
     const mine = await listObjects(handle.db, { ownerSub: "u1" });
     expect(mine).toHaveLength(1);
     expect(mine[0].title).toBe("个人方法论");
-    expect(mine[0].primaryCategory).toBe("方法论");
+    expect(mine[0].category).toBe("method");
   });
 
   it("作品默认落为 draft，外库作品状态受约束保护", async () => {
-    const work = await createObject(handle.db, "u1", {
+    const work = await createObject(handle.db, actor("u1"), {
       type: "work",
       title: "一门课",
       library: "external",
-      format: "course",
+      category: "course",
     });
 
     expect(work.type).toBe("work");
     if (work.type === "work") {
       expect(work.status).toBe("draft");
-      expect(work.format).toBe("course");
+      expect(work.category).toBe("course");
     }
   });
 });
@@ -158,18 +181,18 @@ describe("parseChangeStatusBody", () => {
 
 describe("changeObjectStatus", () => {
   it("按身份推进状态；他人的对象视为不存在", async () => {
-    const work = await createObject(handle.db, "u1", {
+    const work = await createObject(handle.db, actor("u1"), {
       type: "work",
       title: "一门课",
       library: "internal",
-      format: "course",
+      category: "course",
     });
 
-    const finished = await changeObjectStatus(handle.db, "u1", work.id, { to: "finished" });
+    const finished = await changeObjectStatus(handle.db, actor("u1"), work.id, { to: "finished" });
     expect(finished).toMatchObject({ type: "work", status: "finished", revision: 2 });
 
     await expect(
-      changeObjectStatus(handle.db, "u2", work.id, { to: "published" }),
+      changeObjectStatus(handle.db, actor("u2"), work.id, { to: "published" }),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 });
@@ -206,14 +229,14 @@ describe("parseChangeLibraryBody", () => {
 
 describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject", () => {
   it("按身份完成编辑、迁移、归档与删除", async () => {
-    const work = await createObject(handle.db, "u1", {
+    const work = await createObject(handle.db, actor("u1"), {
       type: "work",
       title: "一门课",
       library: "external",
-      format: "course",
+      category: "course",
     });
 
-    const updated = await updateObject(handle.db, "u1", work.id, {
+    const updated = await updateObject(handle.db, actor("u1"), work.id, {
       title: "一门课（终稿）",
       expectedRevision: 1,
     });
@@ -221,21 +244,21 @@ describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject"
     expect(updated.revision).toBe(2);
 
     await expect(
-      updateObject(handle.db, "u2", work.id, { title: "抢改", expectedRevision: 2 }),
+      updateObject(handle.db, actor("u2"), work.id, { title: "抢改", expectedRevision: 2 }),
     ).rejects.toBeInstanceOf(NotFoundError);
 
-    const moved = await changeObjectLibrary(handle.db, "u1", work.id, {
+    const moved = await changeObjectLibrary(handle.db, actor("u1"), work.id, {
       to: "internal",
       reason: "已复盘并确认",
       expectedRevision: 2,
     });
     expect(moved.library).toBe("internal");
 
-    const archived = await setObjectArchived(handle.db, "u1", work.id, { archived: true });
+    const archived = await setObjectArchived(handle.db, actor("u1"), work.id, { archived: true });
     expect(archived.archivedAt).not.toBeNull();
     expect(await listObjects(handle.db, { ownerSub: "u1" })).toHaveLength(0);
 
-    await deleteObject(handle.db, "u1", work.id);
+    await deleteObject(handle.db, actor("u1"), work.id);
     expect(await listObjects(handle.db, { ownerSub: "u1", includeArchived: true })).toHaveLength(
       0,
     );
@@ -244,17 +267,17 @@ describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject"
 
 describe("getObject / listObjectLibraryEvents", () => {
   it("按身份读取详情与迁移审计；他人对象一律 404", async () => {
-    const work = await createObject(handle.db, "u1", {
+    const work = await createObject(handle.db, actor("u1"), {
       type: "work",
       title: "一门课",
       library: "external",
-      format: "course",
+      category: "course",
     });
 
     expect((await getObject(handle.db, "u1", work.id)).title).toBe("一门课");
     await expect(getObject(handle.db, "u2", work.id)).rejects.toBeInstanceOf(NotFoundError);
 
-    await changeObjectLibrary(handle.db, "u1", work.id, {
+    await changeObjectLibrary(handle.db, actor("u1"), work.id, {
       to: "internal",
       reason: "已复盘确认",
     });

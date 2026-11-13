@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { actor } from "../helpers/actor";
 
 import { DomainError, NotFoundError, ValidationError } from "../../src/domain/errors";
 import type { RagflowDataset } from "../../src/server/adapters/ragflow";
@@ -157,7 +158,7 @@ beforeEach(() => {
 
 describe("uploadObjectContent 成功路径", () => {
   it("上传主内容：写 refs、镜像 meta、入队 upsert", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "测试资产",
       library: "internal",
@@ -212,12 +213,12 @@ describe("uploadObjectContent 成功路径", () => {
     });
   });
 
-  it("作品的 meta 额外镜像 format", async () => {
-    const object = await createObject(handle.db, OWNER, {
+  it("作品的 meta 额外镜像 format（值取分类码，契约不变）", async () => {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "work",
       title: "一篇文章",
       library: "external",
-      format: "article",
+      category: "article",
       source: "ai_extracted",
     });
     const gateway = new FakeGateway();
@@ -236,7 +237,7 @@ describe("uploadObjectContent 成功路径", () => {
   });
 
   it("附件不删除主内容，content_key 每次唯一", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "带附件",
       library: "external",
@@ -276,7 +277,7 @@ describe("uploadObjectContent 成功路径", () => {
 
 describe("uploadObjectContent 校验与归属", () => {
   it("他人对象返回 404，且不调用 RAGFlow", async () => {
-    const object = await createObject(handle.db, OTHER, {
+    const object = await createObject(handle.db, actor(OTHER), {
       type: "asset",
       title: "别人的",
       library: "internal",
@@ -308,7 +309,7 @@ describe("uploadObjectContent 校验与归属", () => {
   });
 
   it("缺文件、空文件、超限文件都返回 400 且不落库", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "校验",
       library: "internal",
@@ -335,7 +336,7 @@ describe("uploadObjectContent 校验与归属", () => {
   });
 
   it("非法 role 与缺扩展名文件名的处理", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "role",
       library: "internal",
@@ -359,7 +360,7 @@ describe("uploadObjectContent 校验与归属", () => {
   });
 
   it("documentName 覆盖文件名并过滤路径", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "命名",
       library: "internal",
@@ -381,7 +382,7 @@ describe("uploadObjectContent 校验与归属", () => {
 
 describe("uploadObjectContent 主内容替换", () => {
   it("替换主内容：新文档先落库，再删旧文档并改回原名", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "替换",
       library: "internal",
@@ -422,8 +423,46 @@ describe("uploadObjectContent 主内容替换", () => {
     expect(jobs[0].contentRefId).toBe(first.id);
   });
 
+  it("多次替换主内容始终只有一条 primary 引用", async () => {
+    const object = await createObject(handle.db, actor(OWNER), {
+      type: "asset",
+      title: "连续替换",
+      library: "internal",
+    });
+    const gateway = new FakeGateway();
+    const env = { RAGFLOW_DATASET_ID: "ds_main" };
+
+    const first = await uploadObjectContent(handle.db, OWNER, object.id, formWith(textFile("v1")), {
+      client: gateway,
+      env,
+    });
+    const second = await uploadObjectContent(handle.db, OWNER, object.id, formWith(textFile("v2")), {
+      client: gateway,
+      env,
+    });
+    const third = await uploadObjectContent(handle.db, OWNER, object.id, formWith(textFile("v3")), {
+      client: gateway,
+      env,
+    });
+
+    const refs = await store.listByOwner("asset", object.id);
+    expect(refs).toHaveLength(1);
+    expect(refs.filter((ref) => ref.role === "primary")).toHaveLength(1);
+    expect(refs[0].id).toBe(first.id);
+    expect(refs[0].documentId).toBe(third.documentId);
+    expect(second.id).toBe(first.id);
+    expect(third.id).toBe(first.id);
+
+    // 每次替换都删除上一条文档，RAGFlow 侧不会留下孤儿文件。
+    expect(gateway.deleted).toEqual([
+      { datasetId: "ds_main", ids: ["doc_1"] },
+      { datasetId: "ds_main", ids: ["doc_2"] },
+    ]);
+    expect(gateway.documents.map((doc) => doc.id)).toEqual(["doc_3"]);
+  });
+
   it("替换时新文档上传失败，旧内容与旧引用保持不变", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "替换失败",
       library: "internal",
@@ -454,7 +493,7 @@ describe("uploadObjectContent 主内容替换", () => {
   });
 
   it("旧主文档已在 RAGFlow 侧消失时仍能完成替换", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "旧文档缺失",
       library: "internal",
@@ -481,7 +520,7 @@ describe("uploadObjectContent 主内容替换", () => {
 
 describe("uploadObjectContent RAGFlow 失败", () => {
   it("上传失败时返回可读错误且不落库", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "失败",
       library: "internal",
@@ -501,7 +540,7 @@ describe("uploadObjectContent RAGFlow 失败", () => {
   });
 
   it("解析触发失败不影响上传，状态停在 pending 等轮询重试", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "解析触发失败",
       library: "internal",
@@ -520,7 +559,7 @@ describe("uploadObjectContent RAGFlow 失败", () => {
   });
 
   it("meta 写入失败时删掉刚上传的文档并抛错，不落库", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "meta 失败",
       library: "internal",
@@ -543,7 +582,7 @@ describe("uploadObjectContent RAGFlow 失败", () => {
 
 describe("dataset 解析（ADR-007 单一 Dataset）", () => {
   it("优先使用 RAGFLOW_DATASET_ID，不再列名查找", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "env id",
       library: "internal",
@@ -560,7 +599,7 @@ describe("dataset 解析（ADR-007 单一 Dataset）", () => {
   });
 
   it("未配置时按名称查找，缺失则创建一次并复用", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "按名建库",
       library: "internal",
@@ -583,7 +622,7 @@ describe("dataset 解析（ADR-007 单一 Dataset）", () => {
   });
 
   it("RAGFLOW_DATASET_NAME 可覆盖默认库名", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "自定义库",
       library: "internal",
@@ -616,7 +655,7 @@ describe("downloadObjectContent", () => {
   }
 
   it("按身份与引用归属校验后返回文件流", async () => {
-    const object = await createObject(handle.db, OWNER, {
+    const object = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "下载",
       library: "internal",
@@ -640,12 +679,12 @@ describe("downloadObjectContent", () => {
   });
 
   it("他人对象、别的对象的引用都按不存在处理", async () => {
-    const mine = await createObject(handle.db, OWNER, {
+    const mine = await createObject(handle.db, actor(OWNER), {
       type: "asset",
       title: "我的",
       library: "internal",
     });
-    const other = await createObject(handle.db, OTHER, {
+    const other = await createObject(handle.db, actor(OTHER), {
       type: "asset",
       title: "别人的",
       library: "internal",

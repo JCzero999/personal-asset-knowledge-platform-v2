@@ -8,25 +8,29 @@ import { apiErrorMessage, apiRequest } from "@/lib/api-client";
 import {
   formatDateTime,
   formatFileSize,
+  isEditableTextContent,
   isParsePending,
   MAX_UPLOAD_BYTES,
   parseStatusLabels,
   parseStatusTones,
 } from "@/lib/content-format";
 import { contentRoleLabels } from "@/lib/object-labels";
+import { ContentEditor } from "./content-editor";
 import { Icon } from "./icon";
 
 /**
- * 对象的内容区：列出内容引用、下载原文、上传主内容 / 附件。
+ * 对象的内容区：列出内容引用、下载原文、上传主内容 / 附件，以及直接编写正文。
  *
  * 上传成功后只刷新服务端数据；解析状态停在 pending / running 时
  * 每 5 秒自动 `router.refresh()`，让「解析中」最终能变成「已解析」。
  */
 export function ObjectContent({
   objectId,
+  objectTitle,
   refs,
 }: {
   objectId: string;
+  objectTitle: string;
   refs: ContentRef[];
 }) {
   const router = useRouter();
@@ -38,8 +42,13 @@ export function ObjectContent({
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [refreshing, startRefresh] = useTransition();
+  const [editor, setEditor] = useState<{
+    existing: ContentRef | null;
+    replacing: boolean;
+  } | null>(null);
 
-  const hasPrimary = refs.some((ref) => ref.role === "primary");
+  const primaryRef = refs.find((ref) => ref.role === "primary") ?? null;
+  const hasPrimary = primaryRef !== null;
   const parsing = refs.some((ref) => isParsePending(ref.parseStatus));
   const busy = uploading !== null;
 
@@ -110,13 +119,33 @@ export function ObjectContent({
     if (file) void upload(file, role);
   }
 
+  /**
+   * 「编写正文」入口：已有文本主内容时直接编辑原文（避免空白编辑区
+   * 一保存就把旧正文冲掉）；主内容是二进制时只能新建，保存即替换。
+   */
+  function openEditor() {
+    setEditor({
+      existing: primaryRef && isEditableTextContent(primaryRef) ? primaryRef : null,
+      replacing: hasPrimary,
+    });
+  }
+
   return (
     <>
       <div className="content-toolbar">
         <p className="content-hint">
-          主内容用于检索，同类型再次上传会替换旧文件；附件会一直挂在这个对象下。
+          主内容用于检索，同类型再次上传会替换旧文件，也可以直接编写正文；附件会一直挂在这个对象下。
         </p>
         <div className="upload-actions">
+          <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={busy}
+            onClick={openEditor}
+          >
+            <Icon name="edit" size={16} />
+            编写正文
+          </button>
           <button
             className="btn btn-primary"
             type="button"
@@ -249,6 +278,19 @@ export function ObjectContent({
                   ) : null}
                 </div>
 
+                {ref.role === "primary" && isEditableTextContent(ref) ? (
+                  <button
+                    className="btn btn-ghost content-download"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setEditor({ existing: ref, replacing: true })}
+                    aria-label={`编辑 ${ref.documentName ?? "主内容"} 的正文`}
+                  >
+                    <Icon name="edit" size={15} />
+                    编辑
+                  </button>
+                ) : null}
+
                 <a
                   className="btn btn-secondary content-download"
                   href={`/api/objects/${objectId}/content/${ref.id}`}
@@ -268,6 +310,21 @@ export function ObjectContent({
           <Icon name="check" size={16} />
           {toast}
         </div>
+      ) : null}
+
+      {editor ? (
+        <ContentEditor
+          objectId={objectId}
+          objectTitle={objectTitle}
+          existing={editor.existing}
+          replacing={editor.replacing}
+          onClose={() => setEditor(null)}
+          onSaved={(message) => {
+            setEditor(null);
+            setToast(message);
+            router.refresh();
+          }}
+        />
       ) : null}
     </>
   );

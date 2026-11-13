@@ -1,10 +1,11 @@
 import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import Database from "better-sqlite3";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import * as schema from "./schema";
+import { normalizeSearchText } from "../../lib/search-query";
 
 /**
  * SQLite 连接。
@@ -41,6 +42,81 @@ export interface OpenDatabaseOptions {
   migrationsFolder?: string;
 }
 
+/** 迁移文件里声明的总条数（drizzle journal）。 */
+function journalEntries(migrationsFolder: string): number {
+  const raw = readFileSync(path.join(migrationsFolder, "meta", "_journal.json"), "utf8");
+  const journal = JSON.parse(raw) as { entries?: unknown[] };
+  return journal.entries?.length ?? 0;
+}
+
+/** 已经应用过的迁移条数；迁移表还不存在时视为 0。 */
+function appliedMigrations(sqlite: Database.Database): number {
+  try {
+    const row = sqlite.prepare("select count(*) as count from __drizzle_migrations").get() as
+      | { count: number }
+      | undefined;
+    return row?.count ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 有未应用迁移时先备份整库（ADR-016 风险 R2）。
+ * `VACUUM INTO` 生成一致快照，且不会把 -wal 里未落盘的数据漏掉。
+ */
+function backupBeforeMigrate(sqlite: Database.Database, file: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const target = `${path.resolve(file)}.bak-${stamp}`;
+  sqlite.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+  return target;
+}
+
+/**
+ * 回填检索影子列（ADR-024 迁移 0008）。
+ *
+ * SQLite 没有 NFKC，只能由 JS 用同一个 `normalizeSearchText()` 回填；
+ * 条件只挑 `title_norm` 为空的行，重复执行无副作用。写入路径由
+ * `sqlite-object-repository` 负责，这里只补齐迁移前的存量。
+ */
+export function backfillSearchNorm(sqlite: Database.Database): number {
+  // 只迁移到 0007 的旧库没有影子列；用 pragma 判断，避免 backfill 反过来
+  // 让「演练到中间版本」的数据库打不开。
+  const hasColumn = sqlite
+    .prepare("select 1 as ok from pragma_table_info('objects') where name = 'title_norm'")
+    .get();
+
+  if (!hasColumn) return 0;
+
+  const rows = sqlite
+    .prepare(
+      `select id, title, description from objects
+        where title_norm is null
+           or (description is not null and description_norm is null)`,
+    )
+    .all() as { id: string; title: string; description: string | null }[];
+
+  if (rows.length === 0) return 0;
+
+  const update = sqlite.prepare(
+    "update objects set title_norm = ?, description_norm = ? where id = ?",
+  );
+  const run = sqlite.transaction(
+    (items: { id: string; title: string; description: string | null }[]) => {
+      for (const row of items) {
+        update.run(
+          normalizeSearchText(row.title),
+          row.description === null ? null : normalizeSearchText(row.description),
+          row.id,
+        );
+      }
+    },
+  );
+  run(rows);
+
+  return rows.length;
+}
+
 export function openDatabase({
   file,
   migrate: shouldMigrate = true,
@@ -58,15 +134,44 @@ export function openDatabase({
 
   const sqlite = new Database(file);
 
-  // WAL 提升并发读；外键约束必须显式打开；busy_timeout 缓解写锁冲突。
+  // WAL 提升并发读；busy_timeout 缓解写锁冲突。外键开关见下方迁移分支。
   sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("busy_timeout = 5000");
 
   const db = drizzle(sqlite, { schema });
 
   if (shouldMigrate) {
-    migrate(db, { migrationsFolder });
+    const pending = appliedMigrations(sqlite) < journalEntries(migrationsFolder);
+
+    if (pending && file !== ":memory:") {
+      const backup = backupBeforeMigrate(sqlite, file);
+      console.info(`[db] 迁移前已备份：${backup}`);
+    }
+
+    // SQLite 的 `PRAGMA foreign_keys` 在事务内是空操作，而 drizzle 把整批迁移包在一个
+    // BEGIN 里——重建 objects 表会先 DROP，被 library_events 的外键挡住（ADR-016 第 8 条，
+    // 已实测）。因此开关必须放在 migrate() 外层；迁移期无并发写（本地启动期），窗口安全。
+    sqlite.pragma("foreign_keys = OFF");
+
+    try {
+      migrate(db, { migrationsFolder });
+    } finally {
+      sqlite.pragma("foreign_keys = ON");
+    }
+
+    // 0008 起有检索影子列；存量行用 TS 归一化函数回填（SQLite 无 NFKC）。
+    backfillSearchNorm(sqlite);
+
+    // 重建表之后必须自证没有留下孤儿外键，非空即拒绝启动。
+    const violations = sqlite.pragma("foreign_key_check") as unknown[];
+
+    if (Array.isArray(violations) && violations.length > 0) {
+      throw new Error(
+        `迁移后外键校验失败（foreign_key_check 返回 ${violations.length} 条），请用备份恢复数据库`,
+      );
+    }
+  } else {
+    sqlite.pragma("foreign_keys = ON");
   }
 
   return {

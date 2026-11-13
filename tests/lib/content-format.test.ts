@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatDateTime,
   formatFileSize,
+  isEditableTextContent,
   isParsePending,
   parseStatusLabels,
   parseStatusTones,
@@ -77,5 +78,29 @@ describe("解析状态", () => {
     expect(isParsePending("running")).toBe(true);
     expect(isParsePending("succeeded")).toBe(false);
     expect(isParsePending("failed")).toBe(false);
+  });
+});
+
+describe("isEditableTextContent", () => {
+  it("text/* 的 MIME 可以直接编辑", () => {
+    expect(isEditableTextContent({ mime: "text/plain", documentName: "note" })).toBe(true);
+    expect(isEditableTextContent({ mime: "text/markdown", documentName: null })).toBe(true);
+    expect(isEditableTextContent({ mime: "TEXT/CSV", documentName: null })).toBe(true);
+  });
+
+  it("常见纯文本扩展名即使 MIME 不准也能编辑", () => {
+    for (const name of ["a.md", "b.markdown", "c.txt", "d.json", "e.csv", "F.MD"]) {
+      expect(isEditableTextContent({ mime: "application/octet-stream", documentName: name })).toBe(
+        true,
+      );
+    }
+  });
+
+  it("二进制与未知类型不给编辑入口", () => {
+    expect(isEditableTextContent({ mime: "application/pdf", documentName: "a.pdf" })).toBe(false);
+    expect(isEditableTextContent({ mime: "image/png", documentName: "a.png" })).toBe(false);
+    expect(isEditableTextContent({ mime: null, documentName: "archive" })).toBe(false);
+    expect(isEditableTextContent({ mime: null, documentName: "notes.txt.bak" })).toBe(false);
+    expect(isEditableTextContent({})).toBe(false);
   });
 });

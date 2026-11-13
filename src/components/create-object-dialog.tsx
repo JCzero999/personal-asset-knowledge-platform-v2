@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useTransition, type FormEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
-import { workFormats, type WorkFormat } from "@/domain/objects";
+import type { VocabularySnapshot } from "@/domain/vocabulary";
 import { apiErrorField, humanizeMessage, type ApiErrorBody } from "@/lib/api-error";
+import { CategoryPicker } from "./category-picker";
 import { Icon } from "./icon";
+import { TagField } from "./tag-field";
 
 type ObjectType = "asset" | "work";
 type Library = "internal" | "external";
@@ -16,6 +18,13 @@ interface CreateObjectButtonProps {
   variant?: ButtonVariant;
   withIcon?: boolean;
   className?: string;
+  /**
+   * 词表快照（ADR-016 / ADR-023）：由服务端读库后传入，只显示启用分类、按 sort_order 排序。
+   * 组件里不再保留任何硬编码分类或标签名单。
+   */
+  vocabulary: VocabularySnapshot;
+  /** 管理员可见「管理」入口；普通账号看不到，直接访问管理路由会得到 403。 */
+  canManageVocabulary?: boolean;
 }
 
 export function CreateObjectButton({
@@ -23,6 +32,8 @@ export function CreateObjectButton({
   variant = "primary",
   withIcon = true,
   className = "",
+  vocabulary,
+  canManageVocabulary = false,
 }: CreateObjectButtonProps) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -39,7 +50,16 @@ export function CreateObjectButton({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [library, setLibrary] = useState<Library>("internal");
-  const [format, setFormat] = useState<WorkFormat>("article");
+  const [tags, setTags] = useState<string[]>([]);
+  const activeCategories = useMemo(
+    () => vocabulary.categories.filter((item) => item.state === "active"),
+    [vocabulary.categories],
+  );
+  const tagSuggestions = useMemo(
+    () => [...vocabulary.tags].sort((a, b) => b.usage - a.usage || a.label.localeCompare(b.label, "zh")),
+    [vocabulary.tags],
+  );
+  const [category, setCategory] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string | null>(null);
@@ -80,7 +100,8 @@ export function CreateObjectButton({
     setTitle("");
     setDescription("");
     setLibrary("internal");
-    setFormat("article");
+    setTags([]);
+    setCategory(null);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -91,12 +112,20 @@ export function CreateObjectButton({
     setError(null);
     setField(null);
 
+    if (type === "work" && !category) {
+      setSubmitting(false);
+      setField("category");
+      setError("请选择一个分类");
+      return;
+    }
+
     const payload = {
       type,
       title: title.trim(),
       library,
       ...(description.trim() ? { description: description.trim() } : {}),
-      ...(type === "work" ? { format } : {}),
+      ...(category ? { category } : {}),
+      ...(tags.length > 0 ? { tags } : {}),
     };
 
     try {
@@ -224,29 +253,21 @@ export function CreateObjectButton({
                 />
               </div>
 
-              {type === "work" && (
-                <fieldset className="field">
-                  <legend className="field-label">作品形态</legend>
-                  <div className="format-grid">
-                    {workFormats.map((item) => (
-                      <label
-                        className={`format-chip ${format === item.value ? "is-active" : ""}`}
-                        key={item.value}
-                      >
-                        <input
-                          className="sr-only"
-                          type="radio"
-                          name={`${idPrefix}-format`}
-                          value={item.value}
-                          checked={format === item.value}
-                          onChange={() => setFormat(item.value)}
-                        />
-                        {item.label}
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-              )}
+              <CategoryPicker
+                value={category}
+                onChange={setCategory}
+                categories={activeCategories}
+                allowEmpty={type === "asset"}
+                disabled={submitting}
+                canManageVocabulary={canManageVocabulary}
+              />
+
+              <TagField
+                value={tags}
+                onChange={setTags}
+                suggestions={tagSuggestions}
+                disabled={submitting}
+              />
 
               <fieldset className="field">
                 <legend className="field-label">放在哪里</legend>
@@ -262,7 +283,7 @@ export function CreateObjectButton({
                     />
                     <span className="type-card-copy">
                       <strong>内库</strong>
-                      <small>已验证、可复用</small>
+                      <small>长期复用</small>
                     </span>
                   </label>
                   <label className={`type-card ${library === "external" ? "is-active" : ""}`}>
@@ -276,7 +297,7 @@ export function CreateObjectButton({
                     />
                     <span className="type-card-copy">
                       <strong>外库</strong>
-                      <small>待验证的输入</small>
+                      <small>收集的输入</small>
                     </span>
                   </label>
                 </div>

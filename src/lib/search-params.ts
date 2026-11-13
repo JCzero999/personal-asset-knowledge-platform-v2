@@ -1,5 +1,10 @@
 import { isLibrary, type Library } from "@/domain/objects";
 
+import {
+  DEFAULT_SEARCH_MODE,
+  searchModes,
+  type SearchMode,
+} from "./search-query";
 import type { WorkspaceSearchParams } from "./workspace-filters";
 
 /**
@@ -31,6 +36,8 @@ export interface SearchParamsState {
   q: string;
   library: Library | null;
   threshold: number;
+  /** hybrid / lexical / semantic（ADR-024），默认 hybrid。 */
+  mode: SearchMode;
   /** 参数非法时的中文说明；有值时不发起检索。 */
   error: string | null;
 }
@@ -70,7 +77,17 @@ export function parseSearchParams(params: WorkspaceSearchParams): SearchParamsSt
     error ??= `搜索词不能超过 ${MAX_SEARCH_QUESTION} 个字符（当前 ${q.length} 个）。`;
   }
 
-  return { q, library, threshold, error };
+  const modeRaw = readParam(params, "mode");
+  let mode: SearchMode = DEFAULT_SEARCH_MODE;
+  if (modeRaw) {
+    if ((searchModes as readonly string[]).includes(modeRaw)) {
+      mode = modeRaw as SearchMode;
+    } else {
+      error ??= "检索模式无效，只能是 hybrid / lexical / semantic。";
+    }
+  }
+
+  return { q, library, threshold, mode, error };
 }
 
 /** 生成干净的检索地址：默认值不写进 URL，清空检索回到 `/search`。 */
@@ -78,6 +95,7 @@ export function buildSearchHref(state: {
   q: string;
   library?: Library | null;
   threshold?: number;
+  mode?: SearchMode;
 }): string {
   const params = new URLSearchParams();
   const q = state.q.trim();
@@ -86,6 +104,9 @@ export function buildSearchHref(state: {
   if (state.library) params.set("library", state.library);
   if (state.threshold !== undefined && state.threshold !== DEFAULT_SEARCH_THRESHOLD) {
     params.set("threshold", String(state.threshold));
+  }
+  if (state.mode && state.mode !== DEFAULT_SEARCH_MODE) {
+    params.set("mode", state.mode);
   }
 
   const query = params.toString();

@@ -8,21 +8,28 @@
     "start": "node node_modules/next/dist/bin/next start",
     "lint": "node node_modules/eslint/bin/eslint.js .",
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
-    "test": "node node_modules/vitest/vitest.mjs run"
+    "test": "node node_modules/vitest/vitest.mjs run",
+    "check:contrast": "node scripts/check-contrast.mjs",
+    "check:theme": "node scripts/check-theme.mjs",
+    "verify": "npm run check:theme && npm run check:contrast && npm run typecheck",
+    "admin:grant": "node scripts/admin-grant.mjs"
   },
   "dependencies": {
     "@logto/next": "^4.2.11",
+    "@react-three/fiber": "9.8.2",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.4",
     "next": "16.4.3",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "three": "0.187.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/three": "0.187.0",
     "drizzle-kit": "^0.31.11",
     "eslint": "^9.39.5",
     "eslint-config-next": "16.4.3",

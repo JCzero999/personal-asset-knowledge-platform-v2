@@ -53,6 +53,27 @@ export function isParsePending(status: ParseStatus): boolean {
   return status === "pending" || status === "running";
 }
 
+/** 可以在页面里直接编辑的纯文本扩展名（与 text/* 一起判断）。 */
+const EDITABLE_TEXT_EXTENSIONS = [".md", ".markdown", ".txt", ".json", ".csv"];
+
+/**
+ * 主内容是否可以直接用文本编辑器打开。
+ *
+ * 只认 `text/*` 与常见的纯文本扩展名：PDF、图片等二进制文件即使能被浏览器
+ * 解码成人看不懂的乱码，也不该给它编辑入口，否则保存一次就把原文毁了。
+ */
+export function isEditableTextContent(
+  ref: { mime?: string | null; documentName?: string | null },
+): boolean {
+  const mime = ref.mime?.trim().toLowerCase() ?? "";
+  if (mime.startsWith("text/")) {
+    return true;
+  }
+
+  const name = ref.documentName?.trim().toLowerCase() ?? "";
+  return EDITABLE_TEXT_EXTENSIONS.some((extension) => name.endsWith(extension));
+}
+
 /**
  * 绝对时间统一按 Asia/Shanghai 展示：数据库里是 UTC ISO，
  * 服务端与浏览器所在时区可能不同，这里固定成用户习惯的北京时间。

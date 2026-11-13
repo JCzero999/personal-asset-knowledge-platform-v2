@@ -11,6 +11,7 @@ import {
   type ObjectType,
   type WorkStatus,
 } from "@/domain/objects";
+import type { VocabularyTag } from "@/domain/vocabulary";
 import { libraryLabels, statusLabels } from "@/lib/object-labels";
 import {
   buildWorkspaceHref,
@@ -28,7 +29,17 @@ import { Icon } from "./icon";
  * 所有条件都写进 URL，查询由服务端组件完成；这里只负责把用户操作翻译成
  * 一次路由跳转，所以刷新、前进后退都能回到同一份结果。
  */
-export function ObjectFilters({ filters }: { filters: WorkspaceFilters }) {
+export function ObjectFilters({
+  filters,
+  tags = [],
+  compact = false,
+}: {
+  filters: WorkspaceFilters;
+  /** 标签词表（使用次数从高到低）；下拉只列有引用的标签 + 当前选中项。 */
+  tags?: VocabularyTag[];
+  /** 列表窄栏用：只留搜索框与下拉，范围切换交给目录。 */
+  compact?: boolean;
+}) {
   const router = useRouter();
   const idPrefix = useId();
   const [pending, startTransition] = useTransition();
@@ -73,8 +84,28 @@ export function ObjectFilters({ filters }: { filters: WorkspaceFilters }) {
   const statusDisabled = filters.type === "asset";
   const statusHintId = `${idPrefix}-status-hint`;
 
+  // 只用有引用的标签，避免下拉里堆满 0 次的词条；当前选中的即使 0 次也保留，
+  // 否则刷新后下拉会显示「全部标签」而结果仍是按标签筛过的。
+  const tagOptions = (() => {
+    const list = tags.filter((tag) => tag.usage > 0);
+    if (filters.tag && !list.some((tag) => tag.label === filters.tag)) {
+      const current = tags.find((tag) => tag.label === filters.tag);
+      return [
+        ...list,
+        current ?? {
+          id: `current-${filters.tag}`,
+          label: filters.tag,
+          normalized: filters.tag,
+          sortOrder: 0,
+          usage: 0,
+        },
+      ];
+    }
+    return list;
+  })();
+
   return (
-    <div className="filters" aria-busy={pending}>
+    <div className={`filters${compact ? " is-compact" : ""}`} aria-busy={pending}>
       <form
         className="filters-top"
         role="search"
@@ -199,6 +230,24 @@ export function ObjectFilters({ filters }: { filters: WorkspaceFilters }) {
               {workStatuses.map((status) => (
                 <option value={status} key={status}>
                   {statusLabels[status]}
+                </option>
+              ))}
+            </select>
+          </span>
+        </label>
+
+        <label className="filter-field">
+          <span className="filter-label">标签</span>
+          <span className="select-wrap">
+            <select
+              className="select"
+              value={filters.tag ?? ""}
+              onChange={(event) => apply({ tag: event.target.value || null })}
+            >
+              <option value="">全部标签</option>
+              {tagOptions.map((tag) => (
+                <option value={tag.label} key={tag.id}>
+                  {tag.label}（{tag.usage}）
                 </option>
               ))}
             </select>

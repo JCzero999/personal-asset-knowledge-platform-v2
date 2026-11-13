@@ -14,6 +14,7 @@ describe("parseSearchParams", () => {
       q: "",
       library: null,
       threshold: DEFAULT_SEARCH_THRESHOLD,
+      mode: "hybrid",
       error: null,
     });
   });
@@ -29,6 +30,7 @@ describe("parseSearchParams", () => {
       q: "内容复盘",
       library: "internal",
       threshold: 0.35,
+      mode: "hybrid",
       error: null,
     });
   });
@@ -56,6 +58,18 @@ describe("parseSearchParams", () => {
     expect(parseSearchParams({ q: ["设计", "写作"] }).q).toBe("设计");
     expect(parseSearchParams({ library: ["external", "internal"] }).library).toBe("external");
   });
+
+  it("解析检索模式，默认 hybrid", () => {
+    expect(parseSearchParams({ q: "复盘" }).mode).toBe("hybrid");
+    expect(parseSearchParams({ q: "复盘", mode: "lexical" }).mode).toBe("lexical");
+    expect(parseSearchParams({ q: "复盘", mode: "semantic" }).mode).toBe("semantic");
+  });
+
+  it("非法检索模式给出错误并回落到默认值", () => {
+    const state = parseSearchParams({ q: "复盘", mode: "fuzzy" });
+    expect(state.mode).toBe("hybrid");
+    expect(state.error).toContain("hybrid / lexical / semantic");
+  });
 });
 
 describe("buildSearchHref", () => {
@@ -80,6 +94,15 @@ describe("buildSearchHref", () => {
     );
   });
 
+  it("非默认检索模式写进 URL，默认值省略", () => {
+    expect(buildSearchHref({ q: "复盘", mode: "lexical" })).toBe(
+      "/search?q=%E5%A4%8D%E7%9B%98&mode=lexical",
+    );
+    expect(buildSearchHref({ q: "复盘", mode: "hybrid" })).toBe(
+      "/search?q=%E5%A4%8D%E7%9B%98",
+    );
+  });
+
   it("生成地址可被解析回同样的状态", () => {
     const href = buildSearchHref({ q: "知识 管理", library: "internal", threshold: 0.1 });
     const search = new URLSearchParams(href.split("?")[1]);
@@ -89,6 +112,7 @@ describe("buildSearchHref", () => {
       q: "知识 管理",
       library: "internal",
       threshold: 0.1,
+      mode: "hybrid",
       error: null,
     });
   });

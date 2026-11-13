@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { DomainError, ConflictError, ValidationError } from "../../src/domain/errors";
 import { openDatabase, type DatabaseHandle } from "../../src/server/db/client";
 import { SqliteObjectRepository } from "../../src/server/repositories/sqlite-object-repository";
+import { seedTag } from "../helpers/seed";
 import type { CreateObjectInput } from "../../src/server/ports/object-repository";
 
 /**
@@ -14,8 +15,7 @@ const workInput: CreateObjectInput = {
   title: "如何做一门课",
   library: "external",
   ownerSub: "user_test",
-  format: "course",
-  categories: ["课程", "方法论"],
+  category: "course",
   tags: ["教学"],
   priority: "high",
 };
@@ -26,6 +26,8 @@ let repo: SqliteObjectRepository;
 beforeAll(() => {
   // 迁移文件路径相对仓库根目录；vitest 默认在根目录运行。
   handle = openDatabase({ file: ":memory:" });
+  // ADR-023：标签只能选词表已有项，先建出用例需要的标签。
+  for (const label of ["教学", "tag1", "tag2"]) seedTag(handle, label);
 });
 
 afterAll(() => {
@@ -44,39 +46,45 @@ beforeEach(() => {
 });
 
 describe("objects CRUD", () => {
-  it("创建作品：默认 draft、revision=1、主分类取 categories[0]", async () => {
+  it("创建作品：默认 draft、revision=1、分类取 category", async () => {
     const work = await repo.create(workInput);
 
     expect(work.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(work.type).toBe("work");
     expect(work.status).toBe("draft");
-    expect(work.format).toBe("course");
-    expect(work.primaryCategory).toBe("课程");
+    expect(work.category).toBe("course");
     expect(work.revision).toBe(1);
     expect(work.createdAt).toBe(work.updatedAt);
   });
 
-  it("创建资产：status/format/sourceNote 恒为 null", async () => {
+  it("创建资产：status/sourceNote 恒为 null，分类可为空", async () => {
     const asset = await repo.create({
       type: "asset",
       title: "分布式事务笔记",
       library: "internal",
       ownerSub: "user_test",
-      categories: ["数据库"],
+      category: "course",
     });
 
     expect(asset).toMatchObject({
       type: "asset",
       status: null,
-      format: null,
+      category: "course",
       sourceNote: null,
-      primaryCategory: "数据库",
     });
+
+    const bare = await repo.create({
+      type: "asset",
+      title: "未归类的剪藏",
+      library: "internal",
+      ownerSub: "user_test",
+    });
+    expect(bare.category).toBeNull();
   });
 
-  it("作品缺少 format 时拒绝写入", async () => {
+  it("作品缺少分类时拒绝写入", async () => {
     await expect(
-      repo.create({ ...workInput, format: undefined }),
+      repo.create({ ...workInput, category: undefined }),
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -85,10 +93,10 @@ describe("objects CRUD", () => {
       handle.sqlite
         .prepare(
           `insert into objects
-             (id, type, title, library, source, origin, categories, tags, priority,
+             (id, type, title, library, source, origin, category_code, priority,
               owner_sub, revision, created_at, updated_at, status)
            values ('01HZZZZZZZZZZZZZZZZZZZZZZZ', 'asset', 'x', 'internal',
-                   'handwritten', 'self', '[]', '[]', 'medium', 'u', 1,
+                   'handwritten', 'self', NULL, 'medium', 'u', 1,
                    '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'draft')`,
         )
         .run(),
@@ -100,11 +108,11 @@ describe("objects CRUD", () => {
       handle.sqlite
         .prepare(
           `insert into objects
-             (id, type, title, library, source, origin, categories, tags, priority,
-              owner_sub, revision, created_at, updated_at, format, status)
+             (id, type, title, library, source, origin, category_code, priority,
+              owner_sub, revision, created_at, updated_at, status)
            values ('01HZZZZZZZZZZZZZZZZZZZZZZZ', 'work', 'x', 'external',
-                   'handwritten', 'self', '[]', '[]', 'medium', 'u', 1,
-                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'course', 'practiced')`,
+                   'handwritten', 'self', 'course', 'medium', 'u', 1,
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'practiced')`,
         )
         .run(),
     ).toThrow(/CHECK constraint failed/i);
@@ -146,17 +154,24 @@ describe("objects CRUD", () => {
     ).rejects.toBeInstanceOf(ConflictError);
   });
 
-  it("更新资产时携带 format 会被拒绝", async () => {
+  it("作品不能把分类清空，资产可以", async () => {
+    const work = await repo.create(workInput);
+    await expect(
+      repo.update(work.id, { category: null, expectedRevision: work.revision }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
     const asset = await repo.create({
       type: "asset",
       title: "资产",
       library: "internal",
       ownerSub: "user_test",
+      category: "course",
     });
-
-    await expect(
-      repo.update(asset.id, { format: "article", expectedRevision: asset.revision }),
-    ).rejects.toBeInstanceOf(ValidationError);
+    const cleared = await repo.update(asset.id, {
+      category: null,
+      expectedRevision: asset.revision,
+    });
+    expect(cleared.category).toBeNull();
   });
 });
 
@@ -374,12 +389,15 @@ describe("列表筛选与排序", () => {
     ]);
   });
 
-  it("分类与标签按数组元素精确匹配", async () => {
-    await repo.create(asset({ title: "A", categories: ["方法论", "写作"], tags: ["tag1"] }));
-    await repo.create(asset({ title: "B", categories: ["方法论2"], tags: ["tag1", "tag2"] }));
-    await repo.create(asset({ title: "C", categories: ["方法论"], tags: [] }));
+  it("分类按 code 或名称匹配，标签精确匹配", async () => {
+    await repo.create(asset({ title: "A", category: "course", tags: ["tag1"] }));
+    await repo.create(asset({ title: "B", category: "script", tags: ["tag1", "tag2"] }));
+    await repo.create(asset({ title: "C", category: "course", tags: [] }));
 
-    expect((await repo.list({ ownerSub: "user_test", category: "方法论" })).map((o) => o.title).sort()).toEqual(
+    expect((await repo.list({ ownerSub: "user_test", category: "course" })).map((o) => o.title).sort()).toEqual(
+      ["A", "C"],
+    );
+    expect((await repo.list({ ownerSub: "user_test", category: "课程" })).map((o) => o.title).sort()).toEqual(
       ["A", "C"],
     );
     expect((await repo.list({ ownerSub: "user_test", tag: "tag1" })).map((o) => o.title).sort()).toEqual([
