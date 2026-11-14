@@ -658,3 +658,11 @@
 - **实现**：`src/components/object-filters.tsx` 重写为 URL 驱动的 `<Link>` 按钮（刷新与前进后退照常），搜索框仍用 `router.push` 并保留未提交文字的同步逻辑；`globals.css` 用 flex 竖排替换四列网格，紧凑模式（列表窄栏）单独收紧按钮尺寸
 - **验收**：`scripts/verify-v21-ui.mjs` 的断言改为按 `[data-filter]` 定位按钮组，实跑全绿——1440 无横向溢出、目录四组条目左缘同为 104、点「资产」写进 `?type=asset` 且列表剩 2 行、刷新保持、390 宽无溢出；`tsc --noEmit` 0；`eslint` 0 error / 16 warning；组件与 lib 测试 23 文件 385 通过；生产包重建并重启 3000，`/api/health` 正常
 - **文档**：`09_USER_GUIDE` 的「3.5 筛选与查找」与目录说明同步为按钮组与统一缩进的现状
+
+## 2026-11-14（第四轮：查看原文内联展示、复制兜底、去掉重复的「编辑」）
+
+- **起因**：用户点开作品详情发现内容文件行的两个按钮都不对——「查看原文」变成下载文件，「复制」提示复制失败；同时行内「编辑」与上方「编写正文」是同一个动作
+- **查看原文**：链接改为 `?inline=1`。响应头按内容类型决定：文本类（`text/*`、JSON、XML、`.md/.txt/.csv` 等）内联时统一降为 `text/plain; charset=utf-8`——浏览器对 `text/markdown` 会直接下载，`text/html` 还会在本站源里执行脚本；PDF、位图图片原样内联。纯函数抽到 `src/server/http/content-disposition.ts` 并加单测（6 条）
+- **复制**：先走 Clipboard API；`navigator.clipboard` 不存在（局域网 http 访问不是安全上下文）或被拒时，退回「隐藏 textarea + `execCommand('copy')`」；两者都失败才提示「浏览器没有允许写入剪贴板，可以点查看原文手动全选」
+- **去重**：删掉内容行里的「编辑」按钮，改正文只保留工具栏的「编写正文 / 编辑正文」（同一个编辑器，已有文本主内容时打开原文）
+- **验收**：`tsc --noEmit` 0；`eslint` 0 error / 16 warning；`vitest` **67 文件 922 通过 / 3 跳过**（新增 6 条响应头单测）；`next build` 通过；3000 已重启至新构建。浏览器内的真实点击验收未做（需要 Logto 登录态），改动以单测 + 生产构建为据

@@ -304,6 +304,8 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 117 | `npm run lint` 突然报 1297 条 error，`tsc` 却是 0 | `.next-v21` / `.next-v21b2` 是验收脚本的独立 dist 目录，只加进了 `.gitignore`，没进 `eslint.config.mjs` 的 `globalIgnores`，ESLint 把压缩后的产物当源码扫 | 两处都加：`.gitignore` 与 `globalIgnores`；顺带把两个目录写进 `tsconfig.json` 的 `include`，避免 tsc 也扫到 | 自定义构建目录必须三处同步（git / lint / tsconfig）；「门禁全绿」要跑在干净工作区上 |
 | 118 | 目录里「浏览」「归属」两组条目和分组标题齐平，只有「作品进程」那组看着有层级 | 缩进做成 `DirGroup` 的 `nested` 开关，只有被显式传 `nested` 的调用点才缩进；新增的「浏览」「归属」没传，就一直是平的。视觉上像两套规则 | 删掉开关，`<div className="dir-group">` 下的 `.dir-item` 一律 `margin-left: 16px` + 从属竖线；`FilterChips` 之外的分组标题保持 88，条目统一 104 | 层级是容器的事，不该让每个调用点自己决定要不要缩进——默认继承，特例才覆盖，否则新分组迟早漏掉 |
 | 119 | 列表上方「全部 / 资产 / 作品」胶囊条和下面的「类型」下拉是同一件事；其余条件全是下拉，要一个个展开才知道有什么可选 | 类型做了两个入口（快捷胶囊 + 下拉），两者都写 URL 的 `type`，只是外壳不同；其余筛选沿用 `<select>` | 全部改成 `FilterChips` 平铺按钮组（类型 / 库别 / 状态 / 标签 / 复核状态 / 价值等级 / 排序），每个条件一行、点一下生效；删除 `.type-switch` / `.type-option` 与对应 CSS，`filters-fields` 从四列网格改成竖排 | 同一维度只留一个入口；验收脚本按 `data-filter="…"` 定位而不是样式类名，样式再改也不会把断言一起改坏 |
+| 120 | 详情页点「查看原文」直接把文件下载下来；PDF 以外的文本也一样 | 链接没带 `?inline=1`，路由默认 `Content-Disposition: attachment`。补上参数后还有第二层：浏览器对 `text/markdown` 不认识、会下载，`text/html` 则会在本站源里执行脚本 | 链接加 `?inline=1`；路由对文本类（`text/*`、JSON/XML、`.md/.txt/.csv` 等）内联时统一回 `text/plain; charset=utf-8`，PDF / 位图原样。判断抽成 `inlineContentType` / `isTextLikeContent` 并加单测 | 「能不能内联」是**内容类型**问题，不是开关问题：加参数只是第一步，还要让返回的类型是浏览器愿意渲染的那种 |
+| 121 | 点「复制」弹「复制失败」 | 只用 `navigator.clipboard.writeText`。用局域网地址（http，非安全上下文）访问时 `navigator.clipboard` 是 `undefined`，或权限被拒，直接抛错 | 先试 Clipboard API，失败退到隐藏 textarea + `execCommand('copy')`；两者都失败才提示，并在提示里给出「查看原文手动复制」的替代路径 | 剪贴板 API 只在安全上下文可用：本地调试用 `localhost` 正常，换机器用 IP 访问就会暴露；任何「复制」都要有降级路径 |
 
 **通用预防**（比单条修复更重要）：
 

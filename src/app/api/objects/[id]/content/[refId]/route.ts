@@ -1,4 +1,8 @@
 import { getDb } from "@/server/db/client";
+import {
+  contentDisposition,
+  inlineContentType,
+} from "@/server/http/content-disposition";
 import { fromError } from "@/server/http/respond";
 import { downloadObjectContent } from "@/server/services/content-service";
 import { requirePermission } from "@/server/authz";
@@ -9,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 /**
  * 下载内容原文：只允许该对象自己的内容引用，文件流透传 RAGFlow。
- * `?inline=1` 改为浏览器内联展示（预览弹窗的 PDF / 图片），其余一律附件下载。
+ * `?inline=1` 改为浏览器内联展示（PDF / 图片预览、「查看原文」看文本），其余一律附件下载。
  */
 export async function GET(
   request: Request,
@@ -33,7 +37,7 @@ export async function GET(
         ? file.contentType
         : (ref.mime ?? file.contentType ?? "application/octet-stream");
     const headers = new Headers({
-      "Content-Type": contentType,
+      "Content-Type": inline ? inlineContentType(contentType, filename) : contentType,
       "Content-Disposition": contentDisposition(filename, inline),
       "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
@@ -46,19 +50,4 @@ export async function GET(
   } catch (error) {
     return fromError(error);
   }
-}
-
-/** 同时给出 ASCII 兜底名与 UTF-8 原名，中文文件名在两种浏览器上都能还原。 */
-function contentDisposition(filename: string, inline = false): string {
-  const safe = filename.replace(/[\r\n"\\]/g, "").trim() || "content";
-  const extension = /\.[A-Za-z0-9]{1,8}$/.exec(safe)?.[0] ?? "";
-  const stem = safe
-    .slice(0, safe.length - extension.length)
-    .replace(/[^\x20-\x7e]/g, "")
-    .replace(/[:*?<>|/]/g, "")
-    .trim();
-  const fallback = `${stem || "download"}${extension}`;
-
-  const kind = inline ? "inline" : "attachment";
-  return `${kind}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(safe)}`;
 }

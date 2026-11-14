@@ -20,6 +20,37 @@ import { ContentEditor } from "./content-editor";
 import { Icon } from "./icon";
 
 /**
+ * 写剪贴板：先走异步 Clipboard API；用局域网地址（http://192.168.x.x）访问时
+ * 不是安全上下文，`navigator.clipboard` 为空，退回到「选中 + execCommand」。
+ */
+async function writeClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // 权限被拒时继续走兜底
+    }
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "-1000px";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  document.body.removeChild(area);
+  return copied;
+}
+
+/**
  * 对象的内容区：列出内容引用、下载原文、上传主内容 / 附件，以及直接编写正文。
  *
  * 上传成功后只刷新服务端数据；解析状态停在 pending / running 时
@@ -146,11 +177,14 @@ export function ObjectContent({
         cache: "no-store",
       });
       if (!response.ok) throw new Error("读取失败");
-      await navigator.clipboard.writeText(await response.text());
+      const text = await response.text();
+      if (!(await writeClipboard(text))) {
+        throw new Error("剪贴板不可用");
+      }
       setToast("已复制全文，可以直接粘贴使用。");
       if (usageObjectId) void reportAssetUsage(usageObjectId, "copy");
     } catch {
-      setError("复制失败，可以点「查看原文」在新标签里手动选择。");
+      setError("复制失败：浏览器没有允许写入剪贴板。可以点「查看原文」后手动全选复制。");
     } finally {
       setCopying(false);
     }
@@ -308,7 +342,7 @@ export function ObjectContent({
                   {ref.role === "primary" ? (
                     <a
                       className="btn btn-ghost content-download"
-                      href={`/api/objects/${objectId}/content/${ref.id}`}
+                      href={`/api/objects/${objectId}/content/${ref.id}?inline=1`}
                       target="_blank"
                       rel="noreferrer"
                       aria-label={`在新标签查看 ${ref.documentName ?? "主内容"}`}
@@ -330,19 +364,6 @@ export function ObjectContent({
                     >
                       <Icon name="copy" size={15} />
                       {copying ? "复制中…" : "复制"}
-                    </button>
-                  ) : null}
-
-                  {ref.role === "primary" && isEditableTextContent(ref) ? (
-                    <button
-                      className="btn btn-ghost content-download"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setEditor({ existing: ref, replacing: true })}
-                      aria-label={`编辑 ${ref.documentName ?? "主内容"} 的正文`}
-                    >
-                      <Icon name="edit" size={15} />
-                      编辑
                     </button>
                   ) : null}
 
