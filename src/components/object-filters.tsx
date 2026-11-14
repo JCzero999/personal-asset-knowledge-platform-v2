@@ -8,9 +8,7 @@ import {
   libraries,
   valueLevels,
   workStatuses,
-  type Library,
   type ObjectType,
-  type WorkStatus,
 } from "@/domain/objects";
 import type { VocabularyTag } from "@/domain/vocabulary";
 import { libraryLabels, statusLabels } from "@/lib/object-labels";
@@ -20,7 +18,6 @@ import {
   reviewStatusFilters,
   withLifecycleParams,
   type LifecycleFilters,
-  type ReviewStatusFilter,
 } from "./lifecycle";
 import {
   buildWorkspaceHref,
@@ -28,7 +25,6 @@ import {
   workspaceSorts,
   type ArchiveScope,
   type WorkspaceFilters,
-  type WorkspaceSort,
 } from "@/lib/workspace-filters";
 import { Icon } from "./icon";
 
@@ -38,6 +34,60 @@ import { Icon } from "./icon";
  * 所有条件都写进 URL，查询由服务端组件完成；这里只负责把用户操作翻译成
  * 一次路由跳转，所以刷新、前进后退都能回到同一份结果。
  */
+
+interface ChipOption {
+  key: string;
+  label: string;
+  href: string;
+  active: boolean;
+}
+
+/** 一组平铺按钮：比下拉少一次点击，选项也一眼看全。 */
+function FilterChips({
+  name,
+  label,
+  options,
+  disabled = false,
+  describedBy,
+}: {
+  name: string;
+  label: string;
+  options: ChipOption[];
+  disabled?: boolean;
+  describedBy?: string;
+}) {
+  return (
+    <div className="filter-field" data-filter={name}>
+      <span className="filter-label">{label}</span>
+      <div
+        className="chip-group"
+        role="group"
+        aria-label={label}
+        aria-disabled={disabled || undefined}
+        aria-describedby={describedBy}
+      >
+        {options.map((option) =>
+          disabled ? (
+            <span className="chip is-disabled" key={option.key}>
+              {option.label}
+            </span>
+          ) : (
+            <Link
+              className={`chip${option.active ? " is-active" : ""}`}
+              href={option.href}
+              scroll={false}
+              aria-current={option.active ? "page" : undefined}
+              key={option.key}
+            >
+              {option.label}
+            </Link>
+          ),
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ObjectFilters({
   filters,
   lifecycle = defaultLifecycleFilters,
@@ -47,13 +97,13 @@ export function ObjectFilters({
   filters: WorkspaceFilters;
   /** 生命周期筛选（复核状态 / 价值等级），与主筛选并列存在 URL 上。 */
   lifecycle?: LifecycleFilters;
-  /** 标签词表（使用次数从高到低）；下拉只列有引用的标签 + 当前选中项。 */
+  /** 标签词表（使用次数从高到低）；按钮只列有引用的标签 + 当前选中项。 */
   tags?: VocabularyTag[];
-  /** 列表窄栏用：只留搜索框与下拉，范围切换交给目录。 */
+  /** 列表窄栏用：收紧间距，搜索框之外的条件照样可点。 */
   compact?: boolean;
 }) {
-  const router = useRouter();
   const idPrefix = useId();
+  const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [value, setValue] = useState(filters.q);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -67,51 +117,56 @@ export function ObjectFilters({
     setValue(filters.q);
   }, [filters.q]);
 
-  function go(href: string, push = false) {
-    const current = withLifecycleParams(buildWorkspaceHref(filters), lifecycle);
-    if (href === current) return;
-    startTransition(() => {
-      if (push) router.push(href, { scroll: false });
-      else router.replace(href, { scroll: false });
-    });
+  // 条件之间互不清除：改一个按钮，其余条件原样带过去。
+  function hrefWith(patch: Partial<WorkspaceFilters>) {
+    return withLifecycleParams(buildWorkspaceHref(filters, patch), lifecycle);
   }
 
-  // 下拉是连续微调，用 replace 不塞满历史；搜索与范围切换是明确动作，用 push 以便后退还原。
-  // 两次改动都保留生命周期条件，避免调一个筛选把另一个悄悄清掉。
-  function apply(next: Partial<WorkspaceFilters>, push = false) {
-    go(withLifecycleParams(buildWorkspaceHref(filters, next), lifecycle), push);
-  }
-
-  function applyLifecycle(patch: Partial<LifecycleFilters>) {
-    go(withLifecycleParams(buildWorkspaceHref(filters), { ...lifecycle, ...patch }));
+  function hrefLifecycle(patch: Partial<LifecycleFilters>) {
+    return withLifecycleParams(buildWorkspaceHref(filters), { ...lifecycle, ...patch });
   }
 
   function submitSearch() {
     const q = value.trim();
     syncedQ.current = q;
     setValue(q);
-    apply({ q }, true);
+    const href = hrefWith({ q });
+    if (href === withLifecycleParams(buildWorkspaceHref(filters), lifecycle)) return;
+    startTransition(() => {
+      router.push(href, { scroll: false });
+    });
   }
 
   function clearSearch() {
     setValue("");
-    apply({ q: "" });
+    syncedQ.current = "";
+    const href = hrefWith({ q: "" });
+    startTransition(() => {
+      router.replace(href, { scroll: false });
+    });
     inputRef.current?.focus();
   }
 
   const statusDisabled = filters.type === "asset";
   const statusHintId = `${idPrefix}-status-hint`;
 
-  // 类型快捷筛选：内外库里资产和作品混在一起时，一键只看某一类。
-  // 与下拉「类型」同源（都写 URL 的 type），这里只是更好点的入口。
-  const typeOptions: Array<{ value: ObjectType | null; label: string }> = [
-    { value: null, label: "全部" },
-    { value: "asset", label: "资产" },
-    { value: "work", label: "作品" },
-  ];
+  // 类型：全列表唯一的类型入口，与其它条件用同一套按钮组。
+  // 原来顶部另有一个「全部 / 资产 / 作品」胶囊条，与「类型」下拉重复，已合并到这里。
+  const typeChips: ChipOption[] = (
+    [
+      { value: null, label: "全部" },
+      { value: "asset", label: "资产" },
+      { value: "work", label: "作品" },
+    ] as Array<{ value: ObjectType | null; label: string }>
+  ).map((option) => ({
+    key: option.label,
+    label: option.label,
+    href: hrefWith({ type: option.value }),
+    active: filters.type === option.value,
+  }));
 
-  // 只用有引用的标签，避免下拉里堆满 0 次的词条；当前选中的即使 0 次也保留，
-  // 否则刷新后下拉会显示「全部标签」而结果仍是按标签筛过的。
+  // 只用有引用的标签，避免按钮里堆满 0 次的词条；当前选中的即使 0 次也保留，
+  // 否则刷新后会显示「全部标签」而结果仍是按标签筛过的。
   const tagOptions = (() => {
     const list = tags.filter((tag) => tag.usage > 0);
     if (filters.tag && !list.some((tag) => tag.label === filters.tag)) {
@@ -129,6 +184,73 @@ export function ObjectFilters({
     }
     return list;
   })();
+
+  const libraryChips: ChipOption[] = [
+    { key: "all", label: "全部", href: hrefWith({ library: null }), active: filters.library === null },
+    ...libraries.map((library) => ({
+      key: library,
+      label: libraryLabels[library],
+      href: hrefWith({ library }),
+      active: filters.library === library,
+    })),
+  ];
+
+  const statusChips: ChipOption[] = [
+    { key: "all", label: "全部", href: hrefWith({ status: null }), active: filters.status === null },
+    ...workStatuses.map((status) => ({
+      key: status,
+      label: statusLabels[status],
+      href: hrefWith({ status }),
+      active: filters.status === status,
+    })),
+  ];
+
+  const tagChips: ChipOption[] = [
+    { key: "all", label: "全部标签", href: hrefWith({ tag: null }), active: filters.tag === null },
+    ...tagOptions.map((tag) => ({
+      key: tag.id,
+      label: `${tag.label}（${tag.usage}）`,
+      href: hrefWith({ tag: tag.label }),
+      active: filters.tag === tag.label,
+    })),
+  ];
+
+  const reviewChips: ChipOption[] = [
+    {
+      key: "all",
+      label: "全部",
+      href: hrefLifecycle({ aiStatus: null }),
+      active: lifecycle.aiStatus === null,
+    },
+    ...reviewStatusFilters.map((status) => ({
+      key: status,
+      label: reviewStatusFilterLabels[status],
+      href: hrefLifecycle({ aiStatus: status }),
+      active: lifecycle.aiStatus === status,
+    })),
+  ];
+
+  const levelChips: ChipOption[] = [
+    {
+      key: "all",
+      label: "全部",
+      href: hrefLifecycle({ valueLevel: null }),
+      active: lifecycle.valueLevel === null,
+    },
+    ...valueLevels.map((level) => ({
+      key: level,
+      label: `${level} 级`,
+      href: hrefLifecycle({ valueLevel: level }),
+      active: lifecycle.valueLevel === level,
+    })),
+  ];
+
+  const sortChips: ChipOption[] = workspaceSorts.map((sort) => ({
+    key: sort,
+    label: sortLabels[sort],
+    href: hrefWith({ sort }),
+    active: filters.sort === sort,
+  }));
 
   return (
     <div className={`filters${compact ? " is-compact" : ""}`} aria-busy={pending}>
@@ -205,165 +327,20 @@ export function ObjectFilters({
         </div>
       </form>
 
-      <div className="type-switch" role="group" aria-label="内容类型">
-        {typeOptions.map((option) => {
-          const active = filters.type === option.value;
-
-          return (
-            <Link
-              className={`type-option${active ? " is-active" : ""}`}
-              href={withLifecycleParams(
-                buildWorkspaceHref(filters, { type: option.value }),
-                lifecycle,
-              )}
-              aria-current={active ? "page" : undefined}
-              scroll={false}
-              key={option.label}
-            >
-              {option.label}
-            </Link>
-          );
-        })}
-      </div>
-
       <div className="filters-fields">
-        <label className="filter-field">
-          <span className="filter-label">类型</span>
-          <span className="select-wrap">
-            <select
-              className="select"
-              value={filters.type ?? ""}
-              onChange={(event) =>
-                apply({ type: (event.target.value || null) as ObjectType | null })
-              }
-            >
-              <option value="">全部</option>
-              <option value="asset">资产</option>
-              <option value="work">作品</option>
-            </select>
-          </span>
-        </label>
-
-        <label className="filter-field">
-          <span className="filter-label">库别</span>
-          <span className="select-wrap">
-            <select
-              className="select"
-              value={filters.library ?? ""}
-              onChange={(event) =>
-                apply({ library: (event.target.value || null) as Library | null })
-              }
-            >
-              <option value="">全部</option>
-              {libraries.map((library) => (
-                <option value={library} key={library}>
-                  {libraryLabels[library]}
-                </option>
-              ))}
-            </select>
-          </span>
-        </label>
-
-        <label className="filter-field">
-          <span className="filter-label">状态</span>
-          <span className="select-wrap">
-            <select
-              className="select"
-              value={statusDisabled ? "" : (filters.status ?? "")}
-              disabled={statusDisabled}
-              aria-describedby={statusDisabled ? statusHintId : undefined}
-              onChange={(event) =>
-                apply({ status: (event.target.value || null) as WorkStatus | null })
-              }
-            >
-              <option value="">全部</option>
-              {workStatuses.map((status) => (
-                <option value={status} key={status}>
-                  {statusLabels[status]}
-                </option>
-              ))}
-            </select>
-          </span>
-        </label>
-
-        <label className="filter-field">
-          <span className="filter-label">标签</span>
-          <span className="select-wrap">
-            <select
-              className="select"
-              value={filters.tag ?? ""}
-              onChange={(event) => apply({ tag: event.target.value || null })}
-            >
-              <option value="">全部标签</option>
-              {tagOptions.map((tag) => (
-                <option value={tag.label} key={tag.id}>
-                  {tag.label}（{tag.usage}）
-                </option>
-              ))}
-            </select>
-          </span>
-        </label>
-
-        <label className="filter-field">
-          <span className="filter-label">复核状态</span>
-          <span className="select-wrap">
-            <select
-              className="select"
-              value={lifecycle.aiStatus ?? ""}
-              onChange={(event) =>
-                applyLifecycle({
-                  aiStatus: (event.target.value || null) as ReviewStatusFilter | null,
-                })
-              }
-            >
-              <option value="">全部</option>
-              {reviewStatusFilters.map((status) => (
-                <option value={status} key={status}>
-                  {reviewStatusFilterLabels[status]}
-                </option>
-              ))}
-            </select>
-          </span>
-        </label>
-
-        <label className="filter-field">
-          <span className="filter-label">价值等级</span>
-          <span className="select-wrap">
-            <select
-              className="select"
-              value={lifecycle.valueLevel ?? ""}
-              onChange={(event) =>
-                applyLifecycle({
-                  valueLevel: (event.target.value || null) as LifecycleFilters["valueLevel"],
-                })
-              }
-            >
-              <option value="">全部</option>
-              {valueLevels.map((level) => (
-                <option value={level} key={level}>
-                  {level} 级
-                </option>
-              ))}
-            </select>
-          </span>
-        </label>
-
-        <label className="filter-field">
-          <span className="filter-label">排序</span>
-          <span className="select-wrap">
-            <select
-              className="select"
-              value={filters.sort}
-              onChange={(event) => apply({ sort: event.target.value as WorkspaceSort })}
-            >
-              {workspaceSorts.map((sort) => (
-                <option value={sort} key={sort}>
-                  {sortLabels[sort]}
-                </option>
-              ))}
-            </select>
-          </span>
-        </label>
+        <FilterChips name="type" label="类型" options={typeChips} />
+        <FilterChips name="library" label="库别" options={libraryChips} />
+        <FilterChips
+          name="status"
+          label="状态"
+          options={statusChips}
+          disabled={statusDisabled}
+          describedBy={statusDisabled ? statusHintId : undefined}
+        />
+        <FilterChips name="tag" label="标签" options={tagChips} />
+        <FilterChips name="review" label="复核状态" options={reviewChips} />
+        <FilterChips name="level" label="价值等级" options={levelChips} />
+        <FilterChips name="sort" label="排序" options={sortChips} />
       </div>
 
       {statusDisabled ? (

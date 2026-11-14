@@ -61,18 +61,9 @@ function DirLink({ item }: { item: DirItem }) {
   );
 }
 
-function DirGroup({
-  label,
-  items,
-  nested = false,
-}: {
-  label: string;
-  items: DirItem[];
-  /** 二级条目：相对分组标题缩进一层，用来表达从属关系。 */
-  nested?: boolean;
-}) {
+function DirGroup({ label, items }: { label: string; items: DirItem[] }) {
   return (
-    <div className={`dir-group${nested ? " is-nested" : ""}`}>
+    <div className="dir-group">
       <p className="dir-label">{label}</p>
       {items.map((item) => (
         <DirLink item={item} key={item.href} />
@@ -120,7 +111,7 @@ function VocabularyGroup({
   }
   if (items.length === 0) return null;
 
-  return <DirGroup label="分类与标签" items={items} nested />;
+  return <DirGroup label="分类与标签" items={items} />;
 }
 
 function AccountGroup({
@@ -137,7 +128,7 @@ function AccountGroup({
     { label: "角色", href: "/admin/roles", active: active === "/admin/roles" },
   ];
 
-  return <DirGroup label="账号" items={items} nested />;
+  return <DirGroup label="账号" items={items} />;
 }
 
 /** 工作台、检索、图谱三个模块的「管理」入口：只有词表与账号两组。 */
@@ -252,7 +243,7 @@ export function WorkspaceDirectory({
       </header>
       <DirGroup label="浏览" items={browse} />
       <DirGroup label="归属" items={libraries} />
-      <DirGroup label="作品进程" items={track} nested />
+      <DirGroup label="作品进程" items={track} />
       <ManageGroups session={session} counts={taxonomyCounts} />
       <p className="dir-note">目录只切换列表范围，内容本身不动。</p>
     </aside>

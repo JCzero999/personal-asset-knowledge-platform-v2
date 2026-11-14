@@ -397,13 +397,16 @@ const DIR_METRICS = `(() => {
   const pick = (label) => {
     const group = groups.find((item) => item.querySelector('.dir-label')?.textContent?.trim() === label);
     if (!group) return null;
+    const labelEl = group.querySelector('.dir-label');
     const items = [...group.querySelectorAll('.dir-item')].map((el) => ({
       label: el.querySelector('.dir-item-label')?.textContent?.trim(),
       left: Math.round(el.getBoundingClientRect().left),
       paddingLeft: Math.round(parseFloat(getComputedStyle(el).paddingLeft)),
-      nested: group.classList.contains('is-nested'),
     }));
-    return { nested: group.classList.contains('is-nested'), items };
+    return {
+      labelLeft: labelEl ? Math.round(labelEl.getBoundingClientRect().left) : null,
+      items,
+    };
   };
   return {
     browse: pick('浏览'),
@@ -442,39 +445,40 @@ async function main() {
     if (Math.abs(layout.list.w - 340) > 1) problems.push(`列表默认宽度 ${layout.list.w}（应为 340）`);
     if (!layout.resizer || layout.resizerDisplay === "none") problems.push("1440 分隔条不可见");
 
-    // 目录缩进：管理分类 / 管理标签 / 用户 / 角色 与作品进程同深度
+    // 目录缩进：每个分组的条目统一缩进一层，分组标题在条目左侧
     const dirs = await page.evaluate(DIR_METRICS);
     note("目录缩进", dirs);
-    const stageLeft = dirs.track?.items?.[0]?.left;
-    const targets = [
-      ["管理分类", dirs.taxonomy?.items?.[0]],
-      ["管理标签", dirs.taxonomy?.items?.[1]],
-      ["用户", dirs.account?.items?.[0]],
-      ["角色", dirs.account?.items?.[1]],
-    ];
-    if (stageLeft === undefined) problems.push("找不到作品进程分组");
-    for (const [label, item] of targets) {
-      if (!item) {
-        problems.push(`目录里没有「${label}」`);
+    const itemLeft = dirs.track?.items?.[0]?.left;
+    if (itemLeft === undefined) problems.push("找不到作品进程分组");
+    for (const key of ["browse", "track", "taxonomy", "account"]) {
+      const group = dirs[key];
+      if (!group) {
+        problems.push(`目录里没有分组 ${key}`);
         continue;
       }
-      if (item.left !== stageLeft) {
-        problems.push(`「${label}」缩进 ${item.left} 与作品进程 ${stageLeft} 不一致`);
+      if (group.items.length === 0) {
+        problems.push(`分组 ${key} 没有条目`);
+        continue;
       }
-    }
-    if (dirs.browse?.items?.[0] && dirs.browse.items[0].left >= stageLeft) {
-      problems.push("一级条目没有比二级更深（缩进方向反了）");
+      for (const item of group.items) {
+        if (item.left !== itemLeft) {
+          problems.push(`「${item.label}」缩进 ${item.left} 与其他分组 ${itemLeft} 不一致`);
+        }
+      }
+      if (group.labelLeft === null || group.labelLeft >= itemLeft) {
+        problems.push(`分组 ${key} 的标题未在条目（${itemLeft}）左侧`);
+      }
     }
 
     await page.screenshot("v21-workspace-1440");
 
-    /* ---------- 类型快捷筛选 ---------- */
+    /* ---------- 类型筛选（按钮组） ---------- */
     const typeSwitch = await page.evaluate(`(() => {
-      const el = document.querySelector('.type-switch');
+      const el = document.querySelector('[data-filter="type"] .chip-group');
       if (!el) return null;
       const r = el.getBoundingClientRect();
       return {
-        options: [...el.querySelectorAll('.type-option')].map((a) => ({
+        options: [...el.querySelectorAll('.chip')].map((a) => ({
           label: a.textContent.trim(),
           href: a.getAttribute('href'),
           active: a.classList.contains('is-active'),
@@ -484,10 +488,10 @@ async function main() {
         listTop: Math.round(document.querySelector('.record-bulk').getBoundingClientRect().top),
       };
     })()`);
-    note("类型快捷筛选", typeSwitch);
-    if (!typeSwitch) problems.push("列表工具条没有类型快捷筛选");
+    note("类型筛选", typeSwitch);
+    if (!typeSwitch) problems.push("列表工具条没有类型筛选");
     else {
-      if (typeSwitch.options.length !== 3) problems.push(`类型快捷筛选应有 3 项，实际 ${typeSwitch.options.length}`);
+      if (typeSwitch.options.length !== 3) problems.push(`类型筛选应有 3 项，实际 ${typeSwitch.options.length}`);
       if (!typeSwitch.options[0].active) problems.push("默认应高亮「全部」");
       if (typeSwitch.bottom > typeSwitch.listTop) problems.push("类型筛选跑到批量条下面了");
       if (typeSwitch.options[2].href !== "/workspace?type=work") {
@@ -495,7 +499,7 @@ async function main() {
       }
     }
 
-    await page.evaluate(`document.querySelectorAll('.type-option')[1].click()`);
+    await page.evaluate(`document.querySelectorAll('[data-filter="type"] .chip')[1].click()`);
     await sleep(1200);
     const filtered = await page.evaluate(LAYOUT);
     const filteredUrl = await page.evaluate("location.search");
@@ -503,7 +507,7 @@ async function main() {
     if (!/type=asset/.test(filteredUrl)) problems.push(`点「资产」没写进 URL：${filteredUrl}`);
     if (filtered.rows !== 2) problems.push(`按资产筛选应剩 2 行，实际 ${filtered.rows}`);
     const activeAfter = await page.evaluate(
-      `[...document.querySelectorAll('.type-option')].map((a) => a.classList.contains('is-active'))`,
+      `[...document.querySelectorAll('[data-filter="type"] .chip')].map((a) => a.classList.contains('is-active'))`,
     );
     if (!activeAfter[1] || activeAfter[0]) problems.push(`「资产」项没有变成高亮：${JSON.stringify(activeAfter)}`);
 
@@ -736,7 +740,7 @@ async function main() {
     await page.waitFor("Boolean(document.querySelector('.record-row-item'))", 60000);
     await sleep(600);
     const mobile = await page.evaluate(`(() => {
-      const sw = document.querySelector('.type-switch');
+      const sw = document.querySelector('[data-filter="type"]');
       const r = sw ? sw.getBoundingClientRect() : null;
       return {
         overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,

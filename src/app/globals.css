@@ -1672,57 +1672,66 @@ a.object-main:hover small {
   font-weight: var(--fw-semibold);
 }
 
-/* 类型快捷筛选：与「类型」下拉同源（都写 URL 的 type），放在搜索框下面一行，
-   紧挨着列表，解决内外库里资产与作品混排、分不清的问题。 */
-.type-switch {
-  align-self: flex-start;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  display: flex;
-  gap: 2px;
-  max-width: 100%;
-  padding: 3px;
-}
-
-.type-option {
-  border-radius: var(--r-pill);
-  color: var(--text-2);
-  font-size: var(--fs-12);
-  font-weight: var(--fw-medium);
-  padding: 4px 14px;
-  text-decoration: none;
-  transition: background 140ms ease, color 140ms ease;
-  white-space: nowrap;
-}
-
-.type-option:hover {
-  color: var(--text-1);
-}
-
-.type-option.is-active {
-  background: var(--surface);
-  box-shadow: var(--shadow-card);
-  color: var(--green-700);
-  font-weight: var(--fw-semibold);
-}
-
 .filters-fields {
-  display: grid;
-  gap: var(--sp-2) var(--sp-3);
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+  align-items: center;
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: 64px minmax(0, 1fr);
   min-width: 0;
 }
 
 .filter-label {
   color: var(--text-3);
   font-size: var(--fs-12);
+}
+
+/* 平铺按钮组：与类型切换同一套观感，点一下即选中，不用先展开再选。 */
+.chip-group {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.chip-group[aria-disabled="true"] {
+  opacity: 0.5;
+}
+
+.chip {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: var(--fs-12);
+  line-height: 1;
+  padding: 7px 12px;
+  text-decoration: none;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--line-strong);
+  color: var(--text-1);
+}
+
+.chip.is-active {
+  background: var(--green-050);
+  border-color: var(--green-300);
+  color: var(--green-700);
+  font-weight: var(--fw-semibold);
+}
+
+.chip.is-disabled {
+  cursor: not-allowed;
 }
 
 .select-wrap {
@@ -3096,7 +3105,7 @@ a.object-main:hover small {
   .track { min-width: 600px; }
   .panel-heading { padding: 14px var(--sp-4) var(--sp-2); }
   .filters { gap: 10px; padding: 0 var(--sp-4) var(--sp-3); }
-  .filters-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filter-field { gap: 8px; grid-template-columns: 52px minmax(0, 1fr); }
   .filter-search { flex: 1 1 150px; }
   .scope-switch { margin-left: 0; width: 100%; }
   .scope-option { flex: 1 1 auto; text-align: center; }
@@ -6695,13 +6704,14 @@ a.object-main:hover small {
   color: var(--green-700);
 }
 
-.dir-group.is-nested .dir-item {
+/* 分组内的条目：相对分组标题缩进一层，用竖线标出从属关系。 */
+.dir-group .dir-item {
   margin-left: var(--sp-4);
   padding-left: var(--sp-3);
   position: relative;
 }
 
-.dir-group.is-nested .dir-item::before {
+.dir-group .dir-item::before {
   background: var(--line);
   content: "";
   height: 12px;
@@ -6712,7 +6722,7 @@ a.object-main:hover small {
   width: 1px;
 }
 
-.dir-group.is-nested .dir-item.is-active::before {
+.dir-group .dir-item.is-active::before {
   background: var(--green-600);
   height: 16px;
 }
@@ -7145,18 +7155,20 @@ a.object-main:hover small {
 
 .filters.is-compact .filters-fields {
   gap: 6px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.filters.is-compact .filter-field {
+  gap: 6px;
+  grid-template-columns: 52px minmax(0, 1fr);
 }
 
 .filters.is-compact .filter-label {
   font-size: var(--fs-11);
 }
 
-.filters.is-compact .select {
-  background-position: right 8px center;
-  font-size: var(--fs-12);
-  height: 30px;
-  padding: 0 22px 0 8px;
+.filters.is-compact .chip {
+  font-size: var(--fs-11);
+  padding: 5px 9px;
 }
 
 .filters.is-compact .filter-hint {

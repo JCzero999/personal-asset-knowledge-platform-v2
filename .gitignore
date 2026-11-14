@@ -48,3 +48,4 @@ Thumbs.db
 
 # local env backups hold secrets — never commit
 infra/lightrag/.env.bak-*
+/.shots

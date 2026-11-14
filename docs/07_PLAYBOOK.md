@@ -302,6 +302,8 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 115 | 图谱抽取失败，页面只写「未返回原因」，看不出是模型挂了还是网络不通 | LightRAG 的 `role_ollama_complete` 把底层 `httpx.ReadError` 吞掉，`doc_status.error_msg` 只剩 `C[1/29]: doc-…-chunk-000: ` 这样的空尾巴；同时引擎停留在旧配置、目标 Ollama 早已停止，两边都不报真因 | 新增 `model-endpoint-probe.ts`：按当前生效配置（库内 → 环境变量 → `infra/lightrag/.env` → 默认）直连供应商 `GET {base}/models`（Ollama 走 `/api/tags`），3 秒超时、30 秒缓存、永不抛错；`/api/graph/status` 在有失败对象时附带 `diagnosis`，图谱页在失败面板与进度区展示结论与下一步 | 上游吞异常时，别在它给的字段里找原因，直接去探它依赖的端点；诊断要么只读（不改配置、不重启），要么就明确写成一次操作。探测结果要说「能连但抽取仍失败」，否则会把服务健康误读成抽取成功 |
 | 116 | 改了提炼解析器后，`verify-lifecycle-v2.mjs` 报「提炼应产出 1 条资产，实际 0」「重复提炼应 409，实际 201」，看着像功能回归 | 脚本里的假模型还在返回旧格式 `{title, description}`，新解析器按模板要求 `summary / scenario / keyPoints / excerpt（逐字）/ tags`，把整条候选丢弃——于是 0 条资产，重复提炼自然也不会 409 | 夹具升级到新契约：mock RAGFlow 的正文抽成常量 `MOCK_BODY`，提炼夹具的 `excerpt` 直接 `MOCK_BODY.slice(0, 160)`，保证「逐字」永远成立；摘要按 60–120 字硬要求写（首版只有 32 字，被 `SUMMARY_MIN` 丢掉） | 验收脚本的假模型是「解析器契约的第二份实现」：改解析器必须同步改夹具，且夹具文本要从同一常量派生，别手写两遍 |
 | 117 | `npm run lint` 突然报 1297 条 error，`tsc` 却是 0 | `.next-v21` / `.next-v21b2` 是验收脚本的独立 dist 目录，只加进了 `.gitignore`，没进 `eslint.config.mjs` 的 `globalIgnores`，ESLint 把压缩后的产物当源码扫 | 两处都加：`.gitignore` 与 `globalIgnores`；顺带把两个目录写进 `tsconfig.json` 的 `include`，避免 tsc 也扫到 | 自定义构建目录必须三处同步（git / lint / tsconfig）；「门禁全绿」要跑在干净工作区上 |
+| 118 | 目录里「浏览」「归属」两组条目和分组标题齐平，只有「作品进程」那组看着有层级 | 缩进做成 `DirGroup` 的 `nested` 开关，只有被显式传 `nested` 的调用点才缩进；新增的「浏览」「归属」没传，就一直是平的。视觉上像两套规则 | 删掉开关，`<div className="dir-group">` 下的 `.dir-item` 一律 `margin-left: 16px` + 从属竖线；`FilterChips` 之外的分组标题保持 88，条目统一 104 | 层级是容器的事，不该让每个调用点自己决定要不要缩进——默认继承，特例才覆盖，否则新分组迟早漏掉 |
+| 119 | 列表上方「全部 / 资产 / 作品」胶囊条和下面的「类型」下拉是同一件事；其余条件全是下拉，要一个个展开才知道有什么可选 | 类型做了两个入口（快捷胶囊 + 下拉），两者都写 URL 的 `type`，只是外壳不同；其余筛选沿用 `<select>` | 全部改成 `FilterChips` 平铺按钮组（类型 / 库别 / 状态 / 标签 / 复核状态 / 价值等级 / 排序），每个条件一行、点一下生效；删除 `.type-switch` / `.type-option` 与对应 CSS，`filters-fields` 从四列网格改成竖排 | 同一维度只留一个入口；验收脚本按 `data-filter="…"` 定位而不是样式类名，样式再改也不会把断言一起改坏 |
 
 **通用预防**（比单条修复更重要）：
 
@@ -488,11 +490,13 @@ node -e "const D=require('better-sqlite3');const d=new D('data/app.db',{readonly
 | 脚本 | 覆盖 | 端口 / dist | 结果口径 |
 |------|------|-------------|----------|
 | `scripts/verify-lifecycle-v2.mjs` | 提炼（新模板契约）→ 六维打分三档出口 → 人工复核 → 发布 → 实践结算 → 价值重评 → 规则守卫 + 4 个页面渲染 | 3141 / `.next` | 打印「全部断言通过」 |
-| `scripts/verify-v21-ui.mjs` | 编辑器顺序与双向滚动联动、目录缩进 104 vs 88、`全部 / 资产 / 作品` 切换、拖拽分栏（340→460、刷新保持、键盘 16px、双击复位）、首页五指标、1440 / 390 断点 | 3132 / `.next-v21` | 同上 |
+| `scripts/verify-v21-ui.mjs` | 编辑器顺序与双向滚动联动、目录四组条目左缘同为 104（标题 88）、类型按钮组写进 `?type=asset`、拖拽分栏（340→460、刷新保持、键盘 16px、双击复位）、首页五指标、1440 / 390 断点 | 3132 / `.next-v21` | 同上 |
 | `scripts/verify-v21-batch2.mjs` | `added=7d` 胶囊、快照面板、停留 8 秒 / 打开原文各计一次、评估历史三条、锁定 / 解锁、新建内库二次确认、批量重评、390 / 1024 断点 | 3133 / `.next-v21b2` | 同上 |
 | `scripts/calibrate-model.mjs` | 真实模型对**真实库副本**逐条打分，输出六维明细 | 3155 / `.next` | 写 `docs/evaluation/calibration-latest.json` |
 
 `verify-lifecycle-v2.mjs` 对模型输出的依赖全部在脚本内的假模型里：改提炼提示词 / 解析器时必须同步改 `MOCK_BODY` 与夹具（第 4 节第 116 条）。`calibrate-model.mjs` 会真实消耗模型额度（5 条约 7 秒），并且**必须**在 `.env.local` 有 `SETTINGS_ENC_KEY` 时才能解密库里的供应商密钥。
+
+用 `NEXT_DIST_DIR=.next-v21 npm run build` 时，Next 会把生成的 `next-env.d.ts` 改写成指向 `.next-v21/dev/types`。提交前要**再跑一次普通的 `npm run build`**（或 `git checkout -- next-env.d.ts`）把它改回来，否则类型引用会指向验收用的临时目录。
 
 ### 5.5 外部服务连通性（已部署时）
 
