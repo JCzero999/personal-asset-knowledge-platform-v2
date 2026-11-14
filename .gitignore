@@ -43,3 +43,6 @@ Thumbs.db
 /infra/lightrag/models/
 /infra/lightrag/data/
 /infra/lightrag/.env
+
+# local env backups hold secrets — never commit
+infra/lightrag/.env.bak-*
