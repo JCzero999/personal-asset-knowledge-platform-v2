@@ -24,6 +24,7 @@ import {
   parseEnvFile,
   readEnvConfig,
   renderLightragEnv,
+  resolveLlmConfig,
   testLlmConnection,
   updateLlmSettings,
 } from "../../src/server/services/llm-settings-service";
@@ -507,5 +508,43 @@ describe("测试连接", () => {
     expect(result.ok).toBe(true);
     expect(calls[0].url).toBe("http://127.0.0.1:11434/v1/chat/completions");
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+});
+
+describe("resolveLlmConfig（服务端内部读取，含明文密钥）", () => {
+  it("没有库内配置时退回 .env，再退回内置默认", () => {
+    expect(resolveLlmConfig(handle.db, { envPath, secret: SECRET })).toEqual({
+      provider: "ollama",
+      baseUrl: "http://127.0.0.1:11434",
+      model: "deepseek-r1:7b",
+      timeoutMs: 300_000,
+      apiKey: "",
+    });
+
+    expect(resolveLlmConfig(handle.db, { envPath: path.join(dir, "missing.env"), secret: SECRET }))
+      .toEqual(DEFAULT_LLM_CONFIG);
+  });
+
+  it("库内配置优先于 .env，并且返回可直接使用的明文密钥", () => {
+    updateLlmSettings(
+      handle.db,
+      actor("u-owner"),
+      {
+        provider: "deepseek",
+        baseUrl: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+        timeoutMs: 120_000,
+        apiKey: "sk-1234567890abcdef",
+      },
+      { envPath, secret: SECRET },
+    );
+
+    expect(resolveLlmConfig(handle.db, { envPath, secret: SECRET })).toEqual({
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      timeoutMs: 120_000,
+      apiKey: "sk-1234567890abcdef",
+    });
   });
 });

@@ -2366,6 +2366,100 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 
 ---
 
+## ADR-028：图谱问答改用绑定模型 + 点选语义统一 + 页底搜索卡 + 相关文档入口
+
+- **状态**：已采纳·实施中（2026-11-14）
+- **日期**：2026-11-14
+- **背景**：ADR-027 落地后，使用者实测反馈三处问题，根因各不相同：
+  1. **「Shift + 单击看路径」在 3D 里点不动**。详情卡与图例都写着这条提示，2D 可用、3D 无反应。根因不在渲染，而在**意图层绕过了动作层**：`starfield.tsx` 的 `PointerBridge` 只发 `onIntent("select", id)`，不携带修饰键；`graph-explorer.tsx` 的 `handleIntent` 收到后直接 `setSelectedId`，而 2D 舞台走的是 `handleSelect(id, { shiftKey })`——路径选择（`pathPick`）只在后者里发生。两套选中逻辑并存，所以文档能写、3D 不能跑。
+  2. **问答不是使用者绑定的模型在答**。`queryGraph` 把问题整段交给 LightRAG 的 `POST /query`，回答由 LightRAG 侧配置的生成模型（本机 Ollama，ADR-010）产出，界面也如实写着「本机模型逐字生成答案」。ADR-025 的「设置 → 大模型」只是把配置 `apply` 进 `infra/lightrag/.env` 并重启服务，问答链路里没有任何一步真正使用「当前绑定的模型」这一事实；使用者在另一台机器上绑定云端模型时，答案仍出自 LightRAG 那一侧。此外问答面板固定右下，与 ADR-027 建立的全屏星图语言不在同一个体系里。
+  3. **选中实体后没有通往原文的路**。LightRAG 节点的 `file_path` 里已经带着对象 id（ADR-011 的 `pakp:obj:` 前缀 + 内容哈希），前端只把它用于引用过滤，没有回出一个「这篇实体出自哪篇文档」的入口。
+- **决策**：
+
+  1. **点选语义只有一个入口**：所有点选入口——2D SVG 舞台、3D 星图画布、关系列表、路径按钮、答案里的实体胶囊——必须走同一个 `handleSelect(id, options)`。3D 的意图通道改为 `onIntent("select", id, { shiftKey })`，修饰键由指针桥接层在 `pointerup` 时从原生事件捕获并随意图回传；`handleIntent` 只做「意图 → 动作」的分派，**禁止在意图层直接写 `setSelectedId`**。
+     - **契约**：`SceneIntentOptions = { shiftKey?: boolean }` 由 `starfield.tsx` 导出，`handleSelect` 是唯一写 `selectedId` / `pathPick` 的地方。
+     - **理由**：3D 没有 DOM 节点，拿不到 React 事件的修饰键，只能在指针层捕获；只要保留第二条写选中状态的路径，2D / 3D 的语义就会再次漂移——这次的「文档说能用、3D 点不动」正是这么来的。今后新增任何入口（例如移动端手势、键盘方向键）都只调用 `handleSelect`，不改它的上游。
+  2. **检索与生成分离**：LightRAG 只负责检索与上下文，最终答案由「设置 → 大模型」里绑定的模型生成。
+     - **检索**：`POST /query` 增加 `only_need_context: true`，从响应的 `response` 字段取回上下文文本（LightRAG 在该模式下把 context 放回 `response`）。若该版本不支持、字段缺失或请求被拒，**退回原来的 `response` 作为检索摘要**，只记 warning（不带内容），不阻断问答。
+     - **生成**：用 `llm-settings-service` 解析出的配置（`provider` / `baseUrl` / `model` / `apiKey` / `timeoutMs`）走 OpenAI 兼容的 `POST {baseUrl}/chat/completions`。system prompt 固定三条：只依据给定上下文回答；提到来源时用上下文里的对象标题；上下文不足以回答时明确说「图谱里没有相关信息」，不得自行补充常识。
+     - **配置读取分两层**：新增**仅服务端可用**的 `resolveLlmRuntimeConfig(db)`，返回含 `apiKey` 的完整 `LlmConfig`；对外的 `getLlmSettings()` 保持 ADR-025 的「只回掩码 + `hasKey`」，两者不得合并，也不得让 `resolveLlmRuntimeConfig` 被任何 route 直接返回。
+     - **响应扩展**：`{ question, response, references, model, provider }`；界面标注「由 <model> 生成」，全仓不再出现「本机模型」字样。
+     - **引用与账号边界不变**（ADR-011）：`references` 仍只保留本账号对象；**没有引用时 `response` 返回空串**——生成模型即使给出了答案也不展示，因为那段答案的依据可能是他人的抽取内容。
+     - **密钥边界**：密钥只在服务端内存中随请求使用；不进响应体、不进日志、不进前端 bundle；错误信息只描述类别（未配置 / 鉴权失败 / 连接不上 / 超时），不回显 `baseUrl` 的凭据部分或任何 header。
+     - **超时**：沿用配置里的 `timeoutMs`（默认 300s，ADR-025 的 30s–1800s 区间），不另立常量。
+     - **不做**：不把绑定模型写回 LightRAG 的抽取链路（抽取模型仍由 ADR-010 / ADR-025 的 `apply` 决定）；不做流式输出；不做多轮对话与历史；不改 LightRAG 的 `mode`（仍是 `mix`）；前端不直连供应商；不做答案缓存。
+  3. **问答区改为页底居中搜索卡**：删除右下 `#graph-qa` 面板，改为贴 `.graph-workspace` **最下方居中**的搜索卡，交互语言与 `/search` 的 `search-field` 一致（单行输入 + 提交按钮，Enter 提交、Esc 收起结果并把焦点还给输入框）；材质沿用 ADR-027 第 9 条的 `.graph-glass` 与第 10 条的 graph 面令牌，不新增材质。结果显示为其**上方**同宽玻璃卡（含加载、失败、空态与来源对象胶囊）。
+     - **几何**：`position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%)`；宽 `min(720px, calc(100% - var(--graph-rail-w) - 48px))`，`≤1000px` 断点用 `var(--graph-rail-w)` = 300 的同一公式。若答案卡与右上详情卡在垂直方向相交（矮视口），答案卡高度上限 `min(40dvh, …)` 并内部滚动，**不允许把搜索卡推离底边**。
+     - **移动端（≤767px）**：搜索卡回到文档流最底部（ADR-027 第 14 条的既有约定不变）；**详情抽屉打开时搜索卡隐藏**（`hidden`，不占位），关闭抽屉即恢复——抽屉与搜索卡同在底部，叠放必然互相遮挡，隐藏比让位更能保证「抽屉不被压住」这条既有底线。
+     - **相关文档**：实体详情新增「相关文档」区块，数据来自该实体节点的 `file_path`：`parseGraphFileSource` 解析 → 按账号过滤（沿用 `isOwnedPath`）→ 按 `objectId` 去重 → 最多 10 条；点击跳 `/workspace/<objectId>`。无文档时显示「该实体暂无可定位的原文」，不报错、不按实体名去猜。
+  4. **接口契约（本轮新增与扩展）**：
+     - `POST /api/graph/query`，body `{ q: string, mode?: LightragQueryMode }`，响应 `{ question, response, references, model, provider }`；`references` 元素保持 `{ objectId, title, type, library }` 不变（ADR-011 既有形状）。
+     - `GET /api/graph/entity/documents?label=<实体名>`，响应 `{ documents: Array<{ objectId, title, type, library }>, truncated: boolean }`。`truncated = true` 表示命中超过 10 条被截断；实体不存在、不属于本账号、或无任何可定位文档时，一律返回 `{ documents: [], truncated: false }`，**不用 404 区分「不存在」与「无权」**——否则该接口就成了他人图谱的探测口。
+     - 两个接口都要求 `object:read`；**响应体不得包含 `file_path`、`docId`、`hash`** 等 LightRAG 内部标识。
+
+- **与既有 ADR 的关系（结论：改问答链路与入口层，不改渲染与账号边界）**：
+  - **ADR-010**：修订其隐含口径「问答由 LightRAG 生成」——检索仍由 LightRAG（`mix`、同一实例、同一份抽取结果），生成改由绑定模型；抽取模型与 LightRAG 进程的配置方式不变。
+  - **ADR-011**：读侧过滤与「无引用不出答案」的原判不变；新增的 `entity/documents` 复用同一条 `parseGraphFileSource` + `isOwnedPath` 判定，不新增第二套归属规则。
+  - **ADR-025**：不新增设置项、不改 `apply` 语义（仍写 `.env` + 只重启 `lightrag-server`）；本 ADR 只是**真正消费**这份配置。对外视图仍是掩码 + `hasKey`。
+  - **ADR-027**：材质、令牌、指针分层、浮层折叠、移动端抽屉条款全部不变；**第 4 条末段「`.graph-workspace` 第二列网格行继续留给问图谱卡（贴右下、`var(--graph-rail-w)`）」作废**，由本 ADR 第 3 条取代。第 9 条「统一材质」的适用对象清单里，「问图谱卡」改称「问答搜索卡 + 答案卡」。
+  - **ADR-024**：`/search` 的 `search-field` 是交互语言的参照，但**不共用查询状态、不共用接口**（图谱问答带上下文与账号过滤，检索页不带）。
+  - **16_GRAPH_DESIGN.md**：问答 dock 的位置与形态由 Designer 按本 ADR 第 3 条回改；相机、避让区、小地图等其余条款不变。
+
+- **备选方案与取舍**：
+
+  | 方案 | 做法 | 取舍 |
+  |------|------|------|
+  | **A（采纳）** | 点选统一走 `handleSelect` 并回传修饰键；LightRAG 只出上下文，答案由绑定模型生成；问答卡改为页底居中搜索卡；相关文档走 `file_path` 反查 | 三条诉求一次解决，答案口径与设置页一致；代价是多一次服务端调用、生成延迟上升，且答案与抽取模型不同源（见 K1） |
+  | B | 把绑定模型 `apply` 成 LightRAG 的生成模型，问答仍走 `/query` | 只改一处、少一次往返；但每次换模型都要重启 `lightrag-server`，正在抽取的任务被打断，且「问答用的模型」仍由服务端 env 决定，设置页与问答链路依然脱钩 |
+  | C | 前端直连模型供应商 | 省一跳；但密钥进浏览器、CORS 与审计全丢，且无法在服务端统一做账号过滤 —— 否决 |
+  | D | 检索与生成都自建（不用 LightRAG 上下文） | 完全可控；但要重建图谱遍历、排序与上下文拼装，等于绕开 ADR-022 的 Worker 与 ADR-011 的过滤，成本远超收益 |
+  | E | 3D 另写一套 shift 判定 | 改动最小；两套选中逻辑必然再次漂移 —— 否决（本条正是问题 1 的成因） |
+  | F | 保留右下问答卡，只改生成方 | 改动小；但右下是星域，卡片长期占位，与「统一成搜索语言」的诉求相反 |
+  | G | 相关文档按实体名模糊匹配对象标题 | 不依赖 `file_path`；但会把「名字像」的文档错挂到实体上，破坏 ADR-011 的归属判定 —— 否决 |
+
+- **影响**：
+  - `src/components/graph/starfield.tsx`：导出 `SceneIntentOptions`，`PointerBridge` 的单击分支改为 `onIntent("select", id, { shiftKey: event.shiftKey })`。
+  - `src/components/graph-explorer.tsx`：`handleIntent` 去掉直写 `setSelectedId`，改为分派到 `handleSelect`；`#graph-qa` 面板改为页底搜索卡 + 上方答案卡；详情卡新增「相关文档」区块（加载 / 空 / 失败三态）；文案去掉「本机模型」，改为「由 <model> 生成」。
+  - `src/server/services/graph-service.ts`：`queryGraph` 拆成「检索（LightRAG 上下文）」与「生成（绑定模型）」两步；`GraphAnswer` 增加 `model` / `provider`；新增 `listEntityDocuments(db, ownerSub, label)`（复用 `parseGraphFileSource` / `isOwnedPath`，上限 10 条）。
+  - `src/server/adapters/lightrag/client.ts`：`query()` 支持 `only_need_context`，返回 `context` 字段；不支持时回落 `response`。
+  - `src/server/services/llm-settings-service.ts`：新增 `resolveLlmRuntimeConfig(db)`（含密钥，仅服务端）；`getLlmSettings` 不变。
+  - `src/app/api/graph/query/route.ts`：响应透传 `model` / `provider`。
+  - `src/app/api/graph/entity/documents/route.ts`：**新建**，`object:read` + 参数校验。
+  - `src/app/globals.css`：新增 `.graph-askbar` / `.graph-answer-card`，沿用 `.graph-glass` 与 `--graph-glass-*` 令牌，**不新增裸色值**（字面量基线仍 26）。
+  - `docs/16_GRAPH_DESIGN.md`：问答 dock 条款由 Designer 回改。
+
+- **风险**：
+
+  | # | 风险 | 应对 |
+  |---|------|------|
+  | K1 | **绑定模型与 LightRAG 抽取模型不同源**：实体名、关系描述是抽取模型的产物（可能夹英文 canonical name），生成模型按自己的语言习惯转述，答案与图谱里看到的命名对不上 | system prompt 明确「以上下文中的实体名与原话为准，不要换名、不要补写」；界面标注生成模型名，让使用者知道答案出自谁；不承诺「答案覆盖图谱全部关系」——问答是上下文问答，不是图谱查询 |
+  | K2 | 实体节点的 `file_path` 为空或不是 `pakp:obj:` 前缀（LightRAG 全局抽取可能产生无来源节点）→ 相关文档为空 | 接口返回空数组 + 界面显示「该实体暂无可定位的原文」；不退回按名模糊匹配（见方案 G）；`truncated` 只在确有截断时为 true |
+  | K3 | 目标 LightRAG 版本不支持 `only_need_context`，或字段名不同 → 上下文为空 / 400 | 一次失败即回落到原 `response` 作为检索摘要，只记 warning；问答不因检索降级而失败。上线前用当前 `infra/lightrag` 版本实测一次并记录 |
+  | K4 | 生成延迟变长（检索 + 大模型两跳），使用者以为卡住 | 界面分阶段文案（检索资料中 / 生成中）；超时沿用配置值；本轮不做流式，因此必须保留可取消（组件卸载即 abort） |
+  | K5 | 窄屏搜索卡与详情抽屉重叠；矮视口答案卡压住详情卡 | ≤767px 抽屉打开时搜索卡隐藏；桌面端搜索卡宽度公式扣掉右栏，答案卡设高度上限并内部滚动；1440×900 与 1920×1080 实测一次 |
+  | K6 | 新增的 `chat/completions` 调用扩大密钥暴露面 | `resolveLlmRuntimeConfig` 只在服务端模块内导出、不被 route 直接返回；错误文案只到类别；提交前 `grep` 校验 `apiKey` 不出现在 `src/app/api` 的响应构造与 `console.*` 中 |
+  | K7 | 无引用时答案被清空，使用者觉得「白等一场」 | 界面明确写「本次没有命中你账号下的文档」；这是 ADR-011 的既定取舍，不为此改为展示答案 |
+  | K8 | `entity/documents` 变成他人图谱的探测口 | 「不存在 / 无权 / 无文档」三种情况返回同一形状；响应不含 `file_path` / `docId` / `hash`；只要求 `object:read`，不新增权限项 |
+  | K9 | 删除 `#graph-qa` 时漏掉锚点引用（如帮助文案、e2e 选择器） | 改后 `grep -rn "graph-qa"` 只应剩 CSS 注释或为空；`/graph` 的 e2e 用例同步改选择器 |
+
+- **验收要点**：
+  1. **点选语义**：2D 下选中 A 后 Shift + 单击 B 进入路径模式；3D 星系执行同一操作，**结果与 2D 完全一致**；再次 Shift + 单击 B 取消。普通单击在两端都只改变选中，不进入路径模式。
+  2. **单一入口**：`StarfieldProps.onIntent` 的类型包含 `options`；`grep -n "setSelectedId" src/components/graph-explorer.tsx` 的结果只剩 `handleSelect` 内部与受控输入，意图层不再直接写。
+  3. **生成方**：在设置页把模型改为 M 并保存，提问后 `/api/graph/query` 响应 `model === "M"`、`provider` 为对应供应商；界面出现「由 M 生成」；`grep -rn "本机模型" src/` 为空。
+  4. **密钥边界**：把 baseUrl 改成错误地址后提问，返回可诊断文案（连接失败 / 鉴权失败 / 超时之一），文案与响应头不含密钥；`GET /api/settings/llm` 仍只返回掩码与 `hasKey`；`grep -rn "apiKey" src/app/api` 无响应体透出。
+  5. **无引用即空**：用一个与本账号内容无关的问题提问，响应 `response === ""` 且 `references === []`，界面显示「没有命中你账号下的文档」。
+  6. **相关文档接口**：`GET /api/graph/entity/documents?label=<本账号实体>` 返回 ≤10 条且 `truncated` 与实际命中数一致；`label` 为他人实体或不存在时返回 `{ documents: [], truncated: false }`（HTTP 200）；响应体不含 `file_path` / `docId` / `hash`。
+  7. **跳转**：点击相关文档条目进入 `/workspace/<objectId>` 并渲染该对象；返回图谱页后选中状态按 URL 恢复。
+  8. **几何**：1440×900 与 1920×1080 下，搜索卡底边距 `.graph-workspace` 底边 16px、左右留白差 ≤2px；与详情卡的 `getBoundingClientRect` 不相交；页面无横向滚动；`≤1000px` 断点同样成立。
+  9. **主题与对比度**：四主题（`galaxy / pine / sand / midnight`）下搜索卡与答案卡文字对玻璃底 ≥4.5:1、图标 ≥3:1（ADR-027 第 11 条口径）；`node scripts/check-theme.mjs` 129 名契约通过、字面量仍 **26**；`node scripts/check-contrast.mjs` 全绿。
+  10. **移动端**：390×844 下搜索卡在文档流最底部，详情抽屉打开时搜索卡不可见且不占位，关闭后恢复；2D 舞台可拖拽区域仍满足 ADR-027 第 14 条。
+  11. **回归**：`npx vitest run --maxWorkers=2` 全绿（新增用例计入，不降低现有基线）；`grep -rn "graph-qa"` 无残留选择器。
+  12. **检索降级**：模拟 LightRAG 不支持 `only_need_context`，问答仍能给出答案（用原 `response` 作上下文），且日志只有一条 warning、不含问题正文。
+
+- **影响范围**：01_ARCHITECTURE（图谱问答链路）、13_DESIGN_V3、16_GRAPH_DESIGN（问答 dock 由 Designer 回改）、graph-explorer.tsx、starfield.tsx、graph-service.ts、lightrag client、llm-settings-service.ts、api/graph（query / entity/documents）、globals.css、05_CHANGELOG
+
+---
+
 ## ADR-016 ~ 018 实施风险清单
 
 > 按严重程度排序。前 3 条必须在动手前处理完，其余随实现跟进。
@@ -2434,6 +2528,7 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 | ADR-025 | 大模型供应商配置与凭据存储 | 已采纳·已实施（2026-11-13） | 配置落 `settings` 单行加密 JSON（AES-256-GCM，密钥来自专用变量 `SETTINGS_ENC_KEY`，非 `AUTH_SECRET`，也不复用 Logto 密钥）；接口只回掩码与 `hasKey`；`settings:read/write`（权限 13 → 15，仅 owner/admin）；`test` 最小请求、`apply` 逐键改 `infra/lightrag/.env` + 只重启 `lightrag-server` + 60s 健康检查 + 失败回滚；迁移编号 `0009`；修订 ADR-010 的 LLM 固定条款 |
 | ADR-026 | 知识内容预览（弹窗） | 已采纳·已实施（2026-11-13，工作台与详情两入口） | 统一 `ContentPreviewDialog`（原生 `<dialog>`），工作台 / 检索 / 图谱 / 首页四入口；打开状态 `?preview=<id>` 进 URL；复用现有三接口，仅新增 `?inline=1` 切换 `Content-Disposition`；Markdown 走 ADR-014 的零依赖解析器，PDF 同源 iframe（>20MB 降级下载），文本 512KB 上限；仅需 `object:read` |
 | ADR-027 | /graph 全屏星图画布 + 液态玻璃浮层 | 已采纳·已实施（2026-11-13） | 内容区取消 1180 上限，画布铺满作背景层；**控制卡贴左上（`min(880px, 100% − rail − 48px)`）+ 详情卡贴右上（356/60%）顶边同线、间距 ≥16px**；玻璃 = 72% 底 + `blur(14px) saturate(130%)` + 22% 边框 + 1px 内高光 + **指针径向高光 + 160° 斜向反光 + ≤3° 倾斜**（9 令牌，新增 6 个写在 `[data-surface="graph"]` 块内，字面量基线仍 26）；玻璃内禁用主题 `--text-*`；不支持模糊 / `low` / reduced-transparency 退 92% 实色；移动端单行控制条 + 底部抽屉，画布层 `inset: 0` 只缩进 2D 舞台盒子；`check:theme` 基线 26 与 ADR-022 的档位、DPR、draw call 预算均不变 |
+| ADR-028 | 图谱问答改用绑定模型 + 点选语义统一 + 页底搜索卡 + 相关文档入口 | 已采纳·实施中（2026-11-14） | 点选只有 `handleSelect` 一个入口，3D 意图回传 `shiftKey`；LightRAG 只出上下文（`only_need_context`，失败回落 `response`），答案由 ADR-025 绑定模型生成，响应带 `model`/`provider`，密钥仅服务端；无引用即空答案（ADR-011）；右下问答卡改为页底居中玻璃搜索卡 + 上方答案卡，移动端抽屉打开时隐藏；新增 `GET /api/graph/entity/documents` 由 `file_path` 反查原文（≤10 条、账号过滤）；材质令牌与字面量基线 26 不变 |
 
 ---
 

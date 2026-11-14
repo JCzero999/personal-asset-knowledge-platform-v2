@@ -3312,14 +3312,14 @@ a.object-main:hover small {
 
 /*
   内容区就是一张铺满的星图：3D 画布 / 2D 舞台绝对定位铺满，控制条、实体详情、
-  问图谱与提示条是浮在它上面的玻璃板；列表模式回到普通文档流（表格不套浮层）。
+  底部问答卡与提示条是浮在它上面的玻璃板；列表模式回到普通文档流（表格不套浮层）。
 
   浮层里的文字不能读主题的 --text-*：松林绿主题下那是深灰，压在深空底上看不见。
   这里把文字 / 分隔线 / 表面三层 token 就地重映射成舞台自己的米白系，透明度换对比度；
   四套主题因此共用同一套浮层观感，与「舞台固定深色」的既有口径一致。
 */
 .graph-workspace.is-float {
-  /* 右侧浮层宽度：详情卡、问图谱卡、画布控件定位共用。 */
+  /* 右侧浮层宽度：详情卡、画布控件定位共用。 */
   --graph-rail-w: 356px;
   --danger-bg: color-mix(in srgb, var(--graph-danger) 16%, transparent);
   --danger-fg: var(--graph-danger);
@@ -3377,10 +3377,10 @@ a.object-main:hover small {
   height: 100%;
 }
 
-/* 画布自己的缩放按钮：舞台现在是整幅背景，默认的右下角正好压在「问图谱」玻璃板下面。
-   收到画布列的右下角，既不被挡，也不挤占右栏。 */
+/* 画布自己的缩放按钮：默认的右下角正好被底部问答卡压住。
+   收到画布列的右下角，并从问答卡上沿让位（`--graph-search-h` 由组件实测写入）。 */
 .graph-workspace.is-float .g2-zoom {
-  bottom: var(--sp-4);
+  bottom: calc(var(--sp-4) + var(--graph-search-h, 64px) + 12px);
   right: calc(var(--graph-rail-w) + var(--sp-6));
 }
 
@@ -3492,50 +3492,6 @@ a.object-main:hover small {
   padding: 0 18px 16px;
 }
 
-.graph-workspace.is-float .graph-qa {
-  align-self: end;
-  display: flex;
-  flex-direction: column;
-  grid-column: 2;
-  grid-row: 2;
-  max-height: 36%;
-  min-height: 0;
-  overflow: hidden;
-  padding: 6px 0 var(--sp-3);
-  z-index: 2;
-}
-
-.graph-workspace.is-float .graph-qa-body {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-/* 玻璃里不用 .panel-heading（ADR-027 第 10 条：浮层内不出现主题面板类）。 */
-.graph-qa-head {
-  display: flex;
-  gap: var(--sp-4);
-  justify-content: space-between;
-  padding: 8px var(--sp-6) 6px;
-}
-
-.graph-qa-head h2 {
-  font-size: var(--fs-15);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -0.01em;
-  line-height: var(--lh-tight);
-  margin: 0;
-}
-
-.graph-qa-head p {
-  color: var(--text-3);
-  font-size: var(--fs-12);
-  margin: var(--sp-1) 0 0;
-}
-
 /* 详情收起后的把手：浮层可折叠但不可消失（ADR-027 第 8 条）。 */
 .graph-inspector-handle {
   align-items: center;
@@ -3631,8 +3587,8 @@ a.object-main:hover small {
   .graph-workspace.is-float .graph-main {
     align-self: auto;
     inset: 0;
-    padding: calc(16px + var(--graph-bar-h, 200px) + 8px) calc(var(--graph-rail-w) + 16px) 16px
-      16px;
+    padding: calc(16px + var(--graph-bar-h, 200px) + 8px) calc(var(--graph-rail-w) + 16px)
+      calc(16px + var(--graph-search-h, 64px) + 12px) 16px;
     position: absolute;
   }
 
@@ -3646,22 +3602,26 @@ a.object-main:hover small {
     width: var(--graph-rail-w);
   }
 
-  .graph-workspace.is-float .graph-qa {
-    align-self: auto;
+  /* 问答卡贴底居中：结果卡在它上方展开，整张 dock 的高度写进 --graph-search-h，
+     提示条与画布缩放按钮从这条线往上让位。z-index 低于详情卡（同为 2 层里的
+     后绘制者会盖住别人），长回答与详情卡相撞时由详情卡盖在上面，而不是反过来。 */
+  .graph-workspace.is-float .graph-ask-dock {
+    align-items: stretch;
     bottom: 16px;
-    left: auto;
-    /* 详情卡最多 60%，留 40% 减去上下留白给问图谱，两块永不重叠。 */
-    max-height: min(36%, calc(40% - 40px));
+    left: 50%;
+    margin: 0;
+    max-width: none;
     position: absolute;
-    right: 16px;
-    top: auto;
-    width: var(--graph-rail-w);
+    transform: translateX(-50%);
+    width: min(720px, calc(100% - 32px));
+    z-index: 1;
   }
 
   .graph-workspace.is-float .graph-notes {
     align-self: auto;
-    bottom: 16px;
+    bottom: calc(16px + var(--graph-search-h, 64px) + 12px);
     left: 16px;
+    max-height: min(52%, calc(100% - 260px - var(--graph-search-h, 64px)));
     max-width: min(520px, calc(100% - var(--graph-rail-w) - 48px));
     position: absolute;
     right: auto;
@@ -4795,99 +4755,250 @@ a.object-main:hover small {
   margin-top: var(--sp-2);
 }
 
-/* ---------- 问答 ---------- */
+/* ---------- 图谱问答：底部居中搜索卡 ---------- */
 
-.graph-qa {
-  padding-bottom: var(--sp-4);
+/*
+  dock 只是排布容器：结果卡在上、搜索卡在下，两张各自是玻璃卡。
+  浮层模式里它是贴底居中的绝对定位块，整块高度由组件写进 --graph-search-h；
+  列表模式按文档流落在页面最底部，用面板底色而不是玻璃。
+*/
+.graph-ask-dock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: var(--sp-4) auto 0;
+  max-width: 720px;
+  pointer-events: none;
+  width: 100%;
 }
 
-.graph-qa-form {
-  align-items: flex-end;
+.graph-ask-dock > * {
+  pointer-events: auto;
+}
+
+.graph-ask-form {
+  align-items: center;
   display: flex;
   gap: var(--sp-2);
-  padding: 0 var(--sp-6) var(--sp-2);
+  margin: 0;
+  padding: 8px 8px 8px 14px;
+  width: 100%;
 }
 
-.graph-qa-form textarea {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
+/* 搜索卡是一只胶囊：玻璃默认的 10px 圆角放在 56 高的单行卡上太方。 */
+.graph-workspace.is-float .graph-ask-form {
+  border-radius: var(--r-pill);
+}
+
+/* 输入框透明，焦点环落在整只胶囊上，而不是在玻璃里再挖一个白框。 */
+.graph-workspace.is-float .graph-ask-form:focus-within {
+  border-color: color-mix(in srgb, var(--graph-accent) 48%, transparent);
+  box-shadow:
+    inset 0 1px 0 var(--graph-glass-highlight),
+    0 0 0 3px var(--green-050);
+}
+
+.graph-ask-icon {
+  color: var(--text-3);
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.graph-ask-input {
+  background: none;
+  border: 0;
   color: var(--text-1);
   flex: 1 1 auto;
   font: inherit;
-  font-size: var(--fs-13);
-  line-height: 1.6;
-  min-height: 64px;
+  font-size: var(--fs-14);
+  height: 40px;
   min-width: 0;
-  padding: 10px 12px;
-  resize: vertical;
-}
-
-.graph-qa-form textarea:focus {
-  border-color: var(--green-300);
-  box-shadow: 0 0 0 3px var(--green-050);
   outline: none;
+  padding: 0 2px;
+  width: 100%;
 }
 
-.graph-qa-hint {
+.graph-ask-input::placeholder {
   color: var(--text-3);
-  font-size: var(--fs-12);
-  margin: 0 var(--sp-6) var(--sp-3);
 }
 
-.graph-answer {
-  border-top: 1px solid var(--line-soft);
-  margin: 0 var(--sp-6);
-  padding: var(--sp-4) 0;
+.graph-ask-input:disabled {
+  opacity: 0.6;
 }
 
-.graph-answer-question {
+.graph-ask-clear {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--r-pill);
+  color: var(--text-3);
+  cursor: pointer;
+  display: flex;
+  flex: 0 0 auto;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  width: 24px;
+}
+
+.graph-ask-clear:hover {
+  color: var(--text-1);
+}
+
+.graph-ask-submit {
+  flex: 0 0 auto;
+  height: 40px;
+  padding: 0 20px;
+}
+
+/* 结果卡：浮在搜索卡正上方；外壳不滚，正文区自己滚。 */
+.graph-ask-result {
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  max-height: min(40dvh, 300px);
+  overflow: hidden;
+  padding: 0;
+  position: relative;
+}
+
+.graph-ask-result-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 44px 14px 16px;
+}
+
+.graph-ask-close {
+  align-items: center;
+  background: none;
+  border: 1px solid var(--graph-glass-border);
+  border-radius: var(--r-pill);
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  height: 26px;
+  justify-content: center;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  width: 26px;
+  z-index: 1;
+}
+
+.graph-ask-close:hover {
+  border-color: var(--green-300);
+  color: var(--text-1);
+}
+
+.graph-ask-question {
   color: var(--text-3);
   font-size: var(--fs-12);
   margin: 0 0 8px;
 }
 
-.graph-answer-text {
+.graph-ask-answer {
   color: var(--text-1);
   font-size: var(--fs-14);
   line-height: 1.85;
   white-space: pre-wrap;
 }
 
-.graph-entity-chip {
-  background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+.graph-ask-entity {
+  background: color-mix(in srgb, var(--graph-accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--graph-accent) 40%, transparent);
   border-radius: var(--r-pill);
-  color: var(--accent-text);
+  color: var(--text-1);
   cursor: pointer;
   display: inline;
   font: inherit;
-  font-size: var(--fs-13);
+  font-size: inherit;
   margin: 0 2px;
   padding: 0 6px;
 }
 
-.graph-entity-chip:hover {
-  border-color: var(--accent);
+.graph-ask-entity:hover {
+  border-color: var(--green-300);
 }
 
-.graph-answer-refs {
+.graph-ask-status {
+  color: var(--text-2);
+  font-size: var(--fs-13);
+  line-height: 1.7;
+  margin: 0;
+}
+
+.graph-ask-error {
+  color: var(--danger-fg);
+  font-size: var(--fs-13);
+  line-height: 1.7;
+  margin: 0;
+}
+
+.graph-ask-error .text-link {
+  color: inherit;
+  margin-left: 8px;
+}
+
+.graph-ask-refs {
+  border-top: 1px solid var(--line-soft);
   margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
 }
 
-.graph-answer-refs-title {
+.graph-ask-refs-title {
   color: var(--text-3);
   font-size: var(--fs-12);
   margin: 0 0 6px;
 }
 
-.graph-answer-refs ul {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  list-style: none;
+.graph-ask-model {
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-3);
+  flex: 0 0 auto;
+  font-size: var(--fs-11);
   margin: 0;
-  padding: 0;
+  padding: 8px 16px;
+}
+
+/* ---------- 实体详情：相关文档 ---------- */
+
+.graph-docs-head {
+  align-items: baseline;
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+}
+
+.graph-docs-head h3 {
+  margin: 0;
+}
+
+.graph-docs-toggle {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-12);
+  padding: 2px 4px;
+  white-space: nowrap;
+}
+
+.graph-docs-body {
+  margin-top: 6px;
+}
+
+.graph-docs-error {
+  color: var(--danger-fg);
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  margin: 6px 0 0;
+}
+
+.graph-docs-error .text-link {
+  color: inherit;
+  margin-left: 8px;
 }
 
 @media (max-width: 1000px) {
@@ -4948,20 +5059,13 @@ a.object-main:hover small {
     padding: var(--sp-4);
   }
 
-  .graph-qa-form {
-    align-items: stretch;
-    flex-direction: column;
-    padding: 0 var(--sp-4) var(--sp-2);
+  /* 窄屏搜索卡：图标 + 输入 + 提问压成一行，按钮不再换到第二行。 */
+  .graph-ask-form {
+    padding: 6px 6px 6px 12px;
   }
 
-  .graph-qa-form .btn {
-    width: 100%;
-  }
-
-  .graph-qa-hint,
-  .graph-answer {
-    margin-left: var(--sp-4);
-    margin-right: var(--sp-4);
+  .graph-ask-submit {
+    padding: 0 14px;
   }
 
   .graph-list-row {
@@ -4981,7 +5085,7 @@ a.object-main:hover small {
   }
 }
 
-/* 窄屏回到「顶部一条 + 画布 + 底部问图谱」的网格，详情卡是覆盖在画布上的抽屉。 */
+/* 窄屏回到「顶部一条 + 画布 + 底部搜索卡」的网格，详情卡是覆盖在画布上的抽屉。 */
 @media (max-width: 767px) {
   .graph-workspace.is-float {
     display: grid;
@@ -5070,7 +5174,7 @@ a.object-main:hover small {
     right: 8px;
     top: auto;
     z-index: 5;
-    /* 这一块压在「问图谱」的文字上而不是纯星图上，92% 会让底下的字透上来，
+    /* 这一块压在画布与提示条的文字上而不是纯星图上，92% 会让底下的字透上来，
        只有抽屉单独提到 96%，把文字透字挡掉。 */
     --graph-glass-fill: color-mix(in srgb, var(--graph-canvas) 96%, transparent);
   }
@@ -5102,14 +5206,35 @@ a.object-main:hover small {
     width: 100%;
   }
 
-  /* 问图谱在文档流最底部，抽屉打开时会被盖住，收起抽屉即可回到它。 */
-  .graph-workspace.is-float .graph-qa {
-    grid-column: 1;
-    grid-row: 3;
-    max-height: 30dvh;
+  /* 搜索卡贴底居中：左右各 12、距底 12，宽度自然等于 calc(100% - 24px)。
+     画布层仍是 inset: 0 的本底，卡片只浮在它上面，详情抽屉打开时整块让位。 */
+  .graph-workspace.is-float .graph-ask-dock {
+    bottom: 12px;
+    left: 12px;
+    margin: 0;
+    max-width: none;
+    position: absolute;
+    right: 12px;
+    transform: none;
+    width: auto;
+    z-index: 4;
   }
 
-  /* 390 宽下缩放按钮只会落在抽屉和问图谱之间，触摸端本来就有双指缩放，收掉。 */
+  /* 详情抽屉展开时搜索卡让位（抽屉是绝对定位，二者必有一块被盖住）。 */
+  .graph-workspace.is-float[data-drawer="true"] .graph-ask-dock {
+    display: none;
+  }
+
+  /* 结果卡在窄屏也浮在搜索卡上方，不把画布挤没。 */
+  .graph-workspace.is-float .graph-ask-result {
+    bottom: calc(100% + 8px);
+    left: 0;
+    max-height: min(40dvh, 280px);
+    position: absolute;
+    right: 0;
+  }
+
+  /* 390 宽下缩放按钮只会落在抽屉和搜索卡之间，触摸端本来就有双指缩放，收掉。 */
   .graph-workspace.is-float .g2-zoom {
     display: none;
   }

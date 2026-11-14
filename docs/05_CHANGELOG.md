@@ -591,3 +591,15 @@
 - **质量门**：`tsc` 0；`eslint` 0 error / 14 warning（既有）；`vitest` **51 文件 774 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` **41/41**
 - **独立验收**：临时库 + 假 LightRAG + 无头 Chromium，对 **生产构建（`next start`）** 跑 34 项断言全过——含两卡顶边差 0、间距 16、画布 1140×900 全幅、指针高光/倾斜、每卡各自监听 `pointermove`（工作区与 window 无监听）、四主题文字色、1920 与 390 断点、列表模式不套玻璃；截图见 `docs/screenshots/graph-glass-*.png`
 - **未验证**：真实 Logto 身份下的三栏截图未重拍；低端集显帧率与触屏真机手势未实测
+
+## 2026-11-14（/graph 三处实测问题：Shift 看路径 · 问图谱换底部搜索卡 · 相关文档）
+
+- **起因**：用户截图标出三处问题——① 详情卡写着「Shift + 单击另一个实体，可以直接连线看路径」但点了没反应；② 右下角「问图谱」用的是本机模型，且版面与样式要改成首页检索那种、贴在图谱页最下方居中、统一液态玻璃；③ 详情卡里要加「相关文档」入口，点了进文章详情
+- **问题1 根因**：3D 画布的指针桥只把「选中」意图抛给容器，`PointerEvent` 上的 `shiftKey` 在中间层被丢掉；同时容器把 3D 的 `select` 直接写成 `setSelectedId`，绕过了 2D 用的 `handleSelect`。修法：`starfield.tsx` 的意图回调带上第三参 `{ shiftKey }`（新增 `SceneIntentOptions`），`graph-explorer.tsx` 的 `handleIntent` 一律走 `handleSelect(id, options)`——Shift 看路径与「查看路径」按钮在 2D / 3D 共用同一套语义
+- **问题2**：后端把「检索」和「生成」拆开——LightRAG 用 `only_need_context` 只取上下文（1.5.7 支持，`references` 里的 `file_path` 按 `<SEP>` 拆分并逐个过 ADR-011 归属过滤），答案改由「设置 → 大模型」里**绑定的模型**通过 OpenAI 兼容 `/chat/completions` 生成；新增 `graph-answer-service.ts`（中文系统提示、按 provider 给 4000 / 12000 字符上下文预算、800 token 上限、密钥只进请求头、上游错误体整体丢弃只按状态码给中文文案）。`POST /api/graph/query` 返回 `{ question, response, references, model, provider }`。前端删掉右下角面板，新增 `graph-search-bar.tsx`：贴底居中 `min(720, 100%−32)` 的搜索胶囊 + 浮在它上方的同宽结果卡，两张都是 `.graph-glass`，结果卡写明「由 provider/model 生成」并列出引用文档；容器把 dock 高度写进 `--graph-search-h`，左下提示条与缩放按钮据此让位
+- **问题3**：新增 `GET /api/graph/entity/documents?label=`，按实体在 LightRAG 的 `file_path` 反查本账号对象（最多 10 条、按标题排序，来源为空时用词法检索兜底，查不到返回空数组而非 404）；详情卡新增「相关文档」折叠区，展开现取（票据 + AbortController 丢弃跨实体的迟到响应），列表项链接到 `/workspace/{id}`；展开时把该段滚进详情卡可视区，避免列表落在折叠线以下
+- **版式实测（生产构建，1440 / 1920 / 390）**：1440 内容区 1140 宽，搜索卡 720×58 @ (510,826)，中心 870 = 内容区中心，底距 16；1920 搜索卡 720 @ (750,1006)，底距 16；390 内容区 314 宽，搜索卡 290 @ (88,778)，左右各 12、底距 12，详情抽屉（464 高）打开时搜索卡 `display:none` 让位、无重叠；3D 下搜索卡同为 720×58 @ (510,826)
+- **行为实测**：2D 单击「知识管理」→ Shift 单击「卡片笔记」出现路径条「知识管理 → 卡片笔记 · 1 跳」，选中仍停在起点；「相关文档」展开后首条「玻璃验收样本 1」在可视区内，点击落在 `/workspace/6e0b1f10-…7c01` 且详情栏 `data-selected=true`；底部搜索框提问后结果卡出现，mock 绑定模型收到 `Bearer` 密钥、`model=round3-fake-model` 与 LightRAG 检索上下文，卡片署名「由 custom/round3-fake-model 生成」，4 个实体胶囊、1 条引用可点进详情；页面不再出现「本机模型 / 本地模型」
+- **独立验收**：`scripts/verify-graph-round3.mjs`（临时库 + 假 LightRAG + 假绑定模型 + 无头 Chromium，对 `next start` 生产包）全部断言通过；`scripts/verify-graph-glass.mjs` 由 `next dev` + `.next-glass` 改为对生产 `.next` 跑 `next start`，提问卡选择器改到 `.graph-ask-dock` / `.graph-ask-form`，ADR-027 的 34 项回归全部通过
+- **质量门**：`tsc --noEmit` 退出 0；`eslint` 0 error / 14 warning（既有）；`vitest` **54 文件 794 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` 41/41
+- **未验证 / 边界**：3D 画布里「真按 Shift 点两个实体」没有做像素级复现（无头下节点投影位置不可确定），已用「3D 单击画布中心选中实体」+ 2D 同一 `handleSelect` 的行为验收覆盖；真实账号 + 真实供应商密钥下的问答未跑（验收用假模型，真实链路只有 LightRAG 检索这一段是实测的真实接口）；`<SEP>` 只影响来源路径，实测线上关系原文不含该分隔符

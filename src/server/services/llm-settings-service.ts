@@ -463,6 +463,20 @@ export function getLlmSettings(
   return toView(envConfig, null, envPath);
 }
 
+/**
+ * 服务端内部使用的**完整**配置（含明文密钥），优先级与 `getLlmSettings` 一致：
+ * 库内配置 → `infra/lightrag/.env` → 内置默认。
+ *
+ * 只给服务端调用链使用：返回值不进任何 API 响应、不进日志。
+ */
+export function resolveLlmConfig(
+  db: AppDatabase,
+  deps: LlmSettingsDeps = {},
+): LlmConfig {
+  const envPath = deps.envPath ?? defaultLightragEnvPath(deps.env);
+  return readStoredConfig(db, deps.secret) ?? readEnvConfig(envPath) ?? DEFAULT_LLM_CONFIG;
+}
+
 export function updateLlmSettings(
   db: AppDatabase,
   actor: ActorContext,

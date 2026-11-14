@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { ValidationError } from "../../domain/errors";
 import type { BusinessObject } from "../../domain/objects";
+import { parseSearchInput } from "../../lib/search-query";
 import {
   createLightragClientFromEnv,
   type LightragDeleteResult,
@@ -13,6 +14,9 @@ import type { RagflowChunkPage } from "../adapters/ragflow";
 import { createRagflowClientFromEnv } from "../adapters/ragflow";
 import type { AppDatabase } from "../db/client";
 import { SqliteContentStore } from "../repositories/sqlite-content-store";
+import { generateGraphAnswer } from "./graph-answer-service";
+import { lexicalSearch } from "./lexical-search-service";
+import { resolveLlmConfig, type LlmConfig, type LlmProvider } from "./llm-settings-service";
 import { getObject, listObjects } from "./object-service";
 import {
   probeModelEndpoint,
@@ -70,9 +74,16 @@ export interface GraphGateway {
   insertText(input: { text: string; fileSource: string }): Promise<void>;
   listDocuments(page?: number, pageSize?: number): Promise<LightragDocumentPage>;
   deleteDocuments(docIds: string[]): Promise<LightragDeleteResult>;
-  query(input: { query: string; mode?: LightragQueryMode }): Promise<{
+  query(input: {
+    query: string;
+    mode?: LightragQueryMode;
+    /** 只要检索上下文，不让 LightRAG 生成答案。 */
+    onlyNeedContext?: boolean;
+  }): Promise<{
     response: string;
     references: Array<{ referenceId: string; filePath: string }>;
+    /** 缺省按 true（旧网关没有这个字段）。 */
+    llmGenerated?: boolean;
   }>;
   listLabels(): Promise<string[]>;
   getSubgraph(input: {
@@ -127,7 +138,28 @@ export interface GraphAnswer {
   question: string;
   response: string;
   references: GraphReference[];
+  /** 生成本次答案的模型（「设置 → 大模型」里的绑定模型）。 */
+  model: string;
+  provider: LlmProvider;
 }
+
+/** 图谱实体详情里的「相关文档」入口（跳 `/workspace/<objectId>`）。 */
+export interface GraphEntityDocument {
+  objectId: string;
+  title: string;
+  type: BusinessObject["type"];
+  library: BusinessObject["library"];
+}
+
+export interface GraphEntityDocuments {
+  documents: GraphEntityDocument[];
+  /** 相关文档超过上限（或候选被截断）时为 true。 */
+  truncated: boolean;
+}
+
+export const GRAPH_ENTITY_DOCUMENTS_LIMIT = 10;
+/** 一次最多回查多少个对象，避免实体出现在几百份文档里时逐条打库。 */
+const MAX_ENTITY_DOCUMENT_CANDIDATES = 50;
 
 export interface GraphDocumentRef {
   docId: string;
@@ -141,10 +173,27 @@ const MAX_OWNED_OBJECTS = 2_000;
 const MAX_LABEL_PROBES = 200;
 const OWNED_LABEL_TTL_MS = 60_000;
 
+/**
+ * LightRAG 把同一实体的多个来源路径用 `<SEP>` 拼成一个 `file_path`
+ * （实测 `GET /graphs` 返回值，如 `pakp:obj:A:hash1<SEP>pakp:obj:B:hash2`）。
+ * 直接对整串调 `parseGraphFileSource` 会取到最后一个冒号、解析出错误的 objectId，
+ * 所以先按分隔符拆开再逐个解析。
+ */
+const GRAPH_FILE_PATH_SEPARATOR = /<SEP>/;
+
+/** 拆开 `file_path` 里的多个来源，逐个解析；不是本系统写入的部分直接丢弃。 */
+export function splitGraphFileSources(filePath: string): Array<{ objectId: string; hash: string }> {
+  const sources: Array<{ objectId: string; hash: string }> = [];
+  for (const part of filePath.split(GRAPH_FILE_PATH_SEPARATOR)) {
+    const parsed = parseGraphFileSource(part.trim());
+    if (parsed) sources.push(parsed);
+  }
+  return sources;
+}
+
 /** 图谱读侧按账号过滤（ADR-011）：某个 file_path 是否来自该账号的对象。 */
 function isOwnedPath(filePath: string, owned: Set<string>): boolean {
-  const parsed = parseGraphFileSource(filePath);
-  return parsed !== null && owned.has(parsed.objectId);
+  return splitGraphFileSources(filePath).some((parsed) => owned.has(parsed.objectId));
 }
 
 async function ownerObjectIdSet(db: AppDatabase, ownerSub: string): Promise<Set<string>> {
@@ -908,11 +957,25 @@ export async function getGraphNeighborhood(
   return { nodes, edges };
 }
 
+export interface GraphQueryOptions extends GraphOptions {
+  mode?: LightragQueryMode;
+  /** 绑定模型的完整配置；缺省从「设置 → 大模型」读取（库内加密行 → .env → 默认）。 */
+  llm?: LlmConfig;
+  /** 测试注入：答案生成器。生产用 `generateGraphAnswer`。 */
+  generateAnswer?: typeof generateGraphAnswer;
+  /** 测试注入：生成答案时用的 fetch。 */
+  answerFetch?: typeof fetch;
+}
+
+/**
+ * 图增强问答：LightRAG 只负责检索（`only_need_context`），
+ * 答案由用户在「设置 → 大模型」里绑定的模型生成。
+ */
 export async function queryGraph(
   db: AppDatabase,
   ownerSub: string,
   question: string,
-  options: GraphOptions & { mode?: LightragQueryMode } = {},
+  options: GraphQueryOptions = {},
 ): Promise<GraphAnswer> {
   const trimmed = question.trim();
   if (!trimmed) {
@@ -924,29 +987,160 @@ export async function queryGraph(
 
   const client =
     options.client ?? (createLightragClientFromEnv(options.env ?? process.env) as GraphGateway);
-  const answer = await client.query({ query: trimmed, mode: options.mode ?? "mix" });
+  const retrieval = await client.query({
+    query: trimmed,
+    mode: options.mode ?? "mix",
+    onlyNeedContext: true,
+  });
 
   const references: GraphReference[] = [];
   const seen = new Set<string>();
-  for (const ref of answer.references) {
-    const parsed = parseGraphFileSource(ref.filePath);
-    if (!parsed || seen.has(parsed.objectId)) continue;
-    seen.add(parsed.objectId);
+  for (const ref of retrieval.references) {
+    // 引用一般只有一条路径，但和节点一样按 `<SEP>` 拆开更稳。
+    for (const parsed of splitGraphFileSources(ref.filePath)) {
+      if (seen.has(parsed.objectId)) continue;
+      seen.add(parsed.objectId);
 
-    const object = await getObject(db, ownerSub, parsed.objectId).catch(() => null);
-    if (!object) continue;
-    references.push({
+      const object = await getObject(db, ownerSub, parsed.objectId).catch(() => null);
+      if (!object) continue;
+      references.push({
+        objectId: object.id,
+        title: object.title,
+        type: object.type,
+        library: object.library,
+      });
+    }
+  }
+
+  const config = options.llm ?? resolveLlmConfig(db);
+
+  // 引用不到本账号文档时，上下文可能整段来自他人内容；不生成、返回空（ADR-011）。
+  if (references.length === 0) {
+    return {
+      question: trimmed,
+      response: "",
+      references,
+      model: config.model,
+      provider: config.provider,
+    };
+  }
+
+  const generate = options.generateAnswer ?? generateGraphAnswer;
+  const generated = await generate(
+    config,
+    {
+      question: trimmed,
+      context: retrieval.response,
+      // 旧版 LightRAG 不认 only_need_context 时，response 是它自己生成的检索摘要。
+      contextIsSummary: retrieval.llmGenerated === true,
+    },
+    options.answerFetch ? { fetchImpl: options.answerFetch } : {},
+  );
+
+  return {
+    question: trimmed,
+    response: generated.response,
+    references,
+    model: generated.model,
+    provider: generated.provider,
+  };
+}
+
+/**
+ * 实体详情里的「相关文档」：从该实体在 LightRAG 里的来源路径反查本账号对象。
+ *
+ * 来源路径为空（或全部不属于本账号）时用标题/描述的词法检索兜底；
+ * 查到就返回（最多 10 条、按标题排序），查不到返回空数组而不是 404。
+ */
+export async function listEntityDocuments(
+  db: AppDatabase,
+  ownerSub: string,
+  label: string,
+  options: GraphOptions = {},
+): Promise<GraphEntityDocuments> {
+  const trimmed = label.trim();
+  if (!trimmed) {
+    throw new ValidationError("实体名称不能为空", { field: "label" });
+  }
+  if (trimmed.length > 100) {
+    throw new ValidationError("实体名称不能超过 100 个字符", { field: "label" });
+  }
+
+  const client =
+    options.client ?? (createLightragClientFromEnv(options.env ?? process.env) as GraphGateway);
+  const graph = await client.getSubgraph({ label: trimmed, maxDepth: 1, maxNodes: 200 });
+
+  // 实体节点 id 就是 entity_id；取不到同名节点（例如标签被截断）时用整个子图兜底。
+  const wanted = trimmed.toLowerCase();
+  const matched = graph.nodes.filter((node) => node.id.trim().toLowerCase() === wanted);
+  const nodes = matched.length > 0 ? matched : graph.nodes;
+
+  const owned = await ownerObjectIdSet(db, ownerSub);
+  const objectIds: string[] = [];
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    for (const parsed of splitGraphFileSources(node.filePath)) {
+      if (!owned.has(parsed.objectId) || seen.has(parsed.objectId)) continue;
+      seen.add(parsed.objectId);
+      objectIds.push(parsed.objectId);
+    }
+  }
+
+  const capped = objectIds.length > MAX_ENTITY_DOCUMENT_CANDIDATES;
+  const candidates = objectIds.slice(0, MAX_ENTITY_DOCUMENT_CANDIDATES);
+  const objects = await Promise.all(
+    candidates.map((objectId) => getObject(db, ownerSub, objectId).catch(() => null)),
+  );
+
+  let documents = toEntityDocuments(objects);
+  if (documents.length === 0) {
+    documents = await lexicalEntityDocuments(db, ownerSub, trimmed);
+  }
+
+  return {
+    documents: documents.slice(0, GRAPH_ENTITY_DOCUMENTS_LIMIT),
+    truncated: capped || documents.length > GRAPH_ENTITY_DOCUMENTS_LIMIT,
+  };
+}
+
+function toEntityDocuments(
+  objects: ReadonlyArray<BusinessObject | null>,
+): GraphEntityDocument[] {
+  const documents: GraphEntityDocument[] = [];
+  const seen = new Set<string>();
+  for (const object of objects) {
+    if (!object || seen.has(object.id)) continue;
+    seen.add(object.id);
+    documents.push({
       objectId: object.id,
       title: object.title,
       type: object.type,
       library: object.library,
     });
   }
+  documents.sort(compareEntityDocuments);
+  return documents;
+}
 
-  return {
-    question: trimmed,
-    // 引用不到本账号文档时，回答可能整段来自他人内容；宁可返回空（ADR-011）。
-    response: references.length > 0 ? answer.response : "",
-    references,
-  };
+/** 同标题按 objectId 升序，保证同一实体每次返回的顺序一致。 */
+function compareEntityDocuments(a: GraphEntityDocument, b: GraphEntityDocument): number {
+  const byTitle = a.title.localeCompare(b.title, "zh-Hans-CN");
+  if (byTitle !== 0) return byTitle;
+  return a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0;
+}
+
+/** 来源路径为空时的兜底：按实体名做词法检索。解析失败按「没有相关文档」处理。 */
+async function lexicalEntityDocuments(
+  db: AppDatabase,
+  ownerSub: string,
+  label: string,
+): Promise<GraphEntityDocument[]> {
+  try {
+    const result = await lexicalSearch(db, ownerSub, parseSearchInput(label), {
+      limit: GRAPH_ENTITY_DOCUMENTS_LIMIT,
+    });
+    return toEntityDocuments(result.hits.map((hit) => hit.object));
+  } catch {
+    return [];
+  }
 }

@@ -1,8 +1,8 @@
 /**
- * /graph 全屏星图 + 液态玻璃浮层验收（ADR-027，临时脚本，验完删除）。
+ * /graph 全屏星图 + 液态玻璃浮层验收（ADR-027 回归）。
  *
- * 隔离：临时库（%TEMP%）+ AUTH_MODE=mock + 独立端口 3131 + NEXT_DIST_DIR=.next-glass，
- * 不碰 `data/app.db`，也不碰 3000 上的日常 dev 服务。
+ * 隔离：临时库（%TEMP%）+ AUTH_MODE=mock + 独立端口 3131，跑生产 `next start`（共用 `.next`），
+ * 不碰 `data/app.db`，也不碰 3000 上的日常服务。提问卡已改成贴底居中的搜索卡（ADR-028）。
  *
  * 断言：
  *   1. `.graph-page` 宽度 / 父容器宽度 = 1（内容区吃满，不再有 1180 上限）；
@@ -13,7 +13,7 @@
  *   6. 列表模式无画布层、无 .graph-glass；
  *   7. 控制条可收起、详情可收成把手；390×844 下详情为底部抽屉。
  *
- * 用法：node scripts/verify-graph-glass.mjs
+ * 用法：先 `npm run build`，再 node scripts/verify-graph-glass.mjs
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -265,7 +265,7 @@ async function startApp({ dbFile, lightragUrl }) {
   if (await portInUse(APP_PORT)) {
     throw new Error(`端口 ${APP_PORT} 已被占用；用 APP_PORT=xxxx 换一个。`);
   }
-  const child = spawn(process.execPath, [NEXT_BIN, "dev", "-p", String(APP_PORT)], {
+  const child = spawn(process.execPath, [NEXT_BIN, "start", "-p", String(APP_PORT)], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -273,8 +273,6 @@ async function startApp({ dbFile, lightragUrl }) {
       DATABASE_PATH: dbFile,
       LIGHTRAG_BASE_URL: lightragUrl,
       LIGHTRAG_API_KEY: "glass-mock",
-      // 3000 上的日常 dev 占着 .next，这里换一个构建目录才能并存。
-      NEXT_DIST_DIR: ".next-glass",
       NEXT_TELEMETRY_DISABLED: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -561,13 +559,14 @@ const CORNER_METRICS = `(() => {
   };
   const bar = document.querySelector('.graph-bar');
   const inspector = document.querySelector('.graph-inspector');
-  const qa = document.querySelector('.graph-qa');
+  // 底部的「问图谱」已改成贴底居中的搜索卡（ADR-028）：dock 是排布容器，玻璃在表单上。
+  const qa = document.querySelector('.graph-ask-form');
   const readVar = (el, name) => (el ? getComputedStyle(el).getPropertyValue(name).trim() : null);
   return {
     workspace: box('.graph-workspace'),
     bar: box('.graph-bar'),
     inspector: box('.graph-inspector'),
-    qa: box('.graph-qa'),
+    qa: box('.graph-ask-dock'),
     stage: box('.graph-stage-layer'),
     barPosition: bar ? getComputedStyle(bar).position : null,
     barMx: readVar(bar, '--mx'),
@@ -692,7 +691,7 @@ async function main() {
     for (const [name, expression] of [
       ["bar", "document.querySelector('.graph-bar')"],
       ["inspector", "document.querySelector('.graph-inspector')"],
-      ["qa", "document.querySelector('.graph-qa')"],
+      ["qa", "document.querySelector('.graph-ask-form')"],
       ["workspace", "document.querySelector('.graph-workspace')"],
       ["document", "document"],
       ["window", "window"],
@@ -726,11 +725,12 @@ async function main() {
       note("document/window 上 pointermove 的来源", outerOrigins);
     }
     for (const name of ["bar", "inspector", "qa"]) {
+      const label = name === "qa" ? "ask-form" : name;
       if (listening[name].pointermove !== 1) {
-        problems.push(`.graph-${name} 上 pointermove 监听 ${listening[name].pointermove} 条（应为 1）`);
+        problems.push(`.graph-${label} 上 pointermove 监听 ${listening[name].pointermove} 条（应为 1）`);
       }
       if (listening[name].pointerleave !== 1) {
-        problems.push(`.graph-${name} 上 pointerleave 监听 ${listening[name].pointerleave} 条（应为 1）`);
+        problems.push(`.graph-${label} 上 pointerleave 监听 ${listening[name].pointerleave} 条（应为 1）`);
       }
     }
     if (listening.workspace.pointermove !== 0) {
@@ -1063,7 +1063,7 @@ async function main() {
       note("mobile drawer", drawer);
       const layering = await page.evaluate(`(() => {
         const insp = document.querySelector('.graph-inspector');
-        const qa = document.querySelector('.graph-qa');
+        const qa = document.querySelector('.graph-ask-dock');
         if (!insp) return null;
         const r = insp.getBoundingClientRect();
         const pt = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.75) };
@@ -1151,7 +1151,6 @@ async function main() {
     await stopApp(app);
     await lightrag.close();
     await rm(dir, { recursive: true, force: true }).catch(() => {});
-    await rm(".next-glass", { recursive: true, force: true }).catch(() => {});
   }
 
   console.log("\n===== 结论 =====");

@@ -48,6 +48,11 @@ export interface LightragReference {
 export interface LightragAnswer {
   response: string;
   references: LightragReference[];
+  /**
+   * `false` 表示这段 `response` 不是模型写的：`only_need_context` 下是检索上下文，
+   * 检索不到内容时是占位文案。缺省（旧响应没有该字段）按 `true` 处理。
+   */
+  llmGenerated: boolean;
 }
 
 export interface LightragNode {
@@ -185,8 +190,18 @@ export class LightragClient {
     };
   }
 
-  /** 图增强问答；`mix` 同时走图谱与向量检索。 */
-  async query(input: { query: string; mode?: LightragQueryMode }): Promise<LightragAnswer> {
+  /**
+   * 图增强问答；`mix` 同时走图谱与向量检索。
+   *
+   * `onlyNeedContext` 打开 LightRAG 的 `only_need_context`（1.5.7 起支持）：
+   * 只做检索、不调用模型生成，`response` 里是检索上下文。答案由调用方
+   * 用绑定的大模型生成（见 `services/graph-answer-service.ts`）。
+   */
+  async query(input: {
+    query: string;
+    mode?: LightragQueryMode;
+    onlyNeedContext?: boolean;
+  }): Promise<LightragAnswer> {
     const question = input.query?.trim();
     if (!question) {
       throw new ValidationError("问题不能为空");
@@ -195,10 +210,16 @@ export class LightragClient {
     const data = await this.request<{
       response?: string;
       references?: Array<{ reference_id?: string; file_path?: string }>;
+      llm_generated?: boolean;
     }>(
       "POST",
       "/query",
-      { query: question, mode: input.mode ?? "mix", include_references: true },
+      {
+        query: question,
+        mode: input.mode ?? "mix",
+        include_references: true,
+        ...(input.onlyNeedContext ? { only_need_context: true } : {}),
+      },
       SLOW_TIMEOUT_MS,
     );
 
@@ -208,6 +229,7 @@ export class LightragClient {
         referenceId: ref.reference_id ?? "",
         filePath: ref.file_path ?? "",
       })),
+      llmGenerated: data?.llm_generated !== false,
     };
   }
 

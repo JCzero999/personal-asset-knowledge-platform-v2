@@ -54,7 +54,7 @@ export interface GraphScene3DProps {
   readonly tier: QualityTier;
   /** 默认 false；reduced-motion 下入口不出现（由容器判定）。 */
   readonly autoRotate: boolean;
-  readonly onIntent: (intent: GraphIntent, id?: string) => void;
+  readonly onIntent: (intent: GraphIntent, id?: string, options?: { shiftKey?: boolean }) => void;
   /** 布局完成并画出首帧时调用一次。 */
   readonly onReady: (stats: {
     layoutMs: number;

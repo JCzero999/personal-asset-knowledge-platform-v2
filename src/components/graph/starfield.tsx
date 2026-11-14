@@ -53,6 +53,11 @@ import { HaloLayer, NodeField, SelectionRing } from "./node-field";
 
 export type SceneIntent = "select" | "focus" | "hover" | "toggle-mode" | "change-depth";
 
+/** 点击时的修饰键：3D 里没有 DOM 节点可读，只能由指针桥从事件上带出来。 */
+export interface SceneIntentOptions {
+  readonly shiftKey?: boolean;
+}
+
 export interface GalaxyCanvas3DProps {
   readonly view: GraphViewModel;
   readonly highlight: GraphHighlight;
@@ -60,7 +65,7 @@ export interface GalaxyCanvas3DProps {
   readonly tier: QualityTier;
   readonly autoRotate: boolean;
   readonly dpr: number;
-  readonly onIntent: (intent: SceneIntent, id?: string) => void;
+  readonly onIntent: (intent: SceneIntent, id?: string, options?: SceneIntentOptions) => void;
   readonly onReady: (stats: {
     layoutMs: number;
     layoutTicks: number;
@@ -428,7 +433,7 @@ interface PointerBridgeProps {
   readonly layout: GalaxyLayoutResult;
   readonly anchorId: string | null;
   readonly rotorRef: { readonly current: Group | null };
-  readonly onIntent: (intent: SceneIntent, id?: string) => void;
+  readonly onIntent: (intent: SceneIntent, id?: string, options?: SceneIntentOptions) => void;
 }
 
 function PointerBridge({ view, layout, anchorId, rotorRef, onIntent }: PointerBridgeProps) {
@@ -515,7 +520,7 @@ function PointerBridge({ view, layout, anchorId, rotorRef, onIntent }: PointerBr
       downAt = null;
       if (moved > 5) return;
       const id = pick(event.clientX, event.clientY);
-      if (id) onIntent("select", id);
+      if (id) onIntent("select", id, { shiftKey: event.shiftKey });
     };
     const onDoubleClick = (event: MouseEvent): void => {
       const id = pick(event.clientX, event.clientY);

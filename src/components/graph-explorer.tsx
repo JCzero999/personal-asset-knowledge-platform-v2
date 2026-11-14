@@ -52,6 +52,7 @@ import type {
   ModelDiagnosis,
 } from "@/server/services/graph-service";
 
+import { GraphSearchBar } from "./graph-search-bar";
 import { GraphStage2D } from "./graph/graph-stage-2d";
 import { Icon } from "./icon";
 
@@ -78,19 +79,6 @@ const TIER_DROP_COOLDOWN_MS = 3000;
 export type GraphSubgraphView = LightragSubgraph;
 export type GraphStatusView = GraphStatus;
 
-export interface GraphReferenceView {
-  objectId: string;
-  title: string;
-  type: "asset" | "work";
-  library: "internal" | "external";
-}
-
-export interface GraphAnswerView {
-  question: string;
-  response: string;
-  references: GraphReferenceView[];
-}
-
 export interface GraphSyncResultView {
   candidates: number;
   submitted: number;
@@ -98,6 +86,12 @@ export interface GraphSyncResultView {
   skipped: Array<{ objectId: string; title: string; reason: string }>;
   removed: number;
   errors: Array<{ objectId: string; title: string; message: string }>;
+}
+
+/** 实体详情里的「相关文档」一行：只取跳转要用的两个字段。 */
+interface EntityDocumentView {
+  objectId: string;
+  title: string;
 }
 
 export interface GraphExplorerProps {
@@ -178,6 +172,36 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error(payload?.error?.message ?? `请求失败（${response.status}）`);
   }
   return payload as T;
+}
+
+/**
+ * 实体相关文档的返回形状做一次归一：数组、`{ documents }`、`{ references }` 都收，
+ * 只保留能跳转的条目；后端换字段名时前端不至于整块空掉。
+ */
+function normalizeDocuments(payload: unknown): EntityDocumentView[] {
+  const container = (payload ?? {}) as Record<string, unknown>;
+  const list = Array.isArray(payload)
+    ? payload
+    : Array.isArray(container.documents)
+      ? container.documents
+      : Array.isArray(container.references)
+        ? container.references
+        : [];
+
+  const rows: EntityDocumentView[] = [];
+  const seen = new Set<string>();
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const objectId = typeof row.objectId === "string" ? row.objectId : "";
+    if (!objectId || seen.has(objectId)) continue;
+    seen.add(objectId);
+    rows.push({
+      objectId,
+      title: typeof row.title === "string" && row.title ? row.title : objectId,
+    });
+  }
+  return rows;
 }
 
 function parseMode(raw: string | null): GraphViewMode | null {
@@ -319,11 +343,6 @@ export function GraphExplorer({
   const [retryResults, setRetryResults] = useState<GraphRetryItem[] | null>(null);
   const [retryError, setRetryError] = useState<string | null>(null);
 
-  const [question, setQuestion] = useState("");
-  const [asking, setAsking] = useState(false);
-  const [answer, setAnswer] = useState<GraphAnswerView | null>(null);
-  const [answerError, setAnswerError] = useState<string | null>(null);
-
   const [announcement, setAnnouncement] = useState("");
   const [sceneError, setSceneError] = useState<string | null>(null);
   // ADR-022 A8：默认不转；只有用户点开关才动，reduced-motion 下开关不出现。
@@ -332,8 +351,23 @@ export function GraphExplorer({
   // 窄屏默认收起，但用户点过之后以点了的为准：这里只存「用户的选择」，默认值由 isMobile 推出来。
   const [barOverride, setBarOverride] = useState<boolean | null>(null);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  // 详情卡里的「相关文档」：默认收起，展开后按实体 label 现取。
+  const [docsOpen, setDocsOpen] = useState(false);
+  const [docsReload, setDocsReload] = useState(0);
+  const [docsState, setDocsState] = useState<{
+    key: string;
+    status: "ready" | "error";
+    items: EntityDocumentView[];
+    message?: string;
+  }>({ key: "", status: "ready", items: [] });
+  // 结果卡是后挂上的玻璃卡，挂上/卸下时让指针高光重新绑一次。
+  const [glassEpoch, setGlassEpoch] = useState(0);
 
   const requestRef = useRef(0);
+  // 「相关文档」的请求票据：跨实体切换时丢弃迟到的旧响应。
+  const docsRequestRef = useRef(0);
+  // 展开后要把新内容滚进详情卡的可视区（详情卡自己是滚动容器）。
+  const docsSectionRef = useRef<HTMLElement | null>(null);
   const readyRef = useRef<{ layoutMs: number; layoutTicks: number; truncated: boolean; drawCalls: number } | null>(null);
   const sceneStatsRef = useRef<{
     frames: number;
@@ -752,8 +786,10 @@ export function GraphExplorer({
   }, []);
 
   const handleIntent = useCallback(
-    (intent: string, id?: string) => {
-      if (intent === "select" && id) setSelectedId(id);
+    (intent: string, id?: string, options?: { shiftKey?: boolean }) => {
+      // 3D 没有 DOM 节点，修饰键只能随意图回传；统一走 handleSelect，
+      // 这样 Shift + 单击看路径、pathPick 在 2D / 3D 是同一套语义。
+      if (intent === "select" && id) handleSelect(id, options);
       else if (intent === "hover") setHoverId(id ?? null);
       else if (intent === "focus" && id) handleFocus(id);
       else if (intent === "toggle-mode") setView({ mode: mode === "3d" ? "2d" : "3d" });
@@ -762,14 +798,23 @@ export function GraphExplorer({
         setView({ depth: next as GraphHop });
       }
     },
-    [handleFocus, mode, depth, setView],
+    [handleFocus, handleSelect, mode, depth, setView],
   );
 
   const selectEntity = (id: string) => handleSelect(id);
-  const focusEntity = (id: string) => {
-    setSelectedId(id);
-    handleFocus(id);
-  };
+  const focusEntity = useCallback(
+    (id: string) => {
+      setSelectedId(id);
+      handleFocus(id);
+    },
+    [handleFocus],
+  );
+  // 回答里的实体胶囊只认当前视图里的标签；按 id+label 摊平给搜索卡做匹配。
+  const searchNodes = useMemo(
+    () => view.nodes.map((node) => ({ id: node.id, label: node.label })),
+    [view],
+  );
+  const handleGlassChange = useCallback(() => setGlassEpoch((current) => current + 1), []);
 
   async function handleSync() {
     setSyncing(true);
@@ -854,30 +899,6 @@ export function GraphExplorer({
     if (next) await refreshLabels();
   }
 
-  async function ask(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmed = question.trim();
-    if (!trimmed || asking) return;
-
-    setAsking(true);
-    setAnswerError(null);
-    try {
-      const data = await readJson<GraphAnswerView>(
-        await fetch("/api/graph/query", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ q: trimmed }),
-        }),
-      );
-      setAnswer(data);
-    } catch (error) {
-      setAnswer(null);
-      setAnswerError(error instanceof Error ? error.message : "问答暂时不可用");
-    } finally {
-      setAsking(false);
-    }
-  }
-
   const selectedNode: GraphNode | null = useMemo(() => {
     if (!activeSelectedId) return null;
     const index = view.nodeIndex.get(activeSelectedId);
@@ -898,9 +919,50 @@ export function GraphExplorer({
     return rows;
   }, [selectedNode, view]);
 
-  const selectedReferences =
-    answer && selectedNode && answer.response.includes(selectedNode.label) ? answer.references : [];
+  /**
+   * 「相关文档」按实体 label 现取；键是「实体 id|label」，切换实体后旧结果自然失效。
+   * 承诺兑现顺序用票据 + abort 双重保证：后发请求永远覆盖先发的旧结果。
+   */
+  const selectedNodeId = selectedNode?.id ?? null;
+  const selectedNodeLabel = selectedNode?.label ?? null;
+  const docsKey =
+    selectedNodeId && selectedNodeLabel ? `${selectedNodeId}|${selectedNodeLabel}` : "";
 
+  useEffect(() => {
+    if (!docsKey || !selectedNodeLabel || !docsOpen) return;
+
+    const key = docsKey;
+    const ticket = ++docsRequestRef.current;
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const data = await readJson<unknown>(
+          await fetch(`/api/graph/entity/documents?label=${encodeURIComponent(selectedNodeLabel)}`, {
+            cache: "no-store",
+            signal: controller.signal,
+          }),
+        );
+        if (ticket !== docsRequestRef.current) return;
+        setDocsState({ key, status: "ready", items: normalizeDocuments(data) });
+      } catch (error) {
+        if (controller.signal.aborted || ticket !== docsRequestRef.current) return;
+        setDocsState({
+          key,
+          status: "error",
+          items: [],
+          message: error instanceof Error ? error.message : "相关文档没有取到",
+        });
+      }
+    })();
+
+    return () => controller.abort();
+  }, [docsKey, selectedNodeLabel, docsOpen, docsReload]);
+
+  const docsMine = docsOpen && docsKey !== "" && docsState.key === docsKey;
+  const docsLoading = docsOpen && !docsMine;
+  const docs = docsMine ? docsState.items : [];
+  const docsError = docsMine && docsState.status === "error" ? (docsState.message ?? "相关文档没有取到") : null;
   const working = isWorking(status);
   // 四态计数直接来自服务端（对象维度，同一对象的历史版本只算一次）。
   const counts = status?.counts ?? EMPTY_STATE_COUNTS;
@@ -1017,6 +1079,27 @@ export function GraphExplorer({
   }, [floating, barOpen]);
 
   /**
+   * 底部问答卡的实际高度写进 `--graph-search-h`：左下的提示条与画布缩放按钮
+   * 都从它上方让位，结果卡展开时这些浮层跟着一起上移（不写死高度）。
+   */
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace || !floating) return;
+    const dock = workspace.querySelector<HTMLElement>(".graph-ask-dock");
+    if (!dock) return;
+    const apply = () => {
+      workspace.style.setProperty(
+        "--graph-search-h",
+        `${Math.round(dock.getBoundingClientRect().height)}px`,
+      );
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(dock);
+    return () => observer.disconnect();
+  }, [floating]);
+
+  /**
    * 液态玻璃的三层光：跟随指针的径向高光 + 最多 3° 的厚度倾斜。
    * 直接写 CSS 变量，pointermove 不进 React 渲染；用 requestAnimationFrame 合并，
    * 一帧最多提交一次。触屏与「减少动态效果」下不跟随，光停在中间（原样交给 CSS 默认值）。
@@ -1025,8 +1108,8 @@ export function GraphExplorer({
     const workspace = workspaceRef.current;
     if (!workspace || !floating || reducedMotion || isMobile) return;
     // 监听挂在每张玻璃卡自身（ADR-027 第 9 条），工作区与 window 上不挂 pointermove。
-    // 三张卡（控制、详情、问答）常驻不换节点，收起/切换模式/选中实体只改类名与内容，
-    // 所以取一次即可；指针只可能停在其中一张上，各卡各算自己的帧。
+    // 控制卡、详情卡与底部问答卡常驻不换节点，收起/切换模式/选中实体只改类名与内容，取一次即可。
+    // 结果卡是按需挂上的第四张卡，由 `glassEpoch` 触发重新取一次。
     const cards = Array.from(
       workspace.querySelectorAll<HTMLElement>(".graph-glass:not(.is-chip)"),
     );
@@ -1080,7 +1163,7 @@ export function GraphExplorer({
     return () => {
       for (const teardown of teardowns) teardown();
     };
-  }, [floating, reducedMotion, isMobile]);
+  }, [floating, reducedMotion, isMobile, glassEpoch]);
 
   // ADR-027 第 12 条：low 档（含运行时降档的结果）关掉背景模糊，只留 92% 实色底。
   const glassMode = tier === "low" ? "solid" : "live";
@@ -1762,23 +1845,65 @@ export function GraphExplorer({
               <section className="graph-inspector-section">
                 <h3>来源</h3>
                 <p className="graph-source-line">图谱抽取结果（LightRAG）</p>
-                {selectedReferences.length > 0 ? (
-                  <>
-                    <p className="graph-source-line">最近一次提问引用：</p>
-                    <ul className="graph-source-list">
-                      {selectedReferences.map((reference) => (
-                        <li key={reference.objectId}>
-                          <Link className="text-link" href={`/workspace/${reference.objectId}`}>
-                            {reference.title}
-                            <Icon name="arrow-right" size={13} />
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                ) : null}
                 {!selectedNode.flags.hasDescription ? (
                   <p className="graph-inspector-empty-text">这个实体还没有生成描述。</p>
+                ) : null}
+              </section>
+
+              <section ref={docsSectionRef} className="graph-inspector-section graph-docs">
+                <div className="graph-docs-head">
+                  <h3>相关文档</h3>
+                  <button
+                    className="text-link graph-docs-toggle"
+                    type="button"
+                    aria-expanded={docsOpen}
+                    aria-controls="graph-entity-docs"
+                    onClick={() => {
+                      const next = !docsOpen;
+                      setDocsOpen(next);
+                      // 详情卡是滚动容器：不滚的话展开的列表停在可视区下方。
+                      if (next) {
+                        requestAnimationFrame(() => {
+                          docsSectionRef.current?.scrollIntoView({ block: "start" });
+                        });
+                      }
+                    }}
+                  >
+                    {docsOpen ? "收起" : "展开"}
+                  </button>
+                </div>
+                {docsOpen ? (
+                  <div id="graph-entity-docs" className="graph-docs-body">
+                    {docsLoading ? (
+                      <p className="graph-inspector-empty-text" role="status">
+                        正在查找…
+                      </p>
+                    ) : docsError ? (
+                      <p className="graph-docs-error" role="alert">
+                        {docsError}
+                        <button
+                          className="text-link"
+                          type="button"
+                          onClick={() => setDocsReload((current) => current + 1)}
+                        >
+                          重试
+                        </button>
+                      </p>
+                    ) : docs.length === 0 ? (
+                      <p className="graph-inspector-empty-text">这个实体还没有关联文档。</p>
+                    ) : (
+                      <ul className="graph-source-list">
+                        {docs.map((doc) => (
+                          <li key={doc.objectId}>
+                            <Link className="text-link" href={`/workspace/${doc.objectId}`}>
+                              {doc.title}
+                              <Icon name="arrow-right" size={13} />
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
                 ) : null}
               </section>
 
@@ -1805,79 +1930,12 @@ export function GraphExplorer({
         </aside>
       </div>
 
-      <section
-        className={`graph-qa${floating ? " graph-glass" : " panel"}`}
-        id="graph-qa"
-        aria-label="图谱问答"
-      >
-        <div className="graph-qa-head">
-          <div>
-            <h2>问图谱</h2>
-            <p>回答会同时参考图谱关系与内容片段，并标出来源对象；点实体胶囊可以直接定位。</p>
-          </div>
-        </div>
-        <div className="graph-qa-body">
-          <form className="graph-qa-form" onSubmit={(event) => void ask(event)}>
-            <textarea
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              placeholder="例如：设计系统里品牌色是怎么定义的？"
-              rows={2}
-              maxLength={200}
-              aria-label="图谱问题"
-              disabled={asking}
-            />
-            <button className="btn btn-primary" type="submit" disabled={asking || !question.trim()}>
-              {asking ? "思考中…" : "提问"}
-            </button>
-          </form>
-
-          {asking ? (
-            <p className="graph-qa-hint">本机模型逐字生成答案，通常需要十几秒到一分多钟。</p>
-          ) : null}
-
-          {answerError ? (
-            <p className="graph-note graph-note-error" role="alert">
-              {answerError}
-            </p>
-          ) : null}
-
-          {answer ? (
-            <div className="graph-answer">
-              <p className="graph-answer-question">{answer.question}</p>
-              <div className="graph-answer-text">
-                {answer.response ? (
-                  <AnswerText
-                    text={answer.response}
-                    view={view}
-                    onPick={(id) => {
-                      setSelectedId(id);
-                      handleFocus(id);
-                    }}
-                  />
-                ) : (
-                  "图谱没有给出回答。"
-                )}
-              </div>
-              {answer.references.length > 0 ? (
-                <div className="graph-answer-refs">
-                  <p className="graph-answer-refs-title">来源对象</p>
-                  <ul>
-                    {answer.references.map((ref) => (
-                      <li key={ref.objectId}>
-                        <Link className="text-link" href={`/workspace/${ref.objectId}`}>
-                          {ref.title}
-                          <Icon name="arrow-right" size={13} />
-                        </Link>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      </section>
+      <GraphSearchBar
+        floating={floating}
+        nodes={searchNodes}
+        onPickNode={focusEntity}
+        onGlassChange={handleGlassChange}
+      />
     </div>
   );
 }
@@ -1977,61 +2035,6 @@ function GraphListView({
         </ul>
       )}
     </div>
-  );
-}
-
-function AnswerText({
-  text,
-  view,
-  onPick,
-}: {
-  text: string;
-  view: GraphViewModel;
-  onPick: (id: string) => void;
-}) {
-  const segments = useMemo(() => {
-    const candidates = view.nodes
-      .filter((node) => node.label.length >= 2)
-      .sort((a, b) => b.label.length - a.label.length);
-    const output: Array<{ type: "text"; text: string } | { type: "node"; id: string; label: string }> = [];
-    let buffer = "";
-    let index = 0;
-    while (index < text.length) {
-      const hit = candidates.find((node) => text.startsWith(node.label, index));
-      if (hit) {
-        if (buffer) {
-          output.push({ type: "text", text: buffer });
-          buffer = "";
-        }
-        output.push({ type: "node", id: hit.id, label: hit.label });
-        index += hit.label.length;
-      } else {
-        buffer += text[index];
-        index += 1;
-      }
-    }
-    if (buffer) output.push({ type: "text", text: buffer });
-    return output;
-  }, [text, view]);
-
-  return (
-    <>
-      {segments.map((segment, index) =>
-        segment.type === "text" ? (
-          <span key={index}>{segment.text}</span>
-        ) : (
-          <button
-            key={index}
-            className="graph-entity-chip"
-            type="button"
-            onClick={() => onPick(segment.id)}
-            title={`定位到 ${segment.label}`}
-          >
-            {segment.label}
-          </button>
-        ),
-      )}
-    </>
   );
 }
 
