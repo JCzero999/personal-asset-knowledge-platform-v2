@@ -46,7 +46,8 @@ function work(title: string, category = "article", tags: string[] = []) {
   return repo.create({
     type: "work",
     title,
-    library: "internal",
+    // 作品只存在于外库（ADR-029）；标签 / 分类语义与库别无关。
+    library: "external",
     ownerSub: "u1",
     category,
     tags,
@@ -330,7 +331,7 @@ describe("数据库层兜底", () => {
           `insert into objects
              (id, type, title, library, source, origin, category_code, priority,
               owner_sub, revision, created_at, updated_at, status)
-           values ('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'work', 'x', 'internal',
+           values ('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'work', 'x', 'external',
                    'handwritten', 'self', 'podcast', 'medium', 'u', 1,
                    '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'draft')`,
         )

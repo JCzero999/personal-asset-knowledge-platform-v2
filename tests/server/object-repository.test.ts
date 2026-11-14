@@ -103,19 +103,34 @@ describe("objects CRUD", () => {
     ).toThrow(/CHECK constraint failed/i);
   });
 
-  it("数据库 CHECK 拒绝外库 practiced 作品（绕过状态机直写）", () => {
+  it("数据库 CHECK 拒绝内库作品（绕过状态机直写）", () => {
     expect(() =>
       handle.sqlite
         .prepare(
           `insert into objects
              (id, type, title, library, source, origin, category_code, priority,
               owner_sub, revision, created_at, updated_at, status)
-           values ('01HZZZZZZZZZZZZZZZZZZZZZZZ', 'work', 'x', 'external',
+           values ('01HZZZZZZZZZZZZZZZZZZZZZZZ', 'work', 'x', 'internal',
                    'handwritten', 'self', 'course', 'medium', 'u', 1,
-                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'practiced')`,
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'draft')`,
         )
         .run(),
-    ).toThrow(/CHECK constraint failed/i);
+    ).toThrow(/objects_work_must_be_external/);
+  });
+
+  it("数据库 CHECK 拒绝没有 5 维分与等级的内库资产（规则 4）", () => {
+    expect(() =>
+      handle.sqlite
+        .prepare(
+          `insert into objects
+             (id, type, title, library, source, origin, category_code, priority,
+              owner_sub, revision, created_at, updated_at)
+           values ('01HZZZZZZZZZZZZZZZZZZZZZZY', 'asset', 'x', 'internal',
+                   'handwritten', 'self', NULL, 'medium', 'u', 1,
+                   '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+        )
+        .run(),
+    ).toThrow(/objects_internal_asset_requires_value/);
   });
 
   it("查询与软删除", async () => {
@@ -177,34 +192,35 @@ describe("objects CRUD", () => {
 
 describe("作品状态迁移", () => {
   it("沿迁移表逐级推进并递增 revision", async () => {
-    const work = await repo.create({ ...workInput, library: "internal" });
+    const work = await repo.create(workInput);
 
     const finished = await repo.changeStatus({ objectId: work.id, to: "finished" });
     expect(finished).toMatchObject({ type: "work", status: "finished", revision: 2 });
 
     const published = await repo.changeStatus({ objectId: work.id, to: "published" });
     expect(published).toMatchObject({ status: "published", revision: 3 });
-
-    const practiced = await repo.changeStatus({ objectId: work.id, to: "practiced" });
-    expect(practiced).toMatchObject({ status: "practiced", revision: 4 });
+    // 首次发布记录 published_at（规格 v2.0 第 3 节）
+    expect(published.publishedAt).not.toBeNull();
   });
 
   it("跳过中间状态被拒绝", async () => {
-    const work = await repo.create({ ...workInput, library: "internal" });
+    const work = await repo.create(workInput);
 
     await expect(
       repo.changeStatus({ objectId: work.id, to: "published" }),
     ).rejects.toMatchObject({ code: "INVALID_TRANSITION" });
   });
 
-  it("外库作品不能直接 practiced", async () => {
-    const work = await repo.create(workInput); // library: external
+  it("practiced 不走状态迁移：必须走实践结算", async () => {
+    const work = await repo.create(workInput);
     await repo.changeStatus({ objectId: work.id, to: "finished" });
     await repo.changeStatus({ objectId: work.id, to: "published" });
 
     await expect(
       repo.changeStatus({ objectId: work.id, to: "practiced" }),
-    ).rejects.toMatchObject({ code: "EXTERNAL_LIBRARY_PRACTICED" });
+    ).rejects.toBeInstanceOf(ConflictError);
+
+    expect((await repo.findById(work.id))?.status).toBe("published");
   });
 
   it("资产没有状态可迁移", async () => {
@@ -221,7 +237,7 @@ describe("作品状态迁移", () => {
   });
 
   it("过期 revision 触发冲突", async () => {
-    const work = await repo.create({ ...workInput, library: "internal" });
+    const work = await repo.create(workInput);
     await repo.changeStatus({ objectId: work.id, to: "finished" });
 
     await expect(
@@ -230,7 +246,7 @@ describe("作品状态迁移", () => {
   });
 
   it("已归档作品不能推进状态，取消归档后恢复", async () => {
-    const work = await repo.create({ ...workInput, library: "internal" });
+    const work = await repo.create(workInput);
     await repo.archive(work.id);
 
     await expect(
@@ -244,36 +260,72 @@ describe("作品状态迁移", () => {
 });
 
 describe("library 迁移与审计", () => {
-  it("迁移写入 library_events 并推进 revision", async () => {
-    const work = await repo.create(workInput);
+  /** 作品只存在于外库（ADR-029），跨库迁移只能发生在资产上。 */
+  async function externalAsset() {
+    return repo.create({
+      type: "asset",
+      title: "外库资产",
+      library: "external",
+      ownerSub: "user_test",
+    });
+  }
+
+  async function internalAsset() {
+    return repo.create({
+      type: "asset",
+      title: "内库资产",
+      library: "internal",
+      ownerSub: "user_test",
+    });
+  }
+
+  it("迁移写入 library_events 并推进 revision（内库 → 外库）", async () => {
+    const asset = await internalAsset();
 
     const moved = await repo.changeLibrary({
-      objectId: work.id,
-      to: "internal",
-      reason: "已发布并复盘",
+      objectId: asset.id,
+      to: "external",
+      reason: "不再作为知识资产维护",
       actorSub: "user_test",
     });
 
-    expect(moved.library).toBe("internal");
+    expect(moved.library).toBe("external");
     expect(moved.libraryChangedAt).not.toBeNull();
     expect(moved.revision).toBe(2);
 
-    const events = await repo.listLibraryEvents(work.id);
+    const events = await repo.listLibraryEvents(asset.id);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
-      fromLibrary: "external",
-      toLibrary: "internal",
-      reason: "已发布并复盘",
+      fromLibrary: "internal",
+      toLibrary: "external",
+      reason: "不再作为知识资产维护",
       actorSub: "user_test",
     });
   });
 
-  it("同一库别迁移被拒绝", async () => {
-    const work = await repo.create(workInput);
+  it("外库资产不能手工迁入内库（LIBRARY_ENTRY_DENIED）", async () => {
+    const asset = await externalAsset();
 
     await expect(
       repo.changeLibrary({
-        objectId: work.id,
+        objectId: asset.id,
+        to: "internal",
+        reason: "手工提升",
+        actorSub: "user_test",
+      }),
+    ).rejects.toMatchObject({ code: "LIBRARY_ENTRY_DENIED" });
+
+    const after = await repo.findById(asset.id);
+    expect(after).toMatchObject({ library: "external", revision: 1, libraryChangedAt: null });
+    expect(await repo.listLibraryEvents(asset.id)).toHaveLength(0);
+  });
+
+  it("同一库别迁移被拒绝", async () => {
+    const asset = await externalAsset();
+
+    await expect(
+      repo.changeLibrary({
+        objectId: asset.id,
         to: "external",
         reason: "重复",
         actorSub: "user_test",
@@ -282,11 +334,11 @@ describe("library 迁移与审计", () => {
   });
 
   it("必填迁移理由", async () => {
-    const work = await repo.create(workInput);
+    const asset = await externalAsset();
 
     await expect(
       repo.changeLibrary({
-        objectId: work.id,
+        objectId: asset.id,
         to: "internal",
         reason: "   ",
         actorSub: "user_test",
@@ -294,47 +346,43 @@ describe("library 迁移与审计", () => {
     ).rejects.toBeInstanceOf(ValidationError);
   });
 
-  it("把 practiced 作品迁回外库会在领域层被拒绝", async () => {
-    const work = await repo.create({ ...workInput, library: "internal" });
-    // 通过 SQL 直接把状态推进到 practiced，绕开本用例不关心的状态机前置条件
-    handle.sqlite
-      .prepare("update objects set status = 'practiced' where id = ?")
-      .run(work.id);
-
-    await expect(
-      repo.changeLibrary({
-        objectId: work.id,
-        to: "external",
-        reason: "放回外库",
-        actorSub: "user_test",
-      }),
-    ).rejects.toMatchObject({ code: "EXTERNAL_LIBRARY_PRACTICED" });
-
-    expect((await repo.findById(work.id))?.library).toBe("internal");
-  });
-
-  it("跨库迁移同样受乐观锁保护", async () => {
+  it("作品不能迁入内库（WORK_MUST_BE_EXTERNAL）", async () => {
     const work = await repo.create(workInput);
-    await repo.changeStatus({ objectId: work.id, to: "finished" });
 
     await expect(
       repo.changeLibrary({
         objectId: work.id,
         to: "internal",
-        reason: "已发布",
+        reason: "旧流程：先迁内库再 practiced",
+        actorSub: "user_test",
+      }),
+    ).rejects.toMatchObject({ code: "WORK_MUST_BE_EXTERNAL" });
+
+    expect((await repo.findById(work.id))?.library).toBe("external");
+  });
+
+  it("跨库迁移同样受乐观锁保护", async () => {
+    const asset = await internalAsset();
+    await repo.update(asset.id, { title: "改名", expectedRevision: 1 });
+
+    await expect(
+      repo.changeLibrary({
+        objectId: asset.id,
+        to: "external",
+        reason: "已确认",
         actorSub: "user_test",
         expectedRevision: 1,
       }),
     ).rejects.toBeInstanceOf(ConflictError);
 
     const moved = await repo.changeLibrary({
-      objectId: work.id,
-      to: "internal",
-      reason: "已发布",
+      objectId: asset.id,
+      to: "external",
+      reason: "已确认",
       actorSub: "user_test",
       expectedRevision: 2,
     });
-    expect(moved.library).toBe("internal");
+    expect(moved.library).toBe("external");
     expect(moved.revision).toBe(3);
   });
 });
@@ -449,20 +497,26 @@ describe("outbox 入队", () => {
   }
 
   it("编辑、迁移、归档都只产生一条活跃 upsert（同一对象去重）", async () => {
-    const work = await repo.create(workInput);
+    // 作品不能跨库迁移（ADR-029），这里用资产覆盖「编辑 + 迁移 + 归档」三个入口。
+    const asset = await repo.create({
+      type: "asset",
+      title: "内库资产",
+      library: "internal",
+      ownerSub: "user_test",
+    });
 
-    await repo.update(work.id, { title: "改名", expectedRevision: 1 });
+    await repo.update(asset.id, { title: "改名", expectedRevision: 1 });
     await repo.changeLibrary({
-      objectId: work.id,
-      to: "internal",
-      reason: "已复盘",
+      objectId: asset.id,
+      to: "external",
+      reason: "已确认",
       actorSub: "user_test",
       expectedRevision: 2,
     });
-    await repo.archive(work.id);
+    await repo.archive(asset.id);
 
     expect(jobs()).toEqual([
-      { owner_type: "work", owner_id: work.id, action: "upsert", state: "pending" },
+      { owner_type: "asset", owner_id: asset.id, action: "upsert", state: "pending" },
     ]);
   });
 

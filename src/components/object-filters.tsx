@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 
 import {
   libraries,
+  valueLevels,
   workStatuses,
   type Library,
   type ObjectType,
@@ -13,6 +14,14 @@ import {
 } from "@/domain/objects";
 import type { VocabularyTag } from "@/domain/vocabulary";
 import { libraryLabels, statusLabels } from "@/lib/object-labels";
+import {
+  defaultLifecycleFilters,
+  reviewStatusFilterLabels,
+  reviewStatusFilters,
+  withLifecycleParams,
+  type LifecycleFilters,
+  type ReviewStatusFilter,
+} from "./lifecycle";
 import {
   buildWorkspaceHref,
   sortLabels,
@@ -31,10 +40,13 @@ import { Icon } from "./icon";
  */
 export function ObjectFilters({
   filters,
+  lifecycle = defaultLifecycleFilters,
   tags = [],
   compact = false,
 }: {
   filters: WorkspaceFilters;
+  /** 生命周期筛选（复核状态 / 价值等级），与主筛选并列存在 URL 上。 */
+  lifecycle?: LifecycleFilters;
   /** 标签词表（使用次数从高到低）；下拉只列有引用的标签 + 当前选中项。 */
   tags?: VocabularyTag[];
   /** 列表窄栏用：只留搜索框与下拉，范围切换交给目录。 */
@@ -56,7 +68,8 @@ export function ObjectFilters({
   }, [filters.q]);
 
   function go(href: string, push = false) {
-    if (href === buildWorkspaceHref(filters)) return;
+    const current = withLifecycleParams(buildWorkspaceHref(filters), lifecycle);
+    if (href === current) return;
     startTransition(() => {
       if (push) router.push(href, { scroll: false });
       else router.replace(href, { scroll: false });
@@ -64,8 +77,13 @@ export function ObjectFilters({
   }
 
   // 下拉是连续微调，用 replace 不塞满历史；搜索与范围切换是明确动作，用 push 以便后退还原。
+  // 两次改动都保留生命周期条件，避免调一个筛选把另一个悄悄清掉。
   function apply(next: Partial<WorkspaceFilters>, push = false) {
-    go(buildWorkspaceHref(filters, next), push);
+    go(withLifecycleParams(buildWorkspaceHref(filters, next), lifecycle), push);
+  }
+
+  function applyLifecycle(patch: Partial<LifecycleFilters>) {
+    go(withLifecycleParams(buildWorkspaceHref(filters), { ...lifecycle, ...patch }));
   }
 
   function submitSearch() {
@@ -164,7 +182,10 @@ export function ObjectFilters({
             return (
               <Link
                 className={`scope-option${active ? " is-active" : ""}`}
-                href={buildWorkspaceHref(filters, { archived: option.value })}
+                href={withLifecycleParams(
+                  buildWorkspaceHref(filters, { archived: option.value }),
+                  lifecycle,
+                )}
                 aria-current={active ? "page" : undefined}
                 scroll={false}
                 key={option.value}
@@ -248,6 +269,50 @@ export function ObjectFilters({
               {tagOptions.map((tag) => (
                 <option value={tag.label} key={tag.id}>
                   {tag.label}（{tag.usage}）
+                </option>
+              ))}
+            </select>
+          </span>
+        </label>
+
+        <label className="filter-field">
+          <span className="filter-label">复核状态</span>
+          <span className="select-wrap">
+            <select
+              className="select"
+              value={lifecycle.aiStatus ?? ""}
+              onChange={(event) =>
+                applyLifecycle({
+                  aiStatus: (event.target.value || null) as ReviewStatusFilter | null,
+                })
+              }
+            >
+              <option value="">全部</option>
+              {reviewStatusFilters.map((status) => (
+                <option value={status} key={status}>
+                  {reviewStatusFilterLabels[status]}
+                </option>
+              ))}
+            </select>
+          </span>
+        </label>
+
+        <label className="filter-field">
+          <span className="filter-label">价值等级</span>
+          <span className="select-wrap">
+            <select
+              className="select"
+              value={lifecycle.valueLevel ?? ""}
+              onChange={(event) =>
+                applyLifecycle({
+                  valueLevel: (event.target.value || null) as LifecycleFilters["valueLevel"],
+                })
+              }
+            >
+              <option value="">全部</option>
+              {valueLevels.map((level) => (
+                <option value={level} key={level}>
+                  {level} 级
                 </option>
               ))}
             </select>

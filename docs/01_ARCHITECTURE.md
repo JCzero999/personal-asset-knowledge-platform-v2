@@ -64,10 +64,11 @@ Knowledge Graph (LightRAG)
 - **内容**：只存在 RAGFlow。
 - **业务元数据与状态**：存在业务侧轻量存储（可后续用 SQLite / PostgreSQL / 甚至结构化 JSON）。
 - **映射**：每个资产/作品通过 `content_ref`（或等价字段）关联到 RAGFlow 中的文档。
+- **流转**：作品只在外库走完四阶段；「已实践」时由系统在同一次请求里生成一条内库资产（`origin_work_id` 指回作品、`settled_asset_id` 反向指回），两个对象此后各自持有元数据（ADR-029）。
 
 ## 5. 业务数据层实现
 
-> 本节记录**已落地**的实现（随当前 HEAD 更新），依据 ADR-007（内容映射契约）、ADR-008（内外库字段拆分）、ADR-009（存储选型与分层）。表结构以 `src/server/db/schema.ts` 与 `drizzle/` 迁移为准；两者不一致时以代码和迁移为准，并修文档。
+> 本节记录**已落地**的实现（随当前 HEAD 更新），依据 ADR-007（内容映射契约）、ADR-008（内外库字段拆分）、ADR-009（存储选型与分层）、ADR-029（内容流转与资产生命周期）。表结构以 `src/server/db/schema.ts` 与 `drizzle/` 迁移为准；两者不一致时以代码和迁移为准，并修文档。
 
 ### 5.1 分层与职责
 
@@ -95,7 +96,7 @@ Knowledge Graph (LightRAG)
 
 | 表 | 承担什么 | 要点 |
 |----|----------|------|
-| **`objects`** | 资产与作品的业务主表，两者**同表**、由 `type`（`asset` / `work`）区分 | 作品才有 `category_code`、`status`、`source_note`，资产 `status` / `source_note` 恒为 `NULL`、分类可空；`category_code` 是指向 `categories(code)` 的**外键**（ADR-023），作品必填、资产可空；`tags` / `categories` JSON 列已删除，标签走向 `object_tags`；`library` / `source` / `origin` 三个正交字段按 ADR-008 拆分；软删除走 `deleted_at`，不物理删行；`revision` 作乐观锁；索引为 `(type, status)`、`library`、`updated_at` |
+| **`objects`** | 资产与作品的业务主表，两者**同表**、由 `type`（`asset` / `work`）区分 | 作品才有 `category_code`、`status`、`source_note`，资产 `status` / `source_note` 恒为 `NULL`、分类可空；`category_code` 是指向 `categories(code)` 的**外键**（ADR-023），作品必填、资产可空；`tags` / `categories` JSON 列已删除，标签走向 `object_tags`；`library` / `source` / `origin` 三个正交字段按 ADR-008 拆分，**但 `work` 的 `library` 恒为 `external`**（ADR-029）；作品专属列 `published_at` / `practiced_at` / `practice_metrics` / `settled_asset_id`，资产专属列 `source_type` / `ai_status` / `ai_score` / `ai_score_detail` / `value_level` / `value_scores` / `value_assessed_at` / `use_count` / `last_used_at` / `origin_work_id`，两侧互斥由 CHECK 钉死；软删除走 `deleted_at`，不物理删行；`revision` 作乐观锁；索引为 `(type, status)`、`library`、`updated_at`、`(type, ai_status)`、`(type, value_level)`，以及 `origin_work_id` 上的**部分唯一索引**（一个作品最多沉淀出一条资产） |
 | **`content_refs`** | 业务对象与 RAGFlow 文档之间的映射，独立成表而非 JSON 字段（ADR-007） | `provider` 固定为 `ragflow`（单一内容底座）；`document_id` 是**可变指针**，`content_key` 才是幂等键；`role` 为 `primary` / `attachment`，用部分唯一索引保证**每个对象最多一个有效主引用**；`parse_status` 与 `sync_state` 分别跟踪解析进度和同步对账 |
 | **`library_events`** | 跨库迁移的审计流水 | 记录 `from_library` / `to_library` / `reason` / `actor_sub`；`reason` 必填，因为「内库 = 已验证」是承诺，必须可追溯；与对象更新**同事务**写入，不出现「库别已变但没有记录」 |
 | **`sync_jobs`** | 内容同步的 outbox | 内容变更即入队（`action` 为 `upsert` / `delete`），`state` 走 `pending → running → done / failed`，带 `attempts`、`last_error` 与可延迟的 `available_at`；索引 `(state, available_at)` 供 worker 取任务。落队与投递同属本期：`sync-service` 消费、进程内 worker 定时推进 |
@@ -103,20 +104,39 @@ Knowledge Graph (LightRAG)
 | **`tags`** | 标签词表 | `normalized`（全角转半角、空白压缩、小写）**唯一**，查重与合并都按它；`label` 保留首次创建时的写法；重命名只改这一行，因为 `object_tags` 存的是 `tag_id` |
 | **`object_tags`** | 对象 ↔ 标签的多对多链接 | 复合主键 `(object_id, tag_id)`，两侧外键级联删除；**软删对象保留链接**，使用次数靠 `join objects ... deleted_at IS NULL` 排除，否则「看不见的引用」会挡住标签删除 |
 
-### 5.3 两条 CHECK 约束（数据库兜底）
+### 5.3 CHECK 约束（数据库兜底）
 
-规则在领域层与数据库里**各实现一次**，两层都不能省：应用层给可读错误，数据库是最后防线。
+规则在领域层与数据库里**各实现一次**，两层都不能省：应用层给可读错误，数据库是最后防线。ADR-029 落地后，约束从「两条」变成下面几条，核心是把「作品只在外库」和「内库资产必有等级」变成写不进去的硬规则。
 
 ```sql
 -- 资产无 status：status 只属于作品（ADR-008）
 CONSTRAINT "objects_status_only_for_work" CHECK(type = 'work' OR status IS NULL)
 
--- 外库作品不得直接 practiced：必须先迁移到内库（ADR-008）
-CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND status = 'practiced'))
+-- 作品只存在于外库（ADR-029；取代旧的 objects_external_not_practiced）
+CONSTRAINT "objects_work_must_be_external" CHECK(type = 'asset' OR library = 'external')
+
+-- practiced 只可能出现在外库作品上（与上一条重叠，作廉价护栏）
+CONSTRAINT "objects_practiced_requires_external"
+  CHECK(status IS NULL OR status <> 'practiced' OR library = 'external')
+
+-- 规格 v2.0 规则 4：内库资产必须有 5 维分与等级（ADR-029）
+CONSTRAINT "objects_internal_asset_requires_value" CHECK(
+  type <> 'asset' OR library <> 'internal'
+  OR (value_level IS NOT NULL AND value_scores IS NOT NULL AND value_assessed_at IS NOT NULL))
+
+-- 作品专属列 / 资产专属列互斥（ADR-029 新增字段）
+CONSTRAINT "objects_work_only_fields" CHECK(type = 'work' OR (
+  published_at IS NULL AND practiced_at IS NULL
+  AND practice_metrics IS NULL AND settled_asset_id IS NULL))
+CONSTRAINT "objects_asset_only_fields" CHECK(type = 'asset' OR (
+  source_type IS NULL AND ai_status IS NULL AND ai_score IS NULL AND ai_score_detail IS NULL
+  AND value_level IS NULL AND value_scores IS NULL AND value_assessed_at IS NULL
+  AND use_count = 0 AND last_used_at IS NULL AND origin_work_id IS NULL))
 ```
 
-- 第一条对应 `src/domain/objects.ts` 里 `AssetObject.status: null` 的类型约束，以及仓储在写入前对「资产携带 status / format / sourceNote」的拒绝。
-- 第二条对应 `src/domain/workflow.ts` 的 `canTransition` / `assertTransition`：状态只能 `draft → finished → published → practiced` 逐级前进，不允许跳级或回退，且 `practiced` 在 `library = 'external'` 时被拒绝。
+- 第 1 条对应 `src/domain/objects.ts` 的 `AssetObject.status: null`，以及仓储拒绝「资产携带 status / sourceNote」的写入。
+- 第 2、3 条对应 `src/domain/workflow.ts` 的 `canTransition` / `assertTransition`（`practiced` 只在外库成立）与 `object-service.createObject`（作品不能建在内库）、`changeLibrary`（作品不能迁入内库）。旧约束 `objects_external_not_practiced` 的语义正好相反，已随迁移 `0010_asset_pipeline.sql` 撤除。
+- 第 4 条是四个入库入口（AI 高分自动、人工复核通过、实践结算、数据迁移）的共同断言：服务层在**同一事务**内写 `value_level` / `value_scores` / `value_assessed_at`，数据库再兜一次，防止崩溃或绕过服务层的直写留下「进了内库却没评估」的资产。
 - 约束被触发时，仓储统一经 `sqlite-errors.ts` 把驱动报错翻译成领域错误：`CHECK constraint failed` 与 `NOT NULL constraint failed` → `CONSTRAINT_VIOLATION`（HTTP 422），`UNIQUE constraint failed` 与 `FOREIGN KEY constraint failed` → `CONFLICT`（HTTP 409）。上层不必感知 SQLite 报错文本；前三种的 `details.constraint` 带出被拒绝的约束名（外键冲突不带）。
 
 ### 5.4 一致性要点
@@ -124,7 +144,7 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **乐观锁**：`update` 与 `changeLibrary` 都要求传入的 `expectedRevision` 与库中 `revision` 一致，不一致抛 `CONFLICT`，避免读-改-写覆盖。
 - **身份与指针分离**：`content_refs` 的 upsert 以 `(dataset_id, content_key)` 认回记录，再更新 `document_id`。RAGFlow 更新正文是「删除 + 重传」，`document_id` 必变，不能当身份用。
 - **失败不回滚外部**：跨服务失败不靠分布式事务，靠 `sync_jobs` 落队 + 后续对账修正（ADR-007）。
-- **状态与内容解耦**：状态流转与跨库迁移只改业务元数据，不移动内容、不换 `document_id`（ADR-005 / ADR-007）。
+- **状态与内容解耦**：状态流转与跨库迁移只改业务元数据，不移动内容、不换 `document_id`（ADR-005 / ADR-007）。唯一的例外是「已实践」结算（ADR-029）：它在同一事务里**新建**一条内库资产，原作品的记录与内容引用都不动。
 
 ### 5.5 HTTP 接口层
 
@@ -192,6 +212,19 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
 - **各类型**：PDF 同源 iframe（过大降级下载）；Markdown 走 ADR-014 的零依赖解析器，不用 `dangerouslySetInnerHTML`；纯文本按 512 KB 截断并提示；图片内联；其它类型给下载卡片。解析状态与失败原因直接展示，失败归因（超时 / 连接 / 不支持格式 / 空内容）在 `src/lib/content-preview.ts`，附件可切换。
 - **响应式**：移动端全屏（`100dvh`），桌面居中；样式复用既有类，新增 `.preview-*` 只写尺寸与间距，不新增颜色字面量。
 
+### 5.12 内容流转与资产生命周期（ADR-029）
+
+- **两套状态，两件事**：作品用 `status`（`draft → finished → published → practiced`，逐级、不回退）表达推进到哪一步；资产不用 `status`，用 `library`（在哪）+ `ai_status`（AI 怎么处置的）+ `value_level`（值多少）表达。库别与状态的关系只有四条，全部由 CHECK 钉死：作品恒在外库；`practiced` 只出现在外库作品上；内库只有资产；内库资产必有 5 维分与等级。
+- **沉淀（已发布 → 已实践）**：`POST /api/objects/{id}/practice`，body `{ metrics?, expectedRevision? }`，权限 `object:write`。`asset-service.practiceWork` 先校验「作品 / 外库 / 已发布 / 未结算」，再调 `evaluateValueScores`（`fallbackOnError`），最后交给仓储 `settlePractice` 的**单个事务**：插入内库资产（`source_type=practiced_work`、`origin_work_id` 回指作品、`ai_status=approved`、`value_*` 三列）→ 复制标签 → 作品写 `status=practiced`、`practiced_at`、`practice_metrics`、`settled_asset_id` → 写审计 `object.practice` → 资产与作品各入队一条 `sync_jobs`。任一步失败整笔回滚；`settled_asset_id` 已有值时直接 409，不产生第二条资产。作品**留在外库、不自动归档**，历史内容仍可检索、预览、进图谱。
+- **AI 提炼**：`POST /api/objects/{id}/extract`，只接受外库 + 草稿 + 未归档的作品；产物是**外库资产**（`source_type=ai_extract`、`origin_work_id` 回指），随后逐条打分，单条打分失败只让那条停在 `unscored`，不回滚整批。
+- **六维打分**：`POST /api/objects/{id}/score`，只对外库资产。六维各 0–100，总分 `Σ(score × weight) / 100` 四舍五入（`aiWeightedTotal`，域层 `src/domain/value.ts`）；`≥75` → `auto_pass`，**同一事务**转内库并写 5 维评估；`60–74` → `needs_review`；`<60` → `low_value`。
+- **人工复核**：`POST /api/objects/{id}/review`，body `{ decision: "approve" | "reject", note?, expectedRevision? }`，只接受 `needs_review` 状态的资产。`approve` 转内库、立即评估、`ai_status=approved`；`reject` 记 `rejected` 留在外库。复核痕迹（决定、备注、时间、操作者）并进 `ai_score_detail.review`，不另建表。
+- **价值评估**：5 维各 1–5 分（实践验证强度 / 复用频率 / 可迁移性 / 独特性 / 时效性），总分 5–25，等级阈值 `≥21 S`、`≥16 A`、`≥11 B`、其余 `C`。`POST /api/objects/{id}/value-assess` 供内库资产主动重评；模型失败**直接报错**，不静默降级——用户点「重新评估」就是要新结果。
+- **兜底与来源标记**：所有「必须带等级」的写入点都用 `evaluateValueScores(..., { fallbackOnError: true })`；兜底给全维 2 分 → C 级，并在 `value_scores.source` 记 `fallback`，人工/模型评估记 `model`。规则 4 不因模型抖动而失守。
+- **创建**：作品不能建在内库（服务层 422 `WORK_MUST_BE_EXTERNAL`，CHECK 再兜）；内库资产可以在新建时直接选内库，服务层在写库前完成评估，与对象创建同一请求。
+- **跨库迁移**：`POST /api/objects/{id}/library` 只保留「内库 → 外库」（降级，需理由，写 `library_events` + `audit_events`）。作品迁入内库被拒（`WORK_MUST_BE_EXTERNAL`）；外库资产迁入内库同样被拒（`LIBRARY_ENTRY_DENIED`）——它只能经 AI 高分或人工复核进入内库，手工改库别会绕过打分与 5 维评估。
+- **存量迁移**：`drizzle/0010_asset_pipeline.sql` 把旧模型的内库作品转成内库资产（`source_type=practiced_work`、`origin_work_id` 回指、标签随资产复制、`settled_asset_id` 回填），原作品回到外库**保留**（不归档，`practiced` 作品继续出现在默认列表与检索里）；所有存量资产回填 `source_type`（`ai_extracted` → `ai_extract`，其余 → `external_direct`）、`ai_status=unscored`；**内库**存量资产等级统一兜底 C 并标 `value_scores.source=migration`，外库资产 `value_*` 保持 NULL。
+
 ## 6. 主要数据流
 
 1. **用户登录** → Logto 完成认证，前端获得身份。
@@ -201,8 +234,9 @@ CONSTRAINT "objects_external_not_practiced" CHECK(NOT (library = 'external' AND 
    - worker 消费 `sync_jobs`，把库别、归档等元数据同步进 RAGFlow `meta_fields`；删除对象时删除对应文档
 3. **检索** → 前端调 `GET /api/search`（默认 `mode=hybrid`）；词法层在 SQLite 里匹配元数据，语义层由 RAGFlow 召回正文，服务层按 `content_refs` 做归属、归档与库别过滤后按对象合并返回。首页预览走 `mode=lexical&limit=8`，不碰 RAGFlow。问答会话（多轮上下文 + 生成）尚未实现。
 4. **知识图谱构建 / 查询** → 手动 `POST /api/graph/sync` 把已解析主内容经 RAGFlow 分块原文送进 LightRAG；抽取完成后 `/graph` 读取实体邻域，或调 `POST /api/graph/query` 做图增强问答。
-5. **四阶段流转** → 仅更新业务侧状态；内容仍留在 RAGFlow，不随状态物理移动文件。
-6. **形态 / 标签维护** → 管理员改词表只写 `work_formats` / `tags` / `object_tags`，对象本身不动（改名是 O(1)）；只有「删除仍被引用的形态」会在同一事务里把引用迁到目标形态、`revision + 1` 并逐条入队 `sync_jobs`，worker 再把新 `format` 投递进 RAGFlow 的 `meta_fields`。标签的删除 / 合并按调用方选择处理 `object_tags`，不触碰内容底座。
+5. **四阶段流转** → 仅更新业务侧状态；内容仍留在 RAGFlow，不随状态物理移动文件。**「已发布 → 已实践」是唯一会新建对象的流转**：同一事务里创建内库资产并完成 5 维评估（ADR-029），原作品只改状态与元数据。
+6. **AI 提炼 / 打分 / 复核 / 价值评估** → 全部在服务端完成：提炼与打分走绑定模型（ADR-025），模型不可用时价值评估退回确定性兜底并标注来源；前端只读结果与按钮，不在浏览器里做任何判定。
+7. **形态 / 标签维护** → 管理员改词表只写 `work_formats` / `tags` / `object_tags`，对象本身不动（改名是 O(1)）；只有「删除仍被引用的形态」会在同一事务里把引用迁到目标形态、`revision + 1` 并逐条入队 `sync_jobs`，worker 再把新 `format` 投递进 RAGFlow 的 `meta_fields`。标签的删除 / 合并按调用方选择处理 `object_tags`，不触碰内容底座。
 
 ## 7. 与旧系统的关键差异
 

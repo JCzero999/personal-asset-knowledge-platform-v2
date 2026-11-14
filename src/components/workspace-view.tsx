@@ -5,8 +5,17 @@ import type { ContentRef } from "@/domain/content-ref";
 import { buildCategoryLabelMap } from "@/lib/category-labels";
 import { statusLabels } from "@/lib/object-labels";
 import {
+  hasLifecycleFilters,
+  lifecycleChips,
+  readAiStatus,
+  reviewStatusFilterLabels,
+  withLifecycleParams,
+  type LifecycleFilters,
+} from "./lifecycle";
+import {
   activeFilterChips,
   buildWorkspaceHref,
+  defaultWorkspaceFilters,
   hasActiveFilters,
   LIST_LIMIT,
   sortLabels,
@@ -96,11 +105,25 @@ function Overview({
   const total = allObjects.length;
   const percentOf = (count: number) => (total === 0 ? 0 : Math.round((count / total) * 100));
 
-  const overview = [
-    { label: "全部内容", value: counts.total, icon: "inbox" as IconName },
-    { label: "资产", value: counts.assets, icon: "archive" as IconName },
-    { label: "作品", value: counts.works, icon: "workflow" as IconName },
-    { label: "本周新增", value: weeklyCount, icon: "clock" as IconName },
+  const needsReview = allObjects.filter(
+    (object) => object.type === "asset" && readAiStatus(object) === "needs_review",
+  ).length;
+  const reviewHref = withLifecycleParams(
+    buildWorkspaceHref(defaultWorkspaceFilters, { type: "asset", library: "external" }),
+    { aiStatus: "needs_review", valueLevel: null },
+  );
+
+  const overview: Array<{
+    label: string;
+    value: number;
+    icon: IconName;
+    href?: string;
+  }> = [
+    { label: "全部内容", value: counts.total, icon: "inbox" },
+    { label: "资产", value: counts.assets, icon: "archive" },
+    { label: "作品", value: counts.works, icon: "workflow" },
+    { label: "本周新增", value: weeklyCount, icon: "clock" },
+    { label: "待人工复核", value: needsReview, icon: "alert", href: reviewHref },
   ];
 
   const todayLabel = `${now.getMonth() + 1}月${now.getDate()}日 · ${now.toLocaleDateString("zh-CN", { weekday: "long" })}`;
@@ -121,15 +144,32 @@ function Overview({
       </header>
 
       <section className="overview" aria-label="内容概览">
-        {overview.map((item) => (
-          <div className="overview-item" key={item.label}>
-            <span className="overview-icon"><Icon name={item.icon} size={19} /></span>
-            <div className="overview-copy">
-              <strong>{item.value}</strong>
-              <span>{item.label}</span>
+        {overview.map((item) => {
+          const body = (
+            <>
+              <span className="overview-icon"><Icon name={item.icon} size={19} /></span>
+              <div className="overview-copy">
+                <strong>{item.value}</strong>
+                <span>{item.label}</span>
+              </div>
+            </>
+          );
+
+          return item.href ? (
+            <Link
+              className="overview-item overview-link"
+              href={item.href}
+              key={item.label}
+              aria-label={`${item.label} ${item.value} 条，进入列表查看`}
+            >
+              {body}
+            </Link>
+          ) : (
+            <div className="overview-item" key={item.label}>
+              {body}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </section>
 
       <div className="dashboard-grid overview-grid">
@@ -212,9 +252,21 @@ function Overview({
   );
 }
 
-function listHeading(filters: WorkspaceFilters): { title: string; note: string } {
+function listHeading(filters: WorkspaceFilters, lifecycle: LifecycleFilters): { title: string; note: string } {
   if (filters.archived === "only") {
     return { title: "已归档", note: "归档不占工作台，取消归档后回到在用" };
+  }
+  if (lifecycle.aiStatus === "needs_review") {
+    return { title: "待人工复核", note: "AI 打分落在 60–74，等你决定去留" };
+  }
+  if (lifecycle.aiStatus) {
+    return {
+      title: reviewStatusFilterLabels[lifecycle.aiStatus],
+      note: "按 AI 评分结果筛选",
+    };
+  }
+  if (lifecycle.valueLevel) {
+    return { title: `${lifecycle.valueLevel} 级资产`, note: "按五维价值评估筛选" };
   }
   if (filters.q) {
     return { title: "搜索结果", note: `关键字「${filters.q}」` };
@@ -239,6 +291,7 @@ export function WorkspaceView({
   allObjects,
   archivedObjects,
   filters,
+  lifecycle = { aiStatus: null, valueLevel: null },
   selected,
   selectedRefs,
   vocabulary,
@@ -249,6 +302,8 @@ export function WorkspaceView({
   allObjects: BusinessObject[];
   archivedObjects: BusinessObject[];
   filters: WorkspaceFilters;
+  /** 复核状态 / 价值等级筛选，与主筛选共用 URL。 */
+  lifecycle?: LifecycleFilters;
   selected: BusinessObject | null;
   selectedRefs: ContentRef[];
   /** 词表快照：列表、详情、新建面板、筛选与目录共用同一份（ADR-016）。 */
@@ -280,14 +335,15 @@ export function WorkspaceView({
     },
   };
 
-  const filtersActive = hasActiveFilters(filters);
-  const heading = listHeading(filters);
-  const conditions = activeFilterChips(filters);
+  const lifecycleActive = hasLifecycleFilters(lifecycle);
+  const filtersActive = hasActiveFilters(filters) || lifecycleActive;
+  const heading = listHeading(filters, lifecycle);
+  const conditions = [...activeFilterChips(filters), ...lifecycleChips(lifecycle)];
   const hasConditions = Boolean(
-    filters.q || filters.type || filters.library || filters.status || filters.tag,
+    filters.q || filters.type || filters.library || filters.status || filters.tag || lifecycleActive,
   );
   // 点开一条时保留当前筛选，返回列表仍是同一份结果。
-  const listHref = buildWorkspaceHref(filters);
+  const listHref = withLifecycleParams(buildWorkspaceHref(filters), lifecycle);
   const listQuery = listHref.slice("/workspace".length);
 
   const emptyState = (
@@ -367,7 +423,7 @@ export function WorkspaceView({
           categoryLabels={categoryLabels}
         >
           <div className="record-filters">
-            <ObjectFilters filters={filters} tags={vocabulary.tags} compact />
+            <ObjectFilters filters={filters} lifecycle={lifecycle} tags={vocabulary.tags} compact />
           </div>
         </RecordList>
       </section>

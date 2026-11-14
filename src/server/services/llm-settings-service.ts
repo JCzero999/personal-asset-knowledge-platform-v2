@@ -473,8 +473,35 @@ export function resolveLlmConfig(
   db: AppDatabase,
   deps: LlmSettingsDeps = {},
 ): LlmConfig {
+  return resolveLlmConfigWithSource(db, deps).config;
+}
+
+/** 配置来源：stored = 页面保存过；env = 只改了 .env；default = 从未配置。 */
+export type LlmConfigSource = "stored" | "env" | "default";
+
+/**
+ * 与 `resolveLlmConfig` 同源，额外告诉调用方「这份配置是真的被配置过，
+ * 还是内置默认值」。AI 提炼/打分据此区分「模型没绑」与「模型连不上」：
+ * 前者直接给可行动的中文提示，后者才值得发一次网络请求。
+ */
+export function resolveLlmConfigWithSource(
+  db: AppDatabase,
+  deps: LlmSettingsDeps = {},
+): { config: LlmConfig; source: LlmConfigSource } {
   const envPath = deps.envPath ?? defaultLightragEnvPath(deps.env);
-  return readStoredConfig(db, deps.secret) ?? readEnvConfig(envPath) ?? DEFAULT_LLM_CONFIG;
+  const stored = readStoredConfig(db, deps.secret);
+
+  if (stored) {
+    return { config: stored, source: "stored" };
+  }
+
+  const envConfig = readEnvConfig(envPath);
+
+  if (envConfig) {
+    return { config: envConfig, source: "env" };
+  }
+
+  return { config: DEFAULT_LLM_CONFIG, source: "default" };
 }
 
 export function updateLlmSettings(

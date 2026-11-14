@@ -2,9 +2,11 @@
  * 业务对象（资产 / 作品）的纯领域类型与取值集合。
  *
  * 本文件不引入任何 IO，也不依赖数据库或框架；持久化层负责把这些取值
- * 映射到 `objects` 表。规则本身（例如外库作品不能 practiced）由
- * `workflow.ts` 与数据库 CHECK 约束共同保证。
+ * 映射到 `objects` 表。规则本身（例如作品只能在外库、已实践必须立即沉淀）
+ * 由 `workflow.ts` / `value.ts` 与数据库 CHECK 约束共同保证。
  */
+
+import type { AiScoreDetail, ValueScores } from "./value";
 
 export const objectTypes = ["asset", "work"] as const;
 export type ObjectType = (typeof objectTypes)[number];
@@ -47,6 +49,31 @@ export type Category = string;
 export const workStatuses = ["draft", "finished", "published", "practiced"] as const;
 export type WorkStatus = (typeof workStatuses)[number];
 
+/** 资产来路（规格 v2.0 第 8 节）：AI 提炼 / 外部直入 / 作品实践沉淀。 */
+export const assetSourceTypes = ["ai_extract", "external_direct", "practiced_work"] as const;
+export type AssetSourceType = (typeof assetSourceTypes)[number];
+
+/**
+ * 外库资产的 AI 处置状态（规格第 5 节）。
+ * `approved` 只出现在内库（自动高分 / 人工通过 / 实践沉淀）。
+ */
+export const aiStatuses = [
+  "unscored",
+  "auto_pass",
+  "needs_review",
+  "low_value",
+  "approved",
+  "rejected",
+] as const;
+export type AiStatus = (typeof aiStatuses)[number];
+
+/** 内库资产价值等级（规格第 6 节）。 */
+export const valueLevels = ["S", "A", "B", "C"] as const;
+export type ValueLevel = (typeof valueLevels)[number];
+
+/** 实践数据快照（跳出率等），原样存 JSON，不解释字段含义。 */
+export type PracticeMetrics = Record<string, unknown>;
+
 /** 公共字段；`status` / `sourceNote` 仅作品有值，资产恒为 null；分类两者都可有。 */
 export interface ObjectBase {
   /** ULID，业务唯一身份。 */
@@ -73,6 +100,29 @@ export interface ObjectBase {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+
+  // ---- 仅作品有值（资产恒为 null，数据库 CHECK 钉死） ----
+  /** 进入「已发布」的时间。 */
+  publishedAt: string | null;
+  /** 标记「已实践」的时间，与 settledAssetId 同时写入。 */
+  practicedAt: string | null;
+  practiceMetrics: PracticeMetrics | null;
+  /** 实践结算出的内库资产 id；一个作品最多结算一次。 */
+  settledAssetId: string | null;
+
+  // ---- 仅资产有值（作品恒为 null，useCount 恒为 0，数据库 CHECK 钉死） ----
+  sourceType: AssetSourceType | null;
+  aiStatus: AiStatus | null;
+  /** 六维加权总分 0–100。 */
+  aiScore: number | null;
+  aiScoreDetail: AiScoreDetail | null;
+  valueLevel: ValueLevel | null;
+  valueScores: ValueScores | null;
+  valueAssessedAt: string | null;
+  useCount: number;
+  lastUsedAt: string | null;
+  /** practiced_work 资产的来源作品 id。 */
+  originWorkId: string | null;
 }
 
 export interface AssetObject extends ObjectBase {
@@ -103,6 +153,18 @@ export function isCategory(value: unknown): value is Category {
 
 export function isLibrary(value: unknown): value is Library {
   return typeof value === "string" && (libraries as readonly string[]).includes(value);
+}
+
+export function isAiStatus(value: unknown): value is AiStatus {
+  return typeof value === "string" && (aiStatuses as readonly string[]).includes(value);
+}
+
+export function isValueLevel(value: unknown): value is ValueLevel {
+  return typeof value === "string" && (valueLevels as readonly string[]).includes(value);
+}
+
+export function isAssetSourceType(value: unknown): value is AssetSourceType {
+  return typeof value === "string" && (assetSourceTypes as readonly string[]).includes(value);
 }
 
 export function isObjectType(value: unknown): value is ObjectType {

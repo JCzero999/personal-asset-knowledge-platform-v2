@@ -7,6 +7,9 @@ import type { WorkStatus } from "./objects";
  *
  * 迁移关系写成显式的「来源 → 允许目标」表，不依赖任何顺序数组；
  * `workStatusOrder` 只用于界面渲染顺序，不能拿来判断合法性。
+ *
+ * ADR-029 取代 ADR-008 的一条：作品只存在于外库，`published → practiced`
+ * 是用户在看完数据后的手动确认，并由服务层在同一事务里立即沉淀为内库资产。
  */
 
 export interface TransitionContext {
@@ -42,8 +45,8 @@ export function canTransition(
     return false;
   }
 
-  // 外库作品不得直接 practiced：必须先「迁移到内库」（ADR-008）。
-  if (to === "practiced" && context.library === "external") {
+  // 「已实践」只能发生在作品唯一所在的库（外库）里（ADR-029）。
+  if (to === "practiced" && context.library !== "external") {
     return false;
   }
 
@@ -62,10 +65,10 @@ export function assertTransition(
     });
   }
 
-  if (to === "practiced" && context.library === "external") {
+  if (to === "practiced" && context.library !== "external") {
     throw new DomainError(
-      "EXTERNAL_LIBRARY_PRACTICED",
-      "外库作品不能直接标记为 practiced，请先迁移到内库",
+      "WORK_MUST_BE_EXTERNAL",
+      "作品只存在于外库，标记「已实践」必须在外库完成",
       { from, to, library: context.library },
     );
   }

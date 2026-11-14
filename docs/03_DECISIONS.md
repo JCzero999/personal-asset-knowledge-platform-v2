@@ -2460,6 +2460,104 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 
 ---
 
+## ADR-029：按《内容流转与沉淀规格说明 v2.0》重构资产生命周期
+
+- **状态**：已采纳
+- **日期**：2026-11-14
+- **依据**：`知识与资产平台作品流转流程V2.md`（规格 v2.0）第 3–7 节。规格与本 ADR 冲突时以规格为准；规格未写明的实现口径以本 ADR 为准。
+- **决策**：
+
+  1. **作品只存在于外库，状态链为 `draft → finished → published → practiced`；取代 ADR-008「外库作品不得直接 practiced」一条。**
+     - 作品的 `library` 恒为 `external`，不再有「把作品迁到内库」这个动作；内库只放 `type='asset'`。
+     - 现有状态链本身已经等于规格（`src/domain/workflow.ts:24` 的 `draft→finished→published→practiced`），**本轮改的是库别守卫，不是状态机**。
+     - 旧条款在代码里有两处守卫、在库里有一条 CHECK，必须**同时**改；只改一处会出现「界面能点、接口 422」或「接口放行、数据库拒写」：`src/domain/workflow.ts:45`（`canTransition`）、`:65`（`assertTransition`）的外库拦截，以及 `src/server/db/schema.ts:99` 的 `objects_external_not_practiced`。
+     - 撤除该 CHECK 后补一条新约束：`type = 'asset' OR library = 'external'`（作品只能在外库），否则「内库有作品」会以另一种形态复活。
+     - ADR-008 其余条款继续有效：`library` / `source` / `origin` 三正交；资产**不设** `status`（生命周期 = `library` + `archived`）；同一内容不同时属于两库，需要两处使用就产生两个对象。
+
+  2. **「已发布 → 已实践」= 一次单事务沉淀，不保留「已实践但未沉淀」的中间状态。**
+     - 用户在已发布作品上点「已实践」并提交数据快照，同一事务内依次完成四步：① 新建内库资产（`type='asset'`、`library='internal'`、`source_type='practiced_work'`、`origin_work_id=<作品 id>`）；② 立即执行 5 维价值评估，写入 `value_level` / `value_scores` / `value_assessed_at`；③ 作品置 `practiced`，写 `practiced_at`、`practice_metrics`；④ 作品写 `settled_asset_id`（**不归档**：作品继续出现在默认列表、词法检索、图谱与预览里）。
+     - 任一步失败整笔回滚，作品停在 `published`。**不允许**出现「作品已 `practiced` 但没有对应资产」或「资产已建但无等级」的行。
+     - **幂等**：`settled_asset_id` 非空即视为已沉淀，重复点击返回既有资产，不新建第二条；并发以该列的唯一索引兜底。
+     - **正文**：新资产复用作品的标题、描述与标签，原始正文仍留在作品上，通过 `origin_work_id` 回指（详情页提供「查看原文」）；不复制 `content_refs`——RAGFlow 文档 `(dataset_id, document_id)` 与 `(dataset_id, content_key)` 均有唯一约束，两个对象**不能共用一份 RAGFlow 文档**，复制引用会撞约束，重新上传正文则成本高且不可回滚。作品不归档，原内容照常可检索、可预览。
+
+  3. **AI 自动提炼只允许从外库草稿触发，产物是外库资产。**
+     - 触发条件：`type='work' AND status='draft'`；产物 `type='asset'`、`library='external'`、`source_type='ai_extract'`、`origin_work_id=<草稿 id>`。
+     - 提炼**不改变作品状态**（草稿仍是草稿），作品侧不生成任何「已提炼」标记。
+     - 同一草稿可多次提炼，每次生成一条新资产，不按 `origin_work_id` 去重——覆盖既有资产会抹掉人工编辑过的内容，代价高于多一条记录。
+     - 提炼完成即进入第 4 条的六维打分，不留「已提炼但未打分」的长期挂起状态。
+
+  4. **外库资产六维打分与三条出口。**
+     - 权重：内容完整度与结构 20 / 洞察深度与非显而易见性 25 / 可操作性与可落地性 20 / 与已有内库资产的关联互补 15 / 时效性与长期价值 10 / 来源可信度与验证痕迹 10。
+     - 输出**总分 + 各维得分 + 每维一句理由**，落 `ai_score` / `ai_score_detail`；人工复核要能直接读完就决策。
+     - **≥ 75**：`ai_status='auto_admitted'`，自动进内库（`library='internal'`），并**立即**执行第 5 条的 5 维评估。
+     - **60–74**：`ai_status='pending_review'`，留在外库待人工复核；通过 → `ai_status='manual_admitted'` + 进内库 + 立即评估；拒绝 → `ai_status='rejected'`，留在外库。
+     - **< 60**：`ai_status='low_value'`，留在外库观察或清理。
+     - 打分是资产的属性，入库后不丢：进内库后 `ai_score` / `ai_score_detail` 照常保留，便于回看当初凭什么放它进来。
+
+  5. **规格第 7 节第 4 条的硬保证：内库资产必须带 5 维分与等级。**
+     - 5 维：实践验证强度、复用频率 / 复利潜力、可迁移性、独特性 / 稀缺性、时效性 / 衰减速度，各 1–5 分；按综合表现定 S / A / B / C（S 核心、A 重要、B 一般、C 观察）。
+     - 写入内库的**四个入口**——AI 高分自动入库、人工复核通过、已实践沉淀、数据迁移——都必须在**同一事务内**完成评估。
+     - 数据库层加 CHECK 作为最终断言：`library <> 'internal' OR (value_level IS NOT NULL AND value_assessed_at IS NOT NULL)`。
+     - 模型不可用时用**确定性兜底**（按可观测信号给保守分：有无 `practice_metrics`、`use_count`、`source_type`、来源可信度），照常写 `value_level` 与 `value_scores`，并在 `value_scores.source` 记 `'ai' | 'fallback' | 'migration'`。**兜底不等于跳过**——没有等级的内库资产一律不许写入。
+
+  6. **数据迁移（一次性、单事务、可重入）。**
+     - 存量**内库作品**：每件生成一条内库资产（`source_type='practiced_work'`、`origin_work_id=<原作品>`），原作品写 `settled_asset_id`、回到外库；原作品 `status` 不改（只迁库，不伪造 `practiced`），也不归档。
+     - 存量**内库资产**：一律兜底 C 级，五维按来源与使用痕迹给保守初值，`value_assessed_at` = 迁移时间，`value_scores.source='migration'`。
+     - 存量**外库资产**：回填 `source_type`——`source='ai_extracted'` → `ai_extract`，其余 → `external_direct`；`ai_status` 置 `unscored`，交给下一轮打分。
+     - 迁移幂等：以 `settled_asset_id` / `origin_work_id` 判重，重复执行不得产出第二批资产。
+
+  7. **字段清单（只新增列，旧列不改名、不改值域）。**
+
+     | 表 / 对象 | 列 | 类型 | 空 | 说明 |
+     |-----------|----|------|----|------|
+     | 作品 | `published_at` | TEXT | ✓ | 进入 `published` 的时间 |
+     | 作品 | `practiced_at` | TEXT | ✓ | 用户确认「已实践」的时间 |
+     | 作品 | `practice_metrics` | TEXT(JSON) | ✓ | 数据快照（跳出率等），点「已实践」时提交 |
+     | 作品 | `settled_asset_id` | TEXT | ✓ | 沉淀出的内库资产 id，**UNIQUE**，外键 `objects(id)` |
+     | 资产 | `source_type` | TEXT | — | `ai_extract` / `external_direct` / `practiced_work`，NOT NULL |
+     | 资产 | `ai_status` | TEXT | — | `unscored` / `auto_admitted` / `pending_review` / `manual_admitted` / `rejected` / `low_value`，默认 `unscored` |
+     | 资产 | `ai_score` | INTEGER | ✓ | 0–100 |
+     | 资产 | `ai_score_detail` | TEXT(JSON) | ✓ | 六维得分 + 每维理由 |
+     | 资产 | `value_level` | TEXT | ✓ | `S` / `A` / `B` / `C`；内库资产必填（CHECK） |
+     | 资产 | `value_scores` | TEXT(JSON) | ✓ | 五维分 + `source` + `at` + `note` |
+     | 资产 | `value_assessed_at` | TEXT | ✓ | 最近一次评估时间；内库资产必填（CHECK） |
+     | 资产 | `use_count` | INTEGER | — | 默认 0；v1 只累加不消费 |
+     | 资产 | `last_used_at` | TEXT | ✓ | v1 只写不消费 |
+     | 资产 | `origin_work_id` | TEXT | ✓ | 来源作品 id，外键 `objects(id)` |
+
+     - `value_scores` 形状：`{ "practice": 1–5, "reuse": 1–5, "transferable": 1–5, "uniqueness": 1–5, "timeliness": 1–5, "source": "ai|fallback|migration", "at": "<ISO>", "note": "…" }`。
+     - **`source` 与 `source_type` 是两件事，不要合并**：`objects.source`（`handwritten` / `ai_extracted`）是 ADR-008 的「谁写的」，值域不动；`source_type` 是「从哪条路径进来」。同一次写入要保证二者一致：`practiced_work` → `source='handwritten'`；`ai_extract` → `source='ai_extracted'`；`external_direct` 按导入来源取值。
+
+  8. **动态调整列为后续迭代，字段先留。**
+     - 规格 6.3 的三条——调用次数显著上升 → 提「复用频率」分；长期未调用 → 降级提醒或进观察区；新实践数据 → 重算「实践验证强度」——v1 **只落数据**（`use_count` / `last_used_at` 在打开预览、检索命中、被引用时 +1），**不做**自动升降级、不做观察区自动流转、不发提醒。
+     - 何时触发、阈值多少、升降级是否写审计，由后续 ADR 定；本 ADR 只保证字段与写入点已就位，届时不需要再改表。
+
+- **与既有 ADR 的关系**：
+  - **ADR-008**：**取代**「外库作品不得直接 practiced」一条，以及由它推导出的「先迁移到内库」动作。三正交字段、资产无 `status`、同一内容不同时属两库、以「敢不敢直接用」判定，**全部保留**。新增的 `source_type` 不替代 `source`（见第 7 条）。
+  - **ADR-007**：沉淀产生的两个对象各持一份 RAGFlow 文档（`content_key` 唯一），不复用同一 `document_id`；outbox、对账与 `file_path` 溯源不变。
+  - **ADR-015 / 013**：作品归档后默认不出现在工作台列表；批量归档 / 导出 / 删除的口径不变。
+  - **ADR-011**：新资产与原作品同属一个 `owner_sub`，图谱与检索的账号过滤不变。
+  - **00_SCOPE 第 3 节**：「资产 + 四阶段工作流」的表述要同步拆成「作品状态链」与「资产库别」两件事，随实现一并改；本 ADR 只登记该改动，不改 SCOPE 正文。
+
+- **原因**：
+  1. 旧模型把「迁移到内库」当作常规动作，但它问的和「已实践」是同一个问题——「这条内容验证到能复用了么」。同一个判断让用户输入两次，必然出现「点了已实践、忘了迁移」的半截状态，而半截状态没有任何字段能表达。
+  2. 「作品带状态、资产不带状态」本来就是 ADR-008 的清晰划分；规格 v2.0 只是把作品从内库挪出去，让两套状态机各归其位，不需要引入第三套概念。
+  3. 「已实践即沉淀」把价值评估放在用户刚看完数据、判断最准的那一刻，评估质量高于事后补录。
+  4. 打分与评估都依赖模型，但「模型不可用」不能变成「资产无等级」——那直接违反规格第 7 节第 4 条。兜底 + 来源标记是唯一能同时满足「必须分级」与「分级可信度可辨」的做法。
+
+- **后果**：
+  - **界面**：「迁移到内库」按钮与迁移理由输入框下线，替换为已发布作品上的「标记已实践」（附数据快照表单）。`src/components/object-actions.tsx:329` 的提示文案、`docs/09_USER_GUIDE.md:148` 与 `:157` 的教程段落随之作废。
+  - **数据形态**：内库不再有 `type='work'`；任何按 `library='internal'` 统计「作品数」的查询要改成按 `type` 过滤。
+  - **写入变重**：一次「已实践」= 建资产 + 写 RAGFlow + 5 维评估，响应时间高于旧的纯状态迁移；界面必须有进行中状态，失败可重试（幂等）。
+  - **降级是静默但留痕的**：模型不可用时资产照常入库，靠 `value_scores.source='fallback'` 区分；详情页需要一处能看见「兜底评估」的入口，否则这条痕迹等于没留。
+  - **兜底会让一批资产集中在 C**，短期等级分布失真；这是刻意的保守选择（先入库、后校准），第 8 条的动态调整是它的出口。
+  - **硬约束换位**：撤除 `objects_external_not_practiced` 后，改由两条新 CHECK（作品只在外库、内库资产必有等级）承担「非法组合写不进去」的保证。
+
+- **影响范围**：`src/server/db/schema.ts`（新增列 + 两条 CHECK，撤除 `objects_external_not_practiced`）、新增迁移、`src/domain/workflow.ts`、`src/domain/objects.ts`、`src/server/services/object-service.ts`（沉淀事务）、新增 AI 打分与价值评估服务、`src/components/object-actions.tsx`、`docs/00_SCOPE.md` 第 3 节、`docs/01_ARCHITECTURE.md:114`、`docs/02_PHASES.md`、`docs/06_API.md`、`docs/09_USER_GUIDE.md`、`docs/05_CHANGELOG.md`
+- **变更**：本 ADR 推翻 ADR-008 的一条子句，其余条款继续有效。如后续再改生命周期规则，必须新增 ADR 并同步 `00_SCOPE.md` 与 `01_ARCHITECTURE.md`（ADR-008 的变更条款继续适用）。
+
+---
+
 ## ADR-016 ~ 018 实施风险清单
 
 > 按严重程度排序。前 3 条必须在动手前处理完，其余随实现跟进。
@@ -2529,6 +2627,7 @@ v1.5 记的是「生产构建通过、运行时未实测」。本节把那条「
 | ADR-026 | 知识内容预览（弹窗） | 已采纳·已实施（2026-11-13，工作台与详情两入口） | 统一 `ContentPreviewDialog`（原生 `<dialog>`），工作台 / 检索 / 图谱 / 首页四入口；打开状态 `?preview=<id>` 进 URL；复用现有三接口，仅新增 `?inline=1` 切换 `Content-Disposition`；Markdown 走 ADR-014 的零依赖解析器，PDF 同源 iframe（>20MB 降级下载），文本 512KB 上限；仅需 `object:read` |
 | ADR-027 | /graph 全屏星图画布 + 液态玻璃浮层 | 已采纳·已实施（2026-11-13） | 内容区取消 1180 上限，画布铺满作背景层；**控制卡贴左上（`min(880px, 100% − rail − 48px)`）+ 详情卡贴右上（356/60%）顶边同线、间距 ≥16px**；玻璃 = 72% 底 + `blur(14px) saturate(130%)` + 22% 边框 + 1px 内高光 + **指针径向高光 + 160° 斜向反光 + ≤3° 倾斜**（9 令牌，新增 6 个写在 `[data-surface="graph"]` 块内，字面量基线仍 26）；玻璃内禁用主题 `--text-*`；不支持模糊 / `low` / reduced-transparency 退 92% 实色；移动端单行控制条 + 底部抽屉，画布层 `inset: 0` 只缩进 2D 舞台盒子；`check:theme` 基线 26 与 ADR-022 的档位、DPR、draw call 预算均不变 |
 | ADR-028 | 图谱问答改用绑定模型 + 点选语义统一 + 页底搜索卡 + 相关文档入口 | 已采纳·实施中（2026-11-14） | 点选只有 `handleSelect` 一个入口，3D 意图回传 `shiftKey`；LightRAG 只出上下文（`only_need_context`，失败回落 `response`），答案由 ADR-025 绑定模型生成，响应带 `model`/`provider`，密钥仅服务端；无引用即空答案（ADR-011）；右下问答卡改为页底居中玻璃搜索卡 + 上方答案卡，移动端抽屉打开时隐藏；新增 `GET /api/graph/entity/documents` 由 `file_path` 反查原文（≤10 条、账号过滤）；材质令牌与字面量基线 26 不变 |
+| ADR-029 | 按规格 v2.0 重构资产生命周期 | 已采纳（2026-11-14） | 作品只在外库，`draft→finished→published→practiced`；「已实践」单事务自动沉淀内库资产（`source_type=practiced_work` + 5 维评级，作品保留外库不归档），无中间态。AI 提炼仅草稿触发、产物为外库资产；六维打分（20/25/20/15/10/10）≥75 自动入库、60–74 人工复核、<60 留外库；内库资产强制 5 维分与 S/A/B/C，模型不可用走确定性兜底并标 `value_scores.source`；迁移存量内库作品转资产、存量资产兜底 C；动态调整留待后续 |
 
 ---
 

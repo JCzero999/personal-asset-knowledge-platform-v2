@@ -73,10 +73,13 @@
 | `NOT_FOUND` | 404 | 对象不存在、已删除、或不属于当前用户；用户 id 不存在；RAGFlow 返回 404 |
 | `CONFLICT` | 409 | 乐观锁版本不一致（`expectedRevision` 与库中 `revision` 不符）；唯一约束冲突；RAGFlow 返回 409 |
 | `INVALID_TRANSITION` | 409 | 作品状态迁移不在允许的迁移表中（跳级、回退、原地迁移） |
-| `EXTERNAL_LIBRARY_PRACTICED` | 409 | 外库作品被要求变为 `practiced`，或已 `practiced` 的作品要迁回外库 |
+| `WORK_MUST_BE_EXTERNAL` | 409 | 作品只能存在于外库：把作品建在内库、迁进内库，或在内库标记「已实践」（ADR-029） |
+| `LIBRARY_ENTRY_DENIED` | 409 | 外库资产想通过迁移接口进内库。合法入口只有 AI 高分、人工复核、实践结算三条（见 4.7） |
+| `EXTRACT_DUPLICATE` | 409 | 同一草稿已经提炼过资产，`details.assetId` 指向已有那条（见 4.13） |
 | `CATEGORY_EXISTS` | 409 | 同名词表分类已存在（ADR-023，见 6.2） |
 | `CATEGORY_ARCHIVED` | 409 | 命中的分类已停用，或迁移目标已停用（ADR-023，见 6.2、6.4） |
 | `CONSTRAINT_VIOLATION` | 422 | 数据库 CHECK 约束拒绝写入（服务层漏校验时的最后防线）；`details.reason = "LAST_OWNER"` 表示要移除或停用最后一个所有者（见 7.6） |
+| `NO_CONTENT` | 422 | 提炼时作品没有可读正文：没有内容引用，或正文还没解析出分块（见 4.13） |
 | `AUDIT_FAILED` | 500 | 审计写入失败，业务事务回滚（审计与业务写同一事务，见 7.8） |
 | `INTERNAL` | 500 | 未预期异常；RAGFlow 配置缺失、响应非 JSON、返回 5xx 或结构不符；日志记录原始错误，响应不暴露内部信息 |
 
@@ -100,7 +103,7 @@
 
 ## 2. 对象数据结构
 
-`GET` / `POST` / `PATCH` 及动作接口返回的都是同一个对象结构；`GET /api/objects` 的数组元素也与之**完全一致**（没有列表专用的裁剪字段）。资产与作品共用基础字段，作品多三个字段。
+`GET` / `POST` / `PATCH` 及动作接口返回的都是同一个对象结构；`GET /api/objects` 的数组元素也与之**完全一致**（没有列表专用的裁剪字段）。资产与作品共用基础字段，其余字段按 `type` 分成两组、互斥出现（ADR-029）：作品侧 `status` / `sourceNote` / `publishedAt` / `practicedAt` / `practiceMetrics` / `settledAssetId`，资产侧 `sourceType` / `aiStatus` / `aiScore` / `aiScoreDetail` / `valueLevel` / `valueScores` / `valueAssessedAt` / `useCount` / `lastUsedAt` / `originWorkId`。不属于自己那组的一律为 `null`（`useCount` 为 `0`），由数据库 CHECK 钉死。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -122,6 +125,20 @@
 | `category` | 作品：分类 code（非空）；资产：code 或 `null` | 分类（ADR-023 把原「作品形态」并入分类）。取值以 `GET /api/vocabulary` 的启用项为准，没有固定名单；不存在或已停用 → `404` |
 | `status` | 作品：`"draft" \| "finished" \| "published" \| "practiced"`；资产：`null` | 作品状态 |
 | `sourceNote` | 作品：string \| null；资产：`null` | 来源说明 |
+| `publishedAt` | 作品：string \| null；资产：`null` | 进入「已发布」的时间 |
+| `practicedAt` | 作品：string \| null；资产：`null` | 标记「已实践」的时间，与 `settledAssetId` 同时写入 |
+| `practiceMetrics` | 作品：object \| null；资产：`null` | 实践数据快照（平台 / 浏览量 / 跳出率 / 反馈摘要等），原样存 JSON，接口不解释字段 |
+| `settledAssetId` | 作品：string \| null；资产：`null` | 实践结算出的内库资产 id；非空即视为已结算，一个作品最多一条 |
+| `sourceType` | 资产：`"ai_extract" \| "external_direct" \| "practiced_work"`；作品：`null` | 资产的来路（AI 提炼 / 外部直入 / 作品实践沉淀） |
+| `aiStatus` | 资产：`"unscored" \| "auto_pass" \| "needs_review" \| "low_value" \| "approved" \| "rejected"`；作品：`null` | 六维打分的处置结果；`approved` 只出现在内库资产（高分自动 / 人工通过 / 实践沉淀） |
+| `aiScore` | 资产：number \| null；作品：`null` | 六维加权总分 0–100（服务端按权重计算） |
+| `aiScoreDetail` | 资产：object \| null；作品：`null` | 各维度得分与理由，复核痕迹并进 `review` 子对象 |
+| `valueLevel` | 资产：`"S" \| "A" \| "B" \| "C"` \| null；作品：`null` | 5 维价值等级；**内库资产必有值**（数据库 CHECK 兜底） |
+| `valueScores` | 资产：object \| null；作品：`null` | 5 维明细 + `level` + `source`（`model` / `fallback` / `migration`）+ `assessedAt` |
+| `valueAssessedAt` | 资产：string \| null；作品：`null` | 最近一次价值评估时间 |
+| `useCount` | 资产：number；作品恒为 `0` | 被调用次数（动态调整机制的字段预留，当前不自动累加） |
+| `lastUsedAt` | 资产：string \| null；作品：`null` | 最近调用时间（同上，预留） |
+| `originWorkId` | 资产：string \| null；作品：`null` | 这条资产从哪个作品来的：AI 提炼指回草稿，实践沉淀指回已实践作品 |
 
 作品响应示例：
 
@@ -131,7 +148,7 @@
   "type": "work",
   "title": "第一篇长文",
   "description": null,
-  "library": "internal",
+  "library": "external",
   "source": "handwritten",
   "origin": "self",
   "tags": ["长文"],
@@ -144,12 +161,79 @@
   "updatedAt": "2026-11-11T06:00:00.000Z",
   "deletedAt": null,
   "category": "article",
-  "status": "draft",
-  "sourceNote": null
+  "status": "published",
+  "sourceNote": null,
+  "publishedAt": "2026-11-12T02:00:00.000Z",
+  "practicedAt": null,
+  "practiceMetrics": null,
+  "settledAssetId": null,
+  "sourceType": null,
+  "aiStatus": null,
+  "aiScore": null,
+  "aiScoreDetail": null,
+  "valueLevel": null,
+  "valueScores": null,
+  "valueAssessedAt": null,
+  "useCount": 0,
+  "lastUsedAt": null,
+  "originWorkId": null
 }
 ```
 
-资产对象的 `status` / `sourceNote` 恒为 `null`，`category` 可为 `null`。
+资产响应示例（内库，实践沉淀产物）：
+
+```json
+{
+  "id": "01JBDEMO111111111111111111",
+  "type": "asset",
+  "title": "第一篇长文",
+  "description": null,
+  "library": "internal",
+  "source": "handwritten",
+  "origin": "self",
+  "tags": ["长文"],
+  "priority": "medium",
+  "archivedAt": null,
+  "libraryChangedAt": null,
+  "ownerSub": "mock-local-user",
+  "revision": 1,
+  "createdAt": "2026-11-13T06:00:00.000Z",
+  "updatedAt": "2026-11-13T06:00:00.000Z",
+  "deletedAt": null,
+  "category": "article",
+  "status": null,
+  "sourceNote": null,
+  "publishedAt": null,
+  "practicedAt": null,
+  "practiceMetrics": null,
+  "settledAssetId": null,
+  "sourceType": "practiced_work",
+  "aiStatus": "approved",
+  "aiScore": null,
+  "aiScoreDetail": null,
+  "valueLevel": "B",
+  "valueScores": {
+    "dimensions": [
+      { "key": "practice", "label": "实践验证强度", "score": 3, "reason": "有浏览量数据，尚未形成方法" },
+      { "key": "reuse", "label": "复用频率 / 复利潜力", "score": 3, "reason": "可反复引用" },
+      { "key": "transferability", "label": "可迁移性", "score": 2, "reason": "偏具体场景" },
+      { "key": "uniqueness", "label": "独特性 / 稀缺性", "score": 4, "reason": "个人视角明显" },
+      { "key": "timeliness", "label": "时效性 / 衰减速度", "score": 4, "reason": "底层逻辑长期有效" }
+    ],
+    "average": 3.2,
+    "level": "B",
+    "model": "deepseek-chat",
+    "assessedAt": "2026-11-13T06:00:00.000Z",
+    "source": "model"
+  },
+  "valueAssessedAt": "2026-11-13T06:00:00.000Z",
+  "useCount": 0,
+  "lastUsedAt": null,
+  "originWorkId": "01JBDEMO000000000000000000"
+}
+```
+
+资产对象的 `status` / `sourceNote` 恒为 `null`，`category` 可为 `null`；作品对象反过来，资产侧那组字段恒为 `null`（`useCount` 为 `0`）。
 
 > 对象结构里**没有**内容字段。正文存在 RAGFlow，业务侧用 `content_refs` 记录映射；内容引用、原文下载与内容检索走独立接口（4.11、4.12、5.1），不塞进对象结构。
 
@@ -169,6 +253,11 @@
 | POST | `/api/objects/{id}/library` | 跨库迁移（内库 ↔ 外库） | 200 |
 | GET | `/api/objects/{id}/library` | 查询该对象的跨库迁移记录 | 200 |
 | POST | `/api/objects/{id}/archive` | 归档 / 取消归档 | 200 |
+| POST | `/api/objects/{id}/extract` | AI 从草稿作品提炼资产（产物落外库） | 201 |
+| POST | `/api/objects/{id}/practice` | 标记「已实践」，同事务沉淀内库资产 | 200 |
+| POST | `/api/objects/{id}/score` | 外库资产六维打分，按分数决定去向 | 200 |
+| POST | `/api/objects/{id}/review` | 人工复核待复核资产（通过 / 拒绝） | 200 |
+| POST | `/api/objects/{id}/value-assess` | 内库资产重做 5 维价值评估 | 200 |
 | POST | `/api/objects/{id}/content` | 上传 / 替换内容（multipart） | 201 |
 | GET | `/api/objects/{id}/content` | 列出对象的内容引用 | 200 |
 | GET | `/api/objects/{id}/content/{refId}` | 下载内容原文（二进制流） | 200 |
@@ -191,6 +280,7 @@
 | GET/POST/PATCH/DELETE/PUT | `/api/vocabulary/formats/{code}` | 旧路径 → `/api/vocabulary/categories/{code}`，只做 308 跳转（ADR-023） | 308 |
 | GET | `/api/graph/labels` | 图谱实体标签列表 | 200 |
 | GET | `/api/graph` | 实体邻域子图 | 200 |
+| GET | `/api/graph/entity/documents` | 某实体来源的本账号对象（≤10 条） | 200 |
 | POST | `/api/graph/sync` | 把对象内容同步进 LightRAG（最多 50 个） | 200 |
 | GET | `/api/graph/status` | 本系统图文档的抽取状态 | 200 |
 | POST | `/api/graph/retry` | 重新抽取失败对象（1–20 个） | 200 |
@@ -203,9 +293,11 @@
 | GET | `/api/logto/sign-in-callback` | 登录回调（浏览器） | 307 |
 | GET | `/api/logto/sign-out` | 退出并清会话（浏览器） | 307 |
 
-合计 **43 条**「方法 × 路径」接口：**40 条业务 / 系统** + **3 条 Logto 跳转**，分布在 **35 个 `route.ts` 文件**（35 条路径）上。43 与 35 的差额来自 7 个挂了多个方法的文件（多出 8 条）：`/api/objects`（GET + POST）、`/api/objects/{id}`（GET + PATCH + DELETE）、`/api/objects/{id}/content`（GET + POST）、`/api/objects/{id}/library`（GET + POST）、`/api/vocabulary/categories/{code}`（PATCH + DELETE）、`/api/vocabulary/tags/{id}`（PATCH + DELETE）、`/api/settings/llm`（GET + PUT）。
+合计 **47 条**「方法 × 路径」接口：**44 条业务 / 系统** + **3 条 Logto 跳转**，分布在 **39 个导出 JSON 接口的 `route.ts` 文件**上。47 与 39 的差额来自 7 个挂了多个方法的文件（多出 8 条）：`/api/objects`（GET + POST）、`/api/objects/{id}`（GET + PATCH + DELETE）、`/api/objects/{id}/content`（GET + POST）、`/api/objects/{id}/library`（GET + POST）、`/api/vocabulary/categories/{code}`（PATCH + DELETE）、`/api/vocabulary/tags/{id}`（PATCH + DELETE）、`/api/settings/llm`（GET + PUT）。
 
-另有 2 条**只做 308 跳转**的旧路径（`/api/vocabulary/formats`、`/api/vocabulary/formats/{code}`，见 6.9）：它们各接受 5 个方法，但语义只是跳到 `/api/vocabulary/categories*`，表中单列、**不计入** 43 条能力数。
+另有 2 条**只做 308 跳转**的旧路径（`/api/vocabulary/formats`、`/api/vocabulary/formats/{code}`，见 6.9）：它们各接受 5 个方法，但语义只是跳到 `/api/vocabulary/categories*`，表中单列、**不计入** 47 条能力数，也不在 39 个文件里。仓库里 `src/app/api` 下共 **41 个 `route.ts`**（39 + 这 2 个）。
+
+> 上表行数本轮按代码逐条重新核对：此前写的「43 条」把 2 条 308 旧路径也算进了能力数，实际导出 47 个处理方法。以后以「表格行数 − 2 条 308 行 = 47」为准。
 
 权限：除 `/api/health` 与 `/api/logto/*` 外，每个接口都先过 `requirePermission()`，所需权限键写在各行说明里，矩阵见 7.4；`/api/graph/*` 在 LightRAG 不可用时返回 500。
 
@@ -224,6 +316,8 @@
 | `type` | `asset` \| `work` | 按类型筛选；其他值 → 400 |
 | `library` | `internal` \| `external` | 按库别筛选；其他值 → 400 |
 | `status` | `draft` \| `finished` \| `published` \| `practiced` | 按作品状态筛选；其他值 → 400。资产 `status` 为 `null`，不会命中任何状态筛选 |
+| `aiStatus` | `unscored` \| `auto_pass` \| `needs_review` \| `low_value` \| `approved` \| `rejected` | 按资产的 AI 处置状态筛选；其他值 → 400。作品该项为 `null`，不会命中（见 4.14） |
+| `valueLevel` | `S` \| `A` \| `B` \| `C` | 按资产的价值等级筛选；其他值 → 400。作品该项为 `null`，不会命中（见 4.17） |
 | `q` | 字符串，trim 后 ≤ 100 字符 | 标题或描述包含该关键字；大小写不敏感（SQLite `LIKE` 语义，ASCII 字母不区分大小写）。`%` 与 `_` **按字面量匹配**，不会被当成通配符；超长 → 400 |
 | `category` | 字符串，≤ 64 字符 | 按对象的 `category` **code 精确匹配**（单值，ADR-023 起不再有分类数组）；传入未知 code 返回空数组；超长 → 400 |
 | `tag` | 字符串，≤ 64 字符 | 标签名称精确匹配：先按词表归一化（全角转半角、空白压缩、小写）再解析到 `tag_id`，`Tool` 与 ` tool ` 命中同一条；词表里没有该标签时返回空数组，不报错；超长 → 400 |
@@ -285,6 +379,8 @@
 规则：
 
 - **新建作品固定为 `draft`**，状态只能通过 `POST /api/objects/{id}/status` 迁移。
+- **作品的 `library` 只能是 `external`**（ADR-029）：传 `internal` → `409 WORK_MUST_BE_EXTERNAL`。内库只放资产，作品「已实践」时由结算自动生成那条内库资产。
+- **新建内库资产当场评估**：`type=asset` 且 `library=internal` 时，服务层在写库前完成 5 维评估，响应里直接带 `valueLevel` / `valueScores` / `valueAssessedAt`；模型不可用则走确定性兜底（C 级，`valueScores.source = "fallback"`）——「内库资产必有等级」不因模型抖动而破。外库资产的 `value_*` 三列保持 `null`，打分或复核后才会有值。
 - 不再接受旧字段 `format` / `categories` / `primaryCategory`，传了直接 400；资产的 `category` 可传 `null`；`sourceNote` 对资产无意义，会被忽略。
 - `id`、`revision`、时间戳、`ownerSub` 均由服务端生成，请求体中传入会被忽略。
 - 标签走词表（第 6 节）：`tags` 只接受**已存在**的标签，出现词表没有的名称 → 400 `TAG_NOT_FOUND`（`details.tag` 是原值），不会静默新建；要加新标签先调 6.5（`object:write` 即可内联创建）。同一对象里的重复标签（含全角 / 大小写变体）被去重而不是报错。
@@ -292,7 +388,7 @@
 
 **响应**：`201`，新建的完整对象。
 
-**主要错误**：`400`（字段缺失 / 类型错误 / 取值非法 / 作品带 `status` / 标签超 10 个或单项超 20 字 / 标签不在词表里 → `TAG_NOT_FOUND`）、`401`、`404`（`category` 不在词表里或已停用，`details.category`）。
+**主要错误**：`400`（字段缺失 / 类型错误 / 取值非法 / 作品带 `status` / 标签超 10 个或单项超 20 字 / 标签不在词表里 → `TAG_NOT_FOUND`）、`401`、`404`（`category` 不在词表里或已停用，`details.category`）、`409`（作品建在内库 → `WORK_MUST_BE_EXTERNAL`）。
 
 ---
 
@@ -385,9 +481,13 @@
 draft ──► finished ──► published ──► practiced
 ```
 
-额外规则：**外库（`external`）作品不能进入 `practiced`**，必须先迁到内库。数据库 CHECK `objects_external_not_practiced` 作为最后防线。**已归档作品不能推进状态**：归档表示退出工作台，先 `POST /api/objects/{id}/archive` 传 `{"archived": false}` 取消归档，再按原状态机继续。
+额外规则：
 
-**响应**：`200`，状态已更新、`revision + 1` 的对象。
+- **`to = practiced` 不是普通状态迁移**：该值仍被接受，但接口内部转交实践结算（4.14）处理——同事务创建内库资产、完成 5 维评估、写 `practiced_at` 与 `settled_asset_id`，响应返回**作品对象**（不是 `{ work, asset }`）。想同时带上实践数据快照、或要拿到新资产，直接调 `POST /api/objects/{id}/practice`。
+- 作品只存在于外库（ADR-029），所以 `practiced` 只可能发生在外部库；库别不是 `external` 时 → `409 WORK_MUST_BE_EXTERNAL`。数据库 CHECK `objects_practiced_requires_external` 是最后防线。
+- 已归档作品不能推进状态：归档表示退出工作台，先 `POST /api/objects/{id}/archive` 传 `{"archived": false}` 取消归档，再按原状态机继续。
+
+**响应**：`200`，状态已更新、`revision + 1` 的对象；`to = practiced` 时返回结算后的作品（含 `settledAssetId`）。
 
 **主要错误**：
 
@@ -397,14 +497,14 @@ draft ──► finished ──► published ──► practiced
 | 401 `UNAUTHORIZED` | 未登录 |
 | 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
 | 409 `INVALID_TRANSITION` | 跳级、回退、或与当前状态相同（`details` 带 `from` / `to`，跳级时另带 `allowed`） |
-| 409 `EXTERNAL_LIBRARY_PRACTICED` | 外库作品试图变为 `practiced` |
-| 409 `CONFLICT` | 版本号不一致，或作品已归档（`details.archivedAt`） |
+| 409 `WORK_MUST_BE_EXTERNAL` | 目标状态是 `practiced` 但作品不在外库 |
+| 409 `CONFLICT` | 版本号不一致；作品已归档（`details.archivedAt`）；`to = practiced` 但当前不是 `published`；或该作品已经结算过（`details.settledAssetId`） |
 
 ---
 
 ### 4.7 `POST /api/objects/{id}/library`
 
-跨库迁移（内库 ↔ 外库）。
+跨库迁移。ADR-029 之后这条路径**只剩「内库 → 外库」一个方向**：进内库的三条出口是 AI 高分、人工复核、实践结算，手工改库别会绕过打分与 5 维评估。
 
 **请求体**：
 
@@ -418,13 +518,14 @@ draft ──► finished ──► published ──► practiced
 
 - `reason` 必填，因为「内库 = 已验证」是承诺，理由要写入 `library_events` 审计表。
 - 库别更新与审计写入在**同一事务**内完成，不会出现「库别已变但没有记录」；数据库另有 `from_library <> to_library` CHECK（迁移 `0004`）兜底，同库记录写不进去。
-- 已 `practiced` 的作品不能迁回外库（`EXTERNAL_LIBRARY_PRACTICED`，409）。
+- 作品不能迁进内库：`409 WORK_MUST_BE_EXTERNAL`。作品只存在于外库，内库资产只能由实践结算生成。
+- 外库资产不能迁进内库：`409 LIBRARY_ENTRY_DENIED`（`details.aiStatus` 给出当前 AI 处置状态）。要么让它跑完打分（4.14），要么走人工复核（4.15）。
 - 目标库与当前库相同 → 400「对象已处于目标库，无需迁移」。
 - 迁移只改元数据，不移动内容、不换内容引用；RAGFlow `meta_fields` 里的 `library` 由 worker 异步同步（5.2），因此 RAGFlow 侧的库别标记**有延迟**。
 
 **响应**：`200`，更新后的对象（`library`、`libraryChangedAt` 已变，`revision + 1`）。
 
-**主要错误**：`400`（`to` 非法 / 缺 `reason` / 同库迁移 / `expectedRevision` 非法）、`401`、`404`、`409`（`EXTERNAL_LIBRARY_PRACTICED` 或 `CONFLICT`）。
+**主要错误**：`400`（`to` 非法 / 缺 `reason` / 同库迁移 / `expectedRevision` 非法）、`401`、`404`、`409`（`WORK_MUST_BE_EXTERNAL` / `LIBRARY_ENTRY_DENIED` / `CONFLICT`）。
 
 ---
 
@@ -673,6 +774,286 @@ curl -s -D headers.txt -o downloaded.bin \
 | 500 `INTERNAL` | JSON 信封 | 缺 `RAGFLOW_BASE_URL` / `RAGFLOW_API_KEY`；RAGFlow 5xx、超时或网络错误 |
 
 > `refId` 的归属会在取文件前校验，拿别的对象的 `refId` 拼到自己的对象下只会得到 404。
+
+---
+
+### 4.13 `POST /api/objects/{id}/extract`
+
+用 AI 把**外库作品的草稿**拆成若干知识资产。这是「草稿 → 外库资产」这一步，不改变作品状态。
+
+**权限**：`object:write`。
+
+**路径参数**：`id` —— 作品 ULID。
+
+**请求体**：无字段。传 `{}` 或不传均可（体只校验是合法 JSON 对象）。
+
+行为：
+
+1. 校验对象是作品、在外库、状态为 `draft`，拿不到就 409（三种情况用不同提示语，`details` 带当前 `type` / `library` / `status`）。
+2. 读作品的已解析正文；没有内容引用或还没解析出分块 → `422 NO_CONTENT`。
+3. 调绑定的模型抽候选资产（标题 / 描述 / 标签 / 正文）。**产物一律落外库**：`library = "external"`、`source = "ai_extracted"`、`sourceType = "ai_extract"`、`aiStatus = "unscored"`、`originWorkId` 指回这条草稿；分类、标签、优先级沿用作品，标签只保留词表里已有的。
+4. 逐条立即打分（同 4.15）。单条打分失败只让那条停在 `unscored`，不回滚整批、不影响其余资产。
+5. 幂等：同一草稿已有未删除的提炼产物时直接拒绝（删掉旧资产后可重新提炼）——覆盖会抹掉人工编辑过的内容。
+
+**响应**：`201`，`{ "assets": [ ...对象 ] }`，元素结构见第 2 节（内库转正的那条在数组里就是内库资产）。模型没抽出候选时返回 `{ "assets": [] }`，不是错误。
+
+```json
+{
+  "assets": [
+    {
+      "id": "01JBDEMO222222222222222222",
+      "type": "asset",
+      "title": "先写卡片再归档",
+      "library": "external",
+      "source": "ai_extracted",
+      "sourceType": "ai_extract",
+      "aiStatus": "needs_review",
+      "aiScore": 68,
+      "valueLevel": null,
+      "originWorkId": "01JBDEMO000000000000000000",
+      "revision": 1
+    }
+  ]
+}
+```
+
+> 上面只保留关键字段，实际元素包含第 2 节的全部字段。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | 请求体不是 JSON 对象 |
+| 401 / 403 | 未登录 / 缺 `object:write` |
+| 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
+| 409 `CONFLICT` | 不是作品；不在外库；状态不是 `draft` |
+| 409 `EXTRACT_DUPLICATE` | 该草稿已经提炼过，`details.assetId` 是已有那条资产 |
+| 422 `NO_CONTENT` | 还没有可提炼的正文（没上传，或解析没出分块） |
+| 500 `INTERNAL` | 未绑定大模型、模型调用失败或返回内容无法解析 |
+
+---
+
+### 4.14 `POST /api/objects/{id}/practice`
+
+标记「已实践」：作品的**已发布 → 已实践**这一步，同时把这次实践沉淀成一条内库资产。规格 v2.0 的核心规则——两者必须在同一次请求里完成，不存在「已实践但没沉淀」的中间状态。
+
+**权限**：`object:write`。
+
+**路径参数**：`id` —— 作品 ULID。
+
+**请求体**（全部可选）：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `metrics` | object \| null | 否 | 实践数据快照，如 `{"platform":"公众号","views":1280,"bounceRate":0.42,"feedback":"..."}`。原样存 JSON，接口不解释字段；序列化后 ≤ 4000 字节，超了 → 400 |
+| `expectedRevision` | 正整数 | 否 | 省略时以本次读取到的 `revision` 为准；仍能挡住读取之后的并发写入 |
+
+**同一事务内依次完成**：
+
+1. 新建内库资产：`type = "asset"`、`library = "internal"`、`sourceType = "practiced_work"`、`originWorkId` 指回作品、`aiStatus = "approved"`，标题 / 描述 / 分类 / 标签 / 优先级 / `source` / `origin` 复制自作品。
+2. 立即做 5 维价值评估，写 `valueLevel` / `valueScores` / `valueAssessedAt`。模型不可用走确定性兜底（全维 2 分 → C 级，`valueScores.source = "fallback"`），**不因此失败**。
+3. 作品写 `status = "practiced"`、`practicedAt`、`practiceMetrics`、`settledAssetId`。
+4. 写审计 `object.practice`；资产与作品各入队一条 `sync_jobs`。
+
+任一步失败整笔回滚，作品留在 `published`。**作品不自动归档**：`practiced` 的作品照常出现在列表、检索与图谱里，历史不被藏起来。
+
+**响应**：`200`。
+
+```json
+{
+  "work": {
+    "id": "01JBDEMO000000000000000000",
+    "type": "work",
+    "status": "practiced",
+    "library": "external",
+    "practicedAt": "2026-11-14T02:30:00.000Z",
+    "practiceMetrics": { "platform": "公众号", "views": 1280 },
+    "settledAssetId": "01JBDEMO111111111111111111",
+    "revision": 4
+  },
+  "asset": {
+    "id": "01JBDEMO111111111111111111",
+    "type": "asset",
+    "library": "internal",
+    "sourceType": "practiced_work",
+    "aiStatus": "approved",
+    "valueLevel": "B",
+    "originWorkId": "01JBDEMO000000000000000000",
+    "revision": 1
+  }
+}
+```
+
+> 两个元素都是第 2 节的完整对象，这里只列关键字段。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | `metrics` 不是对象或超过 4000 字节；`expectedRevision` 非正整数 |
+| 401 / 403 | 未登录 / 缺 `object:write` |
+| 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
+| 409 `WORK_MUST_BE_EXTERNAL` | 作品不在外库（ADR-029 之后正常数据不会走到这里） |
+| 409 `CONFLICT` | 不是作品；状态不是 `published`（`details.status`）；已经结算过（`details.settledAssetId`）；`expectedRevision` 与库中 `revision` 不符 |
+
+> 「已实践」是终点：重复调用只会得到 409，不会生成第二条资产。
+
+---
+
+### 4.15 `POST /api/objects/{id}/score`
+
+对外库资产做六维打分，并据此决定去向。这是「外库资产 → 内库」的第一条合法出口。
+
+**权限**：`object:write`。
+
+**路径参数**：`id` —— 资产 ULID。
+
+**请求体**：无字段（`{}` 或省略）。
+
+打分口径（服务端计算，**忽略模型自报的总分**）：
+
+| 维度 key | 名称 | 权重 |
+|----------|------|------|
+| `completeness` | 内容完整度与结构清晰度 | 20 |
+| `insight` | 洞察深度 / 非显而易见性 | 25 |
+| `actionability` | 可操作性 / 可落地性 | 20 |
+| `relevance` | 与已有内库资产的关联与互补性 | 15 |
+| `timeliness` | 时效性与长期价值潜力 | 10 |
+| `credibility` | 来源可信度与验证痕迹 | 10 |
+
+各维 0–100 分，总分 `Σ(分 × 权重) / 100` 四舍五入到整数，再按三档处置：
+
+| 总分 | `aiStatus` | 结果 |
+|------|-----------|------|
+| ≥ 75 | `auto_pass` | **同一事务**转内库并完成 5 维评估（写 `value*` 三列），资产此刻就在内库 |
+| 60–74 | `needs_review` | 留在外库待人工复核（4.16） |
+| < 60 | `low_value` | 留在外库，标记低价值 |
+
+打分**没有兜底**：未绑定模型、调用失败或返回脏数据都直接 500——它决定资产去留，编不出来就是不通过。内库资产没有「打分」入口，要重评走 4.17。
+
+**响应**：`200`，`{ "asset": { ... } }`。`aiScoreDetail` 结构：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `dimensions` | array | 六项，每项 `{ key, label, weight, score, weighted, reason }` |
+| `total` | number | 四舍五入后的加权总分 0–100 |
+| `verdict` | `auto_pass` \| `needs_review` \| `low_value` | 三档处置 |
+| `model` | string | 实际打分的模型名 |
+| `scoredAt` | string | UTC ISO-8601 |
+| `source` | `"model"` | 打分只由模型产出（没有 fallback） |
+| `review` | object，可选 | 人工复核痕迹 `{ decision, note, at, actorSub }`，复核过才有 |
+
+```json
+{
+  "asset": {
+    "id": "01JBDEMO222222222222222222",
+    "type": "asset",
+    "library": "internal",
+    "aiStatus": "auto_pass",
+    "aiScore": 82,
+    "aiScoreDetail": {
+      "dimensions": [
+        { "key": "completeness", "label": "内容完整度与结构清晰度", "weight": 20, "score": 85, "weighted": 17, "reason": "问题-方法-结论齐全" },
+        { "key": "insight", "label": "洞察深度 / 非显而易见性", "weight": 25, "score": 80, "weighted": 20, "reason": "有个人视角" },
+        { "key": "actionability", "label": "可操作性 / 可落地性", "weight": 20, "score": 80, "weighted": 16, "reason": "给了步骤" },
+        { "key": "relevance", "label": "与已有内库资产的关联与互补性", "weight": 15, "score": 85, "weighted": 12.75, "reason": "补充现有方法" },
+        { "key": "timeliness", "label": "时效性与长期价值潜力", "weight": 10, "score": 80, "weighted": 8, "reason": "底层逻辑稳定" },
+        { "key": "credibility", "label": "来源可信度与验证痕迹", "weight": 10, "score": 80, "weighted": 8, "reason": "有数据支撑" }
+      ],
+      "total": 82,
+      "verdict": "auto_pass",
+      "model": "deepseek-chat",
+      "scoredAt": "2026-11-14T02:40:00.000Z",
+      "source": "model"
+    },
+    "valueLevel": "A",
+    "valueAssessedAt": "2026-11-14T02:40:00.000Z",
+    "revision": 2
+  }
+}
+```
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 401 / 403 | 未登录 / 缺 `object:write` |
+| 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
+| 409 `CONFLICT` | 不是资产；资产已在**内库**（要重评用 4.17） |
+| 500 `INTERNAL` | 未绑定大模型、模型调用失败、返回内容无法解析或分数越界 |
+
+---
+
+### 4.16 `POST /api/objects/{id}/review`
+
+人工复核 60–74 分的资产：通过就进内库，拒绝就留在外库。
+
+**权限**：`object:write`。
+
+**路径参数**：`id` —— 资产 ULID。
+
+**请求体**：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `decision` | `"approve"` \| `"reject"` | **是** | 通过 / 拒绝；其他值 → 400（`details.allowed` 给出两个合法值） |
+| `note` | string \| null | 否 | 复核备注，trim 后 ≤ 500 字；超长 → 400 |
+| `expectedRevision` | 正整数 | 否 | 乐观锁版本号 |
+
+行为：
+
+- 只接受 `aiStatus = "needs_review"` 的资产，其他状态 → `409 CONFLICT`（`details.aiStatus` 给出当前值）。
+- `approve`：同一事务写入内库、完成 5 维评估、`aiStatus = "approved"`。
+- `reject`：`aiStatus = "rejected"`，留在外库等清理，不评估价值。
+- 复核痕迹（决定、备注、时间、操作者）并进 `aiScoreDetail.review`，**不另建表**；审计写 `object.ai.review`。
+
+**响应**：`200`，`{ "asset": { ... } }`（第 2 节完整对象）。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | `decision` 缺失或取值非法；`note` 超 500 字；`expectedRevision` 非正整数；请求体不是 JSON 对象 |
+| 401 / 403 | 未登录 / 缺 `object:write` |
+| 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
+| 409 `CONFLICT` | 不是资产；`aiStatus` 不是 `needs_review`；`expectedRevision` 不符 |
+
+---
+
+### 4.17 `POST /api/objects/{id}/value-assess`
+
+对**内库**资产重做 5 维价值评估，只更新 `value*` 三列。
+
+**权限**：`object:write`。
+
+**路径参数**：`id` —— 内库资产 ULID。
+
+**请求体**：无字段。
+
+评估维度（各 1–5 分，按五维总分 5–25 定级）：
+
+| 维度 key | 名称 | 1 分 | 5 分 |
+|----------|------|------|------|
+| `practice` | 实践验证强度 | 仅感觉有用 | 多次实践形成可复现方法论 |
+| `reuse` | 复用频率 / 复利潜力 | 一次性 | 高频调用或能衍生新资产 |
+| `transferability` | 可迁移性 | 只解决当前问题 | 可抽象为通用原则 |
+| `uniqueness` | 独特性 / 稀缺性 | 公开常识 | 高度个人化、难以替代 |
+| `timeliness` | 时效性 / 衰减速度 | 很快过时 | 长期有效 |
+
+等级：总分 **≥21 S / ≥16 A / ≥11 B / 其余 C**。
+
+**模型失败直接报错（500 `INTERNAL`），不静默降级**：用户点「重新评估」的预期是拿到新结果，把好资产悄悄判成 C 比明确失败更伤人；已有的 `value*` 保持不动。这与结算 / 复核 / 打分的兜底策略不同，后者保证硬规则不破，前者是用户显式要求的重算。
+
+**响应**：`200`，`{ "asset": { ... } }`，`valueLevel` / `valueScores` / `valueAssessedAt` 已更新；审计写 `object.value.assess`。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 401 / 403 | 未登录 / 缺 `object:write` |
+| 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
+| 409 `CONFLICT` | 不是资产；资产在**外库**（外库请先打分，见 4.15） |
+| 500 `INTERNAL` | 未绑定大模型、模型调用失败或返回内容无法解析 |
 
 ---
 
@@ -1876,6 +2257,46 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 
 ---
 
+### 9.7 `GET /api/graph/entity/documents`
+
+按实体名反查「哪些本账号的对象提到了它」——图谱详情卡「相关文档」用的就是这条。
+
+**查询参数**：
+
+| 参数 | 取值 | 说明 |
+|------|------|------|
+| `label` | 字符串，trim 后 1–100 字符 | 实体名（与 `GET /api/graph/labels` 返回的标签一致）；缺失或空 → 400，超长 → 400 |
+
+行为：取该实体在 LightRAG 的 1 跳子图，从节点的 `file_path` 解析出 `pakp:obj:` 归属，只保留当前账号拥有、且未删除的对象；最多回查 50 个候选、按标题（中文排序）返回前 10 条。来源路径为空或一个都解析不出时，退回按实体名做词法检索。
+
+**响应**：`200`，**空数组是正常结果**（实体属于别的账号的文档，或来源信息缺失且词法也没命中），不返回 404。
+
+```json
+{
+  "documents": [
+    {
+      "objectId": "01JBDEMO000000000000000000",
+      "title": "第一篇长文",
+      "type": "work",
+      "library": "external"
+    }
+  ],
+  "truncated": false
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `documents[].objectId` | 对象 ULID，前端据此跳 `/workspace/{id}` |
+| `documents[].title` | 标题 |
+| `documents[].type` | `asset` \| `work` |
+| `documents[].library` | `internal` \| `external` |
+| `truncated` | 候选被截断或命中超过 10 条时为 `true` |
+
+**主要错误**：400 `VALIDATION_FAILED`（`label` 缺失 / 空 / 超长）、401、403（缺 `object:read`）、500 LightRAG 请求失败。
+
+---
+
 ## 10. Logto 登录路由（浏览器跳转，非 JSON 接口）
 
 三条路由供页面跳转使用，**不要**在脚本里当 JSON API 调用。
@@ -2074,6 +2495,7 @@ curl -s -X POST $BASE/api/graph/retry \
 | 列表总数 / 游标 | 未实现。`GET /api/objects` 只返回数组，没有 `total`、页码或游标 |
 | 多用户权限 / 角色 / 共享 | 部分实现（ADR-019）：15 项权限 × 4 个系统角色，接口层统一由 `requirePermission()` 强制（矩阵与管理员接口见 7.4–7.8）。仍**没有**自定义角色（`role:write` 预留、无写入接口）、协作、共享或对象级 ACL；对象继续按 `owner_sub` 归属过滤，跨账号只能看到自己的对象（见 1.3） |
 | 审计归档与导出 | 未实现。`audit_events` 只增不删，没有归档脚本、没有导出接口；ADR-019 约定的「10 万行后归档到 `data/audit-YYYY-MM.jsonl`」尚未落地 |
+| 资产动态调整 | 未实现。`useCount` / `lastUsedAt` 只有字段，没有自动累加、也没有「调用次数上升自动升档 / 长期未调用提醒 / C 级归档」的定时任务；改等级只能手工调 4.17 |
 | OpenAPI / Swagger 描述文件 | 未实现。本文是唯一接口说明 |
 | 词表界面之外的维护方式 | 管理页已实现（`/admin/vocabulary/categories`、`/admin/vocabulary/tags`），界面以外没有批量导入 / 导出词表、没有分类或标签的回收站，删除即不可撤销 |
 | 同步投递与解析轮询的失败路径实测 | 失败重试 / 退避 / 解析失败回写目前只有假网关单测覆盖；真实 RAGFlow 上验证的是成功路径（上传 → 解析完成 → 检索 → 下载 → 归档后检索为 0） |
@@ -2097,3 +2519,4 @@ curl -s -X POST $BASE/api/graph/retry \
 | 2026-11-13（ADR-024 检索） | `GET /api/search` 扩展：新增 `mode=hybrid\|lexical\|semantic`（默认 hybrid）、检索语法表（空格 AND / `"短语"` / `title:` `desc:` `category:` `tag:` 与中文同义前缀 / `-` 与 `NOT` 排除 / 未知前缀按文本 / `OR`、括号报错）；新增错误码 `QUERY_SYNTAX`（400，`details.position` 为 0 基位置）；`total` 语义改为合并去重后的对象数，新增 `counts` / `lexical` / `semantic` 块与 `hits[].source` / `score` / `matchedFields` / `chunkCount` / `highlightTerms`，旧字段在纯词法命中时为 `null`；`threshold` 明确只作用于语义；`hybrid` 下语义 3 秒硬超时只降级不报错。端点总数不变（32 条） |
 | 2026-11-13（文档补全：形态与管理员接口） | 补入 4 条管理员接口并新增 7.4–7.8：`GET /api/admin/users`（`user:read`）、`PATCH /api/admin/users/{id}`（`user:write`，改 `sub` 另需 `role:write`；最后一个 active owner 被移除 / 停用时 422 `CONSTRAINT_VIOLATION` + `details.reason = "LAST_OWNER"`）、`GET /api/admin/roles`（`user:read`，角色 × 权限矩阵 + 权限目录只读）、`GET /api/admin/audit`（`audit:read`，游标分页，`detail` 是 JSON 字符串）。**`/api/vocabulary/formats*` 按代码核实为 ADR-023 的 308 跳转壳，不是独立词表接口**，故未按「POST /api/vocabulary/formats」另立端点，改为 6.9 说明跳转行为。端点数核实：`src/app/api/**/route.ts` 共 **31 个文件 / 31 条路径**，按本文既有的「方法 × 路径」口径展开为 **36 条**（33 业务 / 系统 + 3 Logto；此前记 32 条漏了这 4 条管理员接口，差额来自 4 个多方法文件），另有 2 条 308 旧路径单列不计。按 ADR-019 现状同步更正 §1.3 权限判定（`ADMIN_SUBS` 只剩引导作用）、§1.4 错误码（补 `QUERY_SYNTAX` / `TAG_NOT_FOUND` / `CATEGORY_EXISTS` / `CATEGORY_ARCHIVED` / `AUDIT_FAILED`，`FORBIDDEN` 改为缺权限）、§7.1 响应加 `authMode`、§7.2 / §7.3 权限表述、§11「多用户权限」现状。另按代码更正对象结构口径：`categories` / `primaryCategory` 已删除（传入即 400），`tags` 里的未知标签改为 400 `TAG_NOT_FOUND`（不再隐式创建，ADR-023），§4.1 `category` 筛选改为 code 精确匹配，§10 示例补建标签步骤。§8.2 未改动 |
 | 2026-11-13（ADR-025 / ADR-026） | 新增第 8 节「大模型配置」四条接口（GET / PUT / POST test / POST apply，需 settings:read / settings:write，权限总数 13 → 15）、`GET /api/objects/{id}/content/{refId}` 的 `?inline=1` 与内容预览弹窗，以及第 9.5 节 `POST /api/graph/retry`（需 content:sync）… 端点总数 36 → 43 条（按实际表格行核对，原文档口径少算 2 条，一并更正），route.ts 文件 31 → 35 个 |
+| 2026-11-14（ADR-029：规格 v2.0 资产生命周期） | 新增 5 条对象接口并新增 4.13–4.17：`POST /api/objects/{id}/extract`（201，`{assets}`；409 `EXTRACT_DUPLICATE` / `CONFLICT`、422 `NO_CONTENT`）、`/practice`（200，`{work, asset}`；`metrics` 与 `expectedRevision` 可选）、`/score`（200，`{asset}`；六维 20/25/20/15/10/10，服务端算总分，≥75 / 60–74 / <60 三档）、`/review`（200，`{asset}`；`decision: approve\|reject`，只接受 `needs_review`）、`/value-assess`（200，`{asset}`；只对内库资产，模型失败直接 500）。`GET /api/objects` 新增 `aiStatus` / `valueLevel` 筛选；§2 对象结构补 14 个新字段（作品侧 `publishedAt` / `practicedAt` / `practiceMetrics` / `settledAssetId`，资产侧 `sourceType` / `aiStatus` / `aiScore` / `aiScoreDetail` / `valueLevel` / `valueScores` / `valueAssessedAt` / `useCount` / `lastUsedAt` / `originWorkId`）并给出内库资产示例。按 ADR-029 更正旧口径：§4.2 作品只能建在外库（409 `WORK_MUST_BE_EXTERNAL`）、新建内库资产当场评估；§4.6 `to = practiced` 改走实践结算、错误码 `EXTERNAL_LIBRARY_PRACTICED` → `WORK_MUST_BE_EXTERNAL`；§4.7 跨库迁移只剩内→外，外库资产进内库 → 409 `LIBRARY_ENTRY_DENIED`；§1.4 错误码表补 `WORK_MUST_BE_EXTERNAL` / `LIBRARY_ENTRY_DENIED` / `EXTRACT_DUPLICATE` / `NO_CONTENT`，删掉已不存在的 `EXTERNAL_LIBRARY_PRACTICED`。补入 9.7 `GET /api/graph/entity/documents`（Phase 6H 实现、此前漏记）。端点总数按实际导出方法重核为 **47 条**（44 业务 / 系统 + 3 Logto），39 个导出接口的 route.ts + 2 个 308 跳转文件，共 41 个；此前「43 条」含 2 条 308 旧路径 |

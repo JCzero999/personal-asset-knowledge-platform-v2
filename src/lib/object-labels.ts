@@ -46,3 +46,10 @@ export const contentRoleLabels = {
   attachment: "附件",
 } as const;
 
+/** 资产来源（规格 v2.0）：AI 提炼 / 外部直入 / 实践沉淀。 */
+export const sourceTypeLabels: Record<"ai_extract" | "external_direct" | "practiced_work", string> = {
+  ai_extract: "AI 提炼",
+  external_direct: "外部直入",
+  practiced_work: "实践沉淀",
+};
+

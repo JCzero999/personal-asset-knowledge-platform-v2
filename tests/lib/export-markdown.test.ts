@@ -24,6 +24,20 @@ const work: BusinessObject = {
   deletedAt: null,
   status: "draft",
   sourceNote: null,
+  publishedAt: null,
+  practicedAt: null,
+  practiceMetrics: null,
+  settledAssetId: null,
+  sourceType: null,
+  aiStatus: null,
+  aiScore: null,
+  aiScoreDetail: null,
+  valueLevel: null,
+  valueScores: null,
+  valueAssessedAt: null,
+  useCount: 0,
+  lastUsedAt: null,
+  originWorkId: null,
 };
 
 const asset: BusinessObject = {

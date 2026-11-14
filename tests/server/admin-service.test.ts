@@ -34,21 +34,33 @@ function insertObject(
   id: string,
   overrides: Partial<typeof objects.$inferInsert> = {},
 ) {
-  handle.db
-    .insert(objects)
-    .values({
-      id,
-      type: "asset",
-      title: id,
-      library: "internal",
-      source: "handwritten",
-      origin: "self",
-      priority: "medium",
-      ownerSub: "owner-a",
-      ...base,
-      ...overrides,
-    })
-    .run();
+  const row: typeof objects.$inferInsert = {
+    id,
+    type: "asset",
+    title: id,
+    library: "internal",
+    source: "handwritten",
+    origin: "self",
+    priority: "medium",
+    ownerSub: "owner-a",
+    ...base,
+    ...overrides,
+  };
+
+  // 规则 4（ADR-029）：内库资产必须有 5 维分与等级，直写也不能绕开。
+  if (row.type === "asset" && row.library === "internal") {
+    row.valueLevel ??= "C";
+    row.valueScores ??= JSON.stringify({
+      dimensions: [],
+      average: 2,
+      level: "C",
+      source: "fallback",
+      assessedAt: base.createdAt,
+    });
+    row.valueAssessedAt ??= base.createdAt;
+  }
+
+  handle.db.insert(objects).values(row).run();
 }
 
 describe("loadAdminOverview", () => {

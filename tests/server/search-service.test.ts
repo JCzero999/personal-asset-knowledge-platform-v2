@@ -313,7 +313,7 @@ describe("词法检索（mode=lexical）", () => {
     const object = await createObject(handle.db, actor(OWNER), {
       type: "work",
       title: "课程复盘",
-      library: "internal",
+      library: "external",
       category: "course",
       tags: [tag.label],
     });

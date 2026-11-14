@@ -1,7 +1,9 @@
-import { NotFoundError, ValidationError } from "../../domain/errors";
+import { DomainError, NotFoundError, ValidationError } from "../../domain/errors";
 import {
+  isAiStatus,
   isLibrary,
   isObjectType,
+  isValueLevel,
   isWorkStatus,
   libraries,
   workStatuses,
@@ -30,6 +32,7 @@ import type {
   UpdateObjectInput,
 } from "../ports/object-repository";
 import { SqliteObjectRepository } from "../repositories/sqlite-object-repository";
+import { evaluateValueScores } from "./asset-ai";
 import { listActiveCategoryCodes } from "./vocabulary-service";
 
 /**
@@ -207,9 +210,38 @@ export async function createObject(
 ): Promise<BusinessObject> {
   const params = parseCreateObjectBody(body, actor.sub);
 
+  // 作品只存在于外库（规格 v2.0 第 3、7 节）：服务层先挡一次，仓储与 CHECK 再兜底。
+  if (params.type === "work" && params.library !== "external") {
+    throw new DomainError("WORK_MUST_BE_EXTERNAL", "作品只存在于外库，不能直接建在内库", {
+      library: params.library,
+    });
+  }
+
   // 停用 / 不存在的分类拒绝新建；资产没有分类时跳过。
   if (params.category && !listActiveCategoryCodes(db).includes(params.category)) {
     throw new NotFoundError("分类不存在或已停用", { category: params.category });
+  }
+
+  // 内库资产必须在创建时就带 5 维评估与等级（规格第 6 节）：模型不可用时
+  // 退回确定性兜底，保证「内库资产一定有等级」这条硬规则不被一次模型抖动打破。
+  if (params.type === "asset" && params.library === "internal") {
+    const scores = await evaluateValueScores(
+      db,
+      {
+        title: params.title,
+        description: params.description ?? null,
+        tags: params.tags ?? [],
+      },
+      {},
+      { fallbackOnError: true },
+    );
+
+    return new SqliteObjectRepository(db).create({
+      ...params,
+      valueLevel: scores.level,
+      valueScores: scores,
+      valueAssessedAt: scores.assessedAt,
+    });
   }
 
   return new SqliteObjectRepository(db).create(params);
@@ -435,6 +467,22 @@ export function parseListObjectsQuery(searchParams: URLSearchParams): ListObject
       throw new ValidationError("status 取值非法", { field: "status" });
     }
     query.status = status;
+  }
+
+  const aiStatus = searchParams.get("aiStatus");
+  if (aiStatus) {
+    if (!isAiStatus(aiStatus)) {
+      throw new ValidationError("aiStatus 取值非法", { field: "aiStatus" });
+    }
+    query.aiStatus = aiStatus;
+  }
+
+  const valueLevel = searchParams.get("valueLevel");
+  if (valueLevel) {
+    if (!isValueLevel(valueLevel)) {
+      throw new ValidationError("valueLevel 取值非法", { field: "valueLevel" });
+    }
+    query.valueLevel = valueLevel;
   }
 
   const search = searchParams.get("q")?.trim();

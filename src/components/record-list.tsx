@@ -12,6 +12,7 @@ import { buildExportMarkdown, exportFileName, type ExportItem } from "@/lib/expo
 import { categoryLabel, type CategoryLabelMap } from "@/lib/category-labels";
 import { libraryLabels, statusLabels } from "@/lib/object-labels";
 import { Icon } from "./icon";
+import { lifecycleBadges } from "./lifecycle";
 import { usePreview } from "./preview-provider";
 
 /**
@@ -300,6 +301,7 @@ export function RecordList({
                 : libraryLabels[object.library];
 
               const href = `/workspace/${object.id}${listQuery}`;
+              const badges = lifecycleBadges(object);
 
               return (
                 <li className={`record-row-item${isActive ? " is-active" : ""}`} key={object.id}>
@@ -352,7 +354,14 @@ export function RecordList({
                       )}
                     </span>
                     <span className="record-row-meta">
-                      <span>{meta}</span>
+                      <span className="record-meta-line">
+                        {badges.map((badge) => (
+                          <span className={`record-badge is-${badge.tone}`} key={badge.key}>
+                            {badge.label}
+                          </span>
+                        ))}
+                        <span className="record-meta-text">{meta}</span>
+                      </span>
                       <time dateTime={object.updatedAt}>
                         {formatUpdatedAt(object.updatedAt, now)}
                       </time>

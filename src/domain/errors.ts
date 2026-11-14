@@ -12,7 +12,6 @@ export const errorCodes = [
   "NOT_FOUND",
   "CONFLICT",
   "INVALID_TRANSITION",
-  "EXTERNAL_LIBRARY_PRACTICED",
   "CONSTRAINT_VIOLATION",
   "AUDIT_FAILED",
   "INTERNAL",
@@ -22,6 +21,14 @@ export const errorCodes = [
   "TAG_NOT_FOUND",
   "CATEGORY_EXISTS",
   "CATEGORY_ARCHIVED",
+  // ADR-029：作品只存在于外库；把作品放进内库一律拒绝。
+  "WORK_MUST_BE_EXTERNAL",
+  // 提炼时没有可用的正文（没有内容引用或尚未解析出分块）。
+  "NO_CONTENT",
+  // 规格 v2.0 规则：外库资产只能经 AI 高分自动入库或人工复核进入内库。
+  "LIBRARY_ENTRY_DENIED",
+  // 同一草稿重复提炼：已有 ai_extract 资产指向该作品。
+  "EXTRACT_DUPLICATE",
 ] as const;
 
 export type ErrorCode = (typeof errorCodes)[number];

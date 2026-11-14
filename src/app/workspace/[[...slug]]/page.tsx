@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { WorkspaceView } from "@/components/workspace-view";
+import { filterByLifecycle, parseLifecycleFilters } from "@/components/lifecycle";
 import {
   LIST_LIMIT,
   SUMMARY_LIMIT,
@@ -32,7 +33,11 @@ export default async function WorkspacePage({
   searchParams: Promise<WorkspaceSearchParams>;
 }) {
   const session = await requireSession();
-  const filters = parseWorkspaceFilters(await searchParams);
+  const search = await searchParams;
+  const filters = parseWorkspaceFilters(search);
+  // 复核状态 / 价值等级与主筛选并列：仓库还未按新字段过滤时，在页面层裁一次，
+  // 保证入口链接（如「待人工复核 N」）落到正确结果集。
+  const lifecycle = parseLifecycleFilters(search);
   const { slug } = await params;
   const selectedId = slug?.[0] ?? null;
   const db = getDb();
@@ -40,7 +45,7 @@ export default async function WorkspacePage({
   // 词表是列表 / 详情 / 新建面板 / 筛选 / 目录的唯一来源（ADR-016 第 5 条）。
   const vocabulary = listVocabulary(db);
 
-  const [objects, allObjects, archivedObjects] = await Promise.all([
+  const [listed, allObjects, archivedObjects] = await Promise.all([
     listObjects(db, { ownerSub: session.sub, ...toListObjectsQuery(filters, LIST_LIMIT) }),
     listObjects(db, { ownerSub: session.sub, limit: SUMMARY_LIMIT }),
     listObjects(db, {
@@ -49,6 +54,7 @@ export default async function WorkspacePage({
       limit: SUMMARY_LIMIT,
     }),
   ]);
+  const objects = filterByLifecycle(listed, lifecycle);
 
   let selected: BusinessObject | null = null;
   let selectedRefs: ContentRef[] = [];
@@ -70,6 +76,7 @@ export default async function WorkspacePage({
       allObjects={allObjects}
       archivedObjects={archivedObjects}
       filters={filters}
+      lifecycle={lifecycle}
       selected={selected}
       selectedRefs={selectedRefs}
       vocabulary={vocabulary}

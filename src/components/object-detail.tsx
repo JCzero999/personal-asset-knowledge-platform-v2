@@ -1,9 +1,12 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 
+import { AssetInsights } from "@/components/asset-insights";
 import { ObjectActions } from "@/components/object-actions";
 import { ObjectContent } from "@/components/object-content";
 import { Icon } from "@/components/icon";
 import { PreviewButton } from "@/components/preview-provider";
+import { lifecycleBadges } from "@/components/lifecycle";
 import { type BusinessObject } from "@/domain/objects";
 import type { ContentRef } from "@/domain/content-ref";
 import type { VocabularyCategory, VocabularyTag } from "@/domain/vocabulary";
@@ -15,6 +18,7 @@ import {
   originLabels,
   priorityLabels,
   sourceLabels,
+  sourceTypeLabels,
   statusLabels,
 } from "@/lib/object-labels";
 
@@ -50,6 +54,16 @@ export function ObjectDetail({
   tagSuggestions: VocabularyTag[];
   canManageVocabulary?: boolean;
 }) {
+  const metrics = object.practiceMetrics;
+  const metricsText = [
+    metrics?.platform,
+    typeof metrics?.views === "number" ? `浏览 ${metrics.views}` : null,
+    typeof metrics?.bounceRate === "number" ? `跳出 ${metrics.bounceRate}%` : null,
+    metrics?.summary,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join(" · ");
+
   return (
     <>
       <section className="panel detail-header" aria-labelledby="detail-heading">
@@ -77,6 +91,11 @@ export function ObjectDetail({
                   {categoryLabel(categoryLabels, object.category)}
                 </span>
               ) : null}
+              {lifecycleBadges(object).map((badge) => (
+                <span className={`lifecycle-badge is-${badge.tone}`} key={badge.key}>
+                  {badge.label}
+                </span>
+              ))}
               {object.archivedAt ? (
                 <span className="badge badge-archived">已归档</span>
               ) : null}
@@ -116,6 +135,32 @@ export function ObjectDetail({
           <MetaItem label="优先级">{priorityLabels[object.priority]}</MetaItem>
           <MetaItem label="来源">{sourceLabels[object.source]}</MetaItem>
           <MetaItem label="来路">{originLabels[object.origin]}</MetaItem>
+          {object.type === "asset" && object.sourceType ? (
+            <MetaItem label="资产来源">{sourceTypeLabels[object.sourceType]}</MetaItem>
+          ) : null}
+          {object.type === "asset" && object.originWorkId ? (
+            <MetaItem label="来源作品">
+              <Link className="text-button" href={`/workspace/${object.originWorkId}`} scroll={false}>
+                查看原作品
+              </Link>
+            </MetaItem>
+          ) : null}
+          {object.type === "work" && object.publishedAt ? (
+            <MetaItem label="发布">{formatDateTime(object.publishedAt)}</MetaItem>
+          ) : null}
+          {object.type === "work" && object.practicedAt ? (
+            <MetaItem label="实践">{formatDateTime(object.practicedAt)}</MetaItem>
+          ) : null}
+          {object.type === "work" && metricsText ? (
+            <MetaItem label="数据反馈">{metricsText}</MetaItem>
+          ) : null}
+          {object.type === "work" && object.settledAssetId ? (
+            <MetaItem label="沉淀资产">
+              <Link className="text-button" href={`/workspace/${object.settledAssetId}`} scroll={false}>
+                查看内库资产
+              </Link>
+            </MetaItem>
+          ) : null}
           <MetaItem label="标签">
             {object.tags.length > 0 ? (
               <span className="detail-tags">
@@ -133,6 +178,8 @@ export function ObjectDetail({
           </MetaItem>
         </dl>
       </section>
+
+      {object.type === "asset" ? <AssetInsights object={object} /> : null}
 
       <section className="panel content-panel" aria-labelledby="content-heading">
         <div className="panel-heading">

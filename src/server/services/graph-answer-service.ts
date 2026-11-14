@@ -68,7 +68,7 @@ function timeoutSeconds(config: LlmConfig): number {
 }
 
 /** 网络层失败的中文文案；原始 message 可能带地址，但不带密钥。 */
-function describeFetchFailure(error: unknown, config: LlmConfig): string {
+export function describeFetchFailure(error: unknown, config: LlmConfig): string {
   if (error instanceof Error) {
     if (error.name === "TimeoutError" || error.name === "AbortError") {
       return `模型服务 ${timeoutSeconds(config)} 秒内没有响应，请稍后重试，或到「设置 → 大模型」调整超时。`;
@@ -91,7 +91,7 @@ function describeFetchFailure(error: unknown, config: LlmConfig): string {
 }
 
 /** HTTP 状态码的中文文案；不透传上游错误体。 */
-function describeStatusFailure(status: number): string {
+export function describeStatusFailure(status: number): string {
   if (status === 401 || status === 403) {
     return "模型鉴权失败（API Key 无效或权限不足），请到「设置 → 大模型」更新密钥。";
   }
@@ -110,7 +110,7 @@ function describeStatusFailure(status: number): string {
   return `模型服务返回 HTTP ${status}，请到「设置 → 大模型」检查配置。`;
 }
 
-interface ChatCompletionBody {
+export interface ChatCompletionBody {
   choices?: Array<{ message?: { content?: unknown } }>;
 }
 

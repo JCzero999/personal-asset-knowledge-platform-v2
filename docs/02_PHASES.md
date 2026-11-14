@@ -5,10 +5,10 @@
 
 ## 当前状态
 
-- **整体进度：约 97%**。Phase 0、1、2、3、4 主路径完成；Phase 5 剩失败路径实测与多轮问答；**Phase 6 全部落地**（6A 分类统一、6B 检索模糊查询与语义混合、6C 主题收尾、6D 知识图谱 2D 聚焦 + 3D 星河，含生产运行时复验）。Logto 真实登录已用测试账号端到端验证。
+- **整体进度：约 98%**。Phase 0、1、2、3、4 主路径完成；Phase 5 剩失败路径实测与多轮问答；**Phase 6 全部落地**（6A 分类统一、6B 检索模糊查询与语义混合、6C 主题收尾、6D 知识图谱 2D 聚焦 + 3D 星河，含生产运行时复验）。**按规格 v2.0 补齐资产生命周期（Phase 6I / ADR-029）**：作品只在外库、已实践单事务沉淀、AI 提炼 + 六维打分 + 内库 S/A/B/C。Logto 真实登录已用测试账号端到端验证。
 - **所处阶段**：**Phase 5 收尾 + Phase 6 已完成**。Phase 1 的真实登录验收已完成（测试账号 `pakp_test`）；Phase 3 图谱增加读侧按账号过滤（ADR-011），强隔离仍待多用户前改造。
 - **环境**：Docker 29.9.2、Docker Compose v5.6.1、WSL Ubuntu 已就绪（2026-11-11 实测）；Logto 1.46.0、RAGFlow v0.20.5 与 LightRAG 1.5.7 均已在本机运行并通过连通性 / API 实测。
-- **业务侧**：Next.js 16 App Router + TypeScript + SQLite/Drizzle 已落地；对象 CRUD、作品状态机、跨库迁移与审计、归档、工作台筛选与行内操作、内容检索页、对象详情页、管理后台与词表管理均已实现，共 31 个 `route.ts` 路径 / 按「方法 × 路径」36 条接口（33 条业务 / 系统 + 3 条 Logto 跳转，见 [06_API.md](06_API.md)）。
+- **业务侧**：Next.js 16 App Router + TypeScript + SQLite/Drizzle 已落地；对象 CRUD、作品状态机、跨库迁移与审计、归档、工作台筛选与行内操作、内容检索页、对象详情页、管理后台与词表管理均已实现；按规格 v2.0 新增 AI 提炼、六维打分、人工复核、5 维价值评估与实践沉淀，共 41 个 `route.ts`（39 个 JSON 接口 + 2 个 308 跳转）/ 按「方法 × 路径」47 条接口（44 条业务 / 系统 + 3 条 Logto 跳转，见 [06_API.md](06_API.md)）。
 - **内容侧**：内容上传、`meta_fields` 映射、outbox 投递、解析触发与轮询、引用列表、原文下载、检索均已实现；RAGFlow v0.20.5 上「上传 → 解析 → 检索 → 下载 → 归档后检索为 0」端到端跑通。
 - **图谱侧**：LightRAG 1.5.7 本机部署；`/graph` 支持 **2D 聚焦阅读**（SVG 力导向，选中 / 邻域 / 最短路径 / 列表）、**3D 星系**（three.js，节点 / 边 / 标签各一次 instanced 绘制，>300 节点走 Web Worker 布局）与列表三种视图，桌面默认 3D、移动端与无 WebGL / reduced-motion 回落 2D；三档画质按预算抽稀并限制标签与 DPR，连续两个慢窗口自动降档且只降不升；5 条 `/api/graph/*` 路由已实现，`GET /api/graph` 支持 `maxNodes=50–600`。真实数据下实体抽取、邻域查询与问答均跑通。
 - **前端**：`/search`、`/workspace/[id]` 与 `/graph` 已在 **`AUTH_MODE=logto` 真实身份**下用无头浏览器冒烟通过（2026-11-11）；此前 mock 身份的页面实测仍有效。首页 `/` 于 2026-11-12 升级为银河首页（Phase 5.11），同日 Phase 5.12 把背景换成 three.js 3D 星系，并把全站主题从浅色绿改为深空暖金（ADR-020）。
@@ -30,6 +30,7 @@
 | **Phase 5** | 联调与打磨 | **主路径完成** | 登录 → 资产 / 工作流 → 检索 / 图谱主路径贯通；剩登录验证与失败路径 |
 | **Phase 6** | 体验与图谱深化 | **已完成**（2026-11-13） | 6A 分类词表统一、6B 检索模糊查询与语义混合、6C 主题令牌收尾、6D 知识图谱 2D 聚焦 + 3D 星河（默认入口 / Worker / 抽稀 / 自适应降档已在 `next start` 复验） |
 | **Phase 6E** | 大模型配置、内容预览与图谱失败自愈 | **已完成**（2026-11-13） | ADR-025 设置页与四条接口（权限 13 → 15）、ADR-026 预览弹窗（工作台 + 详情入口）、图谱失败归因与重抽；门禁与真实数据验收通过，`apply` 待单独窗口 |
+| **Phase 6I** | 规格 v2.0 内容流转与沉淀（ADR-029） | **已完成**（2026-11-14） | 作品只在外库；已实践单事务沉淀内库资产并赋 S/A/B/C；AI 提炼仅草稿、产物落外库；六维打分 ≥75 / 60–74 / <60 三档；内库资产必有 5 维分与等级（CHECK 兜底）；迁移 0010 转换存量。真实模型质量与真实 RAGFlow 解析链路的提炼效果未评 |
 
 > **Phase 1 范围扩展（2026-11-11）**：完成标准由「骨架 + Logto 登录」扩展为「身份 + 最小持久化 CRUD」。依据是产品的 **DATA-01 / DATA-05 / DATA-08**，存储选型见 ADR-009。
 
@@ -441,6 +442,42 @@
 - [x] **质量门**：`tsc --noEmit` 0；`eslint` 0 error / 14 warning（既有）；`vitest` **54 文件 794 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` 41/41
 - [ ] **未验证**：3D 画布里「真按 Shift 点两个实体」未做像素级复现（无头下节点投影不可确定），以 3D 画布中心单击选中 + 2D 同一 `handleSelect` 覆盖；真实账号 + 真实供应商密钥下的问答未跑（验收用假模型，真实链路只实测了 LightRAG 检索段）
 
+### Phase 6I：规格 v2.0 · 内容流转与沉淀（ADR-029，2026-11-14）
+
+> 依据《个人知识与资产平台 —— 内容流转与沉淀规格说明（v2.0）》第 3–8 节核对现有实现：内库仍可放作品、资产没有来源类型 / AI 评分 / 价值等级、AI 提炼与六维打分整条缺失。本轮把这条链路补齐，口径与 `00_SCOPE`、`01_ARCHITECTURE` §5.12、`09_USER_GUIDE` 一致。
+
+后端：
+
+- [x] **作品只存在外库**：创建 / 跨库迁移 / 状态迁移三条写路径统一拒绝「作品进内库」（`409 WORK_MUST_BE_EXTERNAL`）；撤除旧 CHECK `objects_external_not_practiced`，改为 `objects_work_must_be_external` + `objects_practiced_requires_external`
+- [x] **实践结算** `POST /api/objects/{id}/practice`：单事务「建内库资产（`source_type=practiced_work`、`origin_work_id`）→ 5 维评估 → 作品 `practiced` / `practiced_at` / `practice_metrics` / `settled_asset_id` → 审计 `object.practice` → 两条 `sync_jobs`」，失败整笔回滚，重复结算 409；作品**不再自动归档**
+- [x] **AI 提炼** `POST /api/objects/{id}/extract`：只接受外库草稿，产物落外库 `ai_extract` 并带 `origin_work_id`，随后逐条打分（单条失败留 `unscored`）；重复提炼 `409 EXTRACT_DUPLICATE`、无正文 `422 NO_CONTENT`
+- [x] **六维打分** `POST /api/objects/{id}/score`：20 / 25 / 20 / 15 / 10 / 10 加权，服务端计算并忽略模型自报总分；≥75 同事务入库并评估、60–74 待复核、<60 低价值
+- [x] **人工复核** `POST /api/objects/{id}/review`：只接受 `needs_review`，`approve` 入库并评估、`reject` 留外库；痕迹并进 `ai_score_detail.review`
+- [x] **价值评估** `POST /api/objects/{id}/value-assess`：内库资产 5 维重评，模型失败直接报错不降级；5 维总分 ≥21 S / ≥16 A / ≥11 B / 其余 C
+- [x] **硬规则兜底**：`objects_internal_asset_requires_value` 等 8 条 CHECK + `(type, ai_status)`、`(type, value_level)` 索引 + `origin_work_id` 部分唯一索引；模型不可用时确定性兜底（全维 2 分 → C）并标 `value_scores.source = fallback`
+- [x] **跨库迁移收紧**：`/library` 只剩内→外，外库资产进内库 → `409 LIBRARY_ENTRY_DENIED`；新建内库资产仍允许，写库前当场评估
+
+前端：
+
+- [x] 详情页 AI 评分面板（六维明细、开始 / 重新打分、通过 / 拒绝复核弹窗）与价值评估面板（5 维明细 + S/A/B/C + 重新评估），统一在 `asset-insights.tsx`
+- [x] 「标记已实践」改弹窗（平台 / 浏览量 / 跳出率 / 反馈摘要全选填）并写明「已发布 ≠ 已实践」；草稿作品出现「AI 提炼」入口
+- [x] 列表筛选加「复核状态」「价值等级」；新建弹窗里作品锁死外库、资产选内库时提示当场评估
+
+迁移：
+
+- [x] `drizzle/0010_asset_pipeline.sql`：`objects` 新增 14 列与 8 条 CHECK；存量内库作品 → 内库资产（C 级 `migration` 兜底），原作品回外库**保留不归档**；存量资产回填 `source_type` / `ai_status`，外库资产 `value_*` 保持 `NULL`
+- [x] 迁移测试覆盖「原作品回外库、`settled_asset_id` 回填、标签随资产复制、重复执行幂等」
+
+验收：
+
+- [x] `scripts/verify-lifecycle-v2.mjs` 端到端跑通：提炼 → 打分 → 复核 → 发布 → 实践沉淀 → 价值重评
+- [x] 质量门：`tsc --noEmit` 0；`eslint` 0 error；`vitest` **870 通过 / 3 跳过**；`next build` 通过
+- [ ] **未验证**：真实 RAGFlow 解析链路下的提炼（本机长文解析此前有超时记录）只在假内容源上验过；模型给分与 5 维评级是否贴合真实语料未评，当前不作为质量基线
+
+文档：
+
+- [x] `03_DECISIONS` ADR-029（取代 ADR-008 一条）、`00_SCOPE` 口径与规则、`01_ARCHITECTURE` §5.3 / §5.12、`09_USER_GUIDE` 新流程与术语表、`06_API` §4.13–4.17 与列表筛选、`05_CHANGELOG` 本条
+
 ## 下一步行动
 
 按优先级：
@@ -452,6 +489,7 @@
 5. **图谱强隔离（待做）**：读侧过滤已完成（ADR-011）；真正强隔离需按 `ownerSub` 拆分 LightRAG 实例 / 工作目录，触发条件是多账号同时使用图谱。
 6. ~~**生产运行检查**~~：已完成。`next build` + `next start`（3100）通过，health 200 / 首页 200 / 未登录 307 / sign-in 307 到 Logto；开机自启由 `scripts\autostart.ps1` + 启动文件夹负责。
 7. **管理员后台验收（待你本人确认）**：`.env.local` 已写入 `ADMIN_SUBS=gdv8t04dw4ca`（`JCzero001` 的 Logto `sub`）；用该账号登录后侧栏应出现「系统管理」，进入 `/admin` 可看到依赖服务与统计。若侧栏没有入口，重启开发服务让环境变量生效。本轮词表管理页已用测试账号（临时加入 `ADMIN_SUBS`，测后还原）完成真实登录实测，你自己账号的入口仍待亲自看一眼。
+8. **动态降级 / `use_count` 自动调整（未做）**：规格第 6.3 节建议的三件事——调用次数上升自动加「复用频率」分并重评、长期未调用触发降级提醒或进观察区、出现新实践数据重算「实践验证强度」。字段 `useCount` / `lastUsedAt` 已落库但当前没有任何写入路径，需要先定义「什么叫一次调用」（详情打开？复制？检索命中？），再决定是定时任务还是事件驱动。**在此之前不要对外宣称资产会自己升降级。**
 
 ## 各阶段关键约束（提醒）
 

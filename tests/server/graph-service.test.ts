@@ -124,7 +124,8 @@ async function seedWork(title: string, ownerSub = OWNER, withContent = true) {
   const work = await objects.create({
     type: "work",
     title,
-    library: "internal",
+    // 作品只存在于外库（ADR-029）；LightRAG 构图与库别无关。
+    library: "external",
     category: "article",
     ownerSub,
   });

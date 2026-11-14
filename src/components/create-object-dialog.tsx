@@ -221,7 +221,11 @@ export function CreateObjectButton({
                       name={`${idPrefix}-type`}
                       value="work"
                       checked={type === "work"}
-                      onChange={() => setType("work")}
+                      onChange={() => {
+                        setType("work");
+                        // 作品只在外部库流转，内库是实践沉淀出来的结果。
+                        setLibrary("external");
+                      }}
                     />
                     <span className="type-card-icon"><Icon name="workflow" size={19} /></span>
                     <span className="type-card-copy">
@@ -272,18 +276,22 @@ export function CreateObjectButton({
               <fieldset className="field">
                 <legend className="field-label">放在哪里</legend>
                 <div className="library-grid">
-                  <label className={`type-card ${library === "internal" ? "is-active" : ""}`}>
+                  <label
+                    className={`type-card ${library === "internal" ? "is-active" : ""}${type === "work" ? " is-disabled" : ""}`}
+                    title={type === "work" ? "作品先在外部库流转" : undefined}
+                  >
                     <input
                       className="sr-only"
                       type="radio"
                       name={`${idPrefix}-library`}
                       value="internal"
                       checked={library === "internal"}
+                      disabled={type === "work"}
                       onChange={() => setLibrary("internal")}
                     />
                     <span className="type-card-copy">
                       <strong>内库</strong>
-                      <small>长期复用</small>
+                      <small>{type === "work" ? "作品先在外部库流转" : "长期复用"}</small>
                     </span>
                   </label>
                   <label className={`type-card ${library === "external" ? "is-active" : ""}`}>
@@ -301,6 +309,13 @@ export function CreateObjectButton({
                     </span>
                   </label>
                 </div>
+                <p className="library-hint">
+                  {type === "work"
+                    ? "作品先在外部库流转：草稿可 AI 提炼，发布后标记已实践即自动沉淀进内库。"
+                    : library === "internal"
+                      ? "保存后立即进行 5 维价值评估，生成 S / A / B / C 等级。"
+                      : "外库资产先经 AI 打分，≥75 分自动进内库，60–74 分待人工复核。"}
+                </p>
               </fieldset>
 
               <div className="field">

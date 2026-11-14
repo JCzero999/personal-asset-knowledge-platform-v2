@@ -3,11 +3,17 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from "d
 import {
   isCategory,
   isLibrary,
+  isValueLevel,
   isWorkStatus,
+  type AiStatus,
+  type AssetSourceType,
   type BusinessObject,
   type Category,
+  type ValueLevel,
   type WorkStatus,
 } from "../../domain/objects";
+import type { AiScoreDetail, ValueScores } from "../../domain/value";
+import { fallbackValueScores } from "../../domain/value";
 import { normalizeCategory, normalizeTag } from "../../domain/vocabulary";
 import { ConflictError, DomainError, NotFoundError, ValidationError } from "../../domain/errors";
 import { assertTransition } from "../../domain/workflow";
@@ -29,6 +35,8 @@ import {
   type ObjectRow,
 } from "../db/schema";
 import type {
+  ApplyAiScoreInput,
+  ApplyValueAssessmentInput,
   ChangeLibraryInput,
   ChangeStatusInput,
   CreateObjectInput,
@@ -39,6 +47,9 @@ import type {
   LibraryChangeEvent,
   ListObjectsQuery,
   ObjectRepository,
+  ReviewAssetInput,
+  SettlePracticeInput,
+  SettlePracticeResult,
   UpdateObjectInput,
 } from "../ports/object-repository";
 import { normalizeSearchText } from "../../lib/search-query";
@@ -175,6 +186,22 @@ function toObject(row: ObjectRow, tagLabels: string[]): BusinessObject {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
+    // 作品专属（资产恒为 null）
+    publishedAt: row.publishedAt,
+    practicedAt: row.practicedAt,
+    practiceMetrics: parseJson<Record<string, unknown>>(row.practiceMetrics),
+    settledAssetId: row.settledAssetId,
+    // 资产专属（作品恒为 null）
+    sourceType: row.sourceType as AssetSourceType | null,
+    aiStatus: row.aiStatus as AiStatus | null,
+    aiScore: row.aiScore,
+    aiScoreDetail: parseJson<AiScoreDetail>(row.aiScoreDetail),
+    valueLevel: row.valueLevel as ValueLevel | null,
+    valueScores: parseJson<ValueScores>(row.valueScores),
+    valueAssessedAt: row.valueAssessedAt,
+    useCount: row.useCount,
+    lastUsedAt: row.lastUsedAt,
+    originWorkId: row.originWorkId,
   };
 
   if (row.type === "work") {
@@ -194,6 +221,21 @@ function toObject(row: ObjectRow, tagLabels: string[]): BusinessObject {
     status: null,
     sourceNote: null,
   };
+}
+
+/** 解析列里的 JSON 文本；脏值按 null 处理，不让一条坏行毁掉整个列表。 */
+function parseJson<T>(value: string | null): T | null {
+  if (!value) return null;
+
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
+function jsonOrNull(value: unknown): string | null {
+  return value === null || value === undefined ? null : JSON.stringify(value);
 }
 
 function toLibraryEvent(row: LibraryEventRow): LibraryChangeEvent {
@@ -225,8 +267,41 @@ export class SqliteObjectRepository implements ObjectRepository {
       throw new ValidationError("作品必须提供合法的 category", { category: input.category });
     }
 
+    // 作品只存在于外库（ADR-029）：先于数据库 CHECK 给出可读错误。
+    if (isWork && input.library !== "external") {
+      throw new DomainError("WORK_MUST_BE_EXTERNAL", "作品只能存在于外库", {
+        library: input.library,
+      });
+    }
+
     if (!isWork && input.category != null && !isCategory(input.category)) {
       throw new ValidationError("非法的分类", { category: input.category });
+    }
+
+    if (!isWork && input.valueLevel != null && !isValueLevel(input.valueLevel)) {
+      throw new ValidationError("非法的价值等级", { valueLevel: input.valueLevel });
+    }
+
+    const source = input.source ?? "handwritten";
+    // 资产来源类型：显式优先，否则按 source 推断（与 0010 迁移的推断一致）。
+    const sourceType: AssetSourceType | null = isWork
+      ? null
+      : (input.sourceType ?? (source === "ai_extracted" ? "ai_extract" : "external_direct"));
+
+    // 规格 v2.0 规则 4：内库资产必须带 5 维分与等级。服务层会在自动入库 /
+    // 复核 / 结算时写入；仓储层这里补齐缺失项（确定性兜底），保证任何
+    // 合法的 create 路径都不会产出数据库 CHECK 拒绝的行。
+    let valueLevel: ValueLevel | null = isWork ? null : (input.valueLevel ?? null);
+    let valueScores: ValueScores | null = isWork ? null : (input.valueScores ?? null);
+    let valueAssessedAt: string | null = isWork ? null : (input.valueAssessedAt ?? null);
+
+    if (!isWork && input.library === "internal") {
+      if (valueLevel == null || valueScores == null || valueAssessedAt == null) {
+        const fallback = fallbackValueScores(valueAssessedAt ?? now);
+        valueScores ??= fallback;
+        valueLevel ??= valueScores.level;
+        valueAssessedAt ??= fallback.assessedAt;
+      }
     }
 
     const row: NewObjectRow = {
@@ -238,7 +313,7 @@ export class SqliteObjectRepository implements ObjectRepository {
       titleNorm: normalizeSearchText(input.title),
       descriptionNorm: input.description ? normalizeSearchText(input.description) : null,
       library: input.library,
-      source: input.source ?? "handwritten",
+      source,
       origin: input.origin ?? "self",
       categoryCode: input.category ?? null,
       priority: input.priority ?? "medium",
@@ -251,6 +326,22 @@ export class SqliteObjectRepository implements ObjectRepository {
       deletedAt: null,
       status: isWork ? "draft" : null,
       sourceNote: isWork ? (input.sourceNote ?? null) : null,
+      // 作品专属：publishedAt / practicedAt / metrics / settledAssetId 只能由专用流程写。
+      publishedAt: null,
+      practicedAt: null,
+      practiceMetrics: null,
+      settledAssetId: null,
+      // 资产专属：作品一律为 NULL。
+      sourceType,
+      aiStatus: isWork ? null : (input.aiStatus ?? "unscored"),
+      aiScore: null,
+      aiScoreDetail: null,
+      valueLevel,
+      valueScores: jsonOrNull(valueScores),
+      valueAssessedAt,
+      useCount: 0,
+      lastUsedAt: null,
+      originWorkId: isWork ? null : (input.originWorkId ?? null),
     };
 
     try {
@@ -272,6 +363,29 @@ export class SqliteObjectRepository implements ObjectRepository {
       .select()
       .from(objects)
       .where(and(eq(objects.id, id), isNull(objects.deletedAt)))
+      .limit(1);
+
+    if (!row) return null;
+
+    return toObject(row, loadTagLabels(this.db, [row.id]).get(row.id) ?? []);
+  }
+
+  /**
+   * 提炼幂等查重：同一草稿已产出过的 ai_extract 资产。
+   * 只看未删除的行——用户删掉旧资产后允许重新提炼。
+   */
+  async findExtractedByOriginWork(originWorkId: string): Promise<BusinessObject | null> {
+    const [row] = await this.db
+      .select()
+      .from(objects)
+      .where(
+        and(
+          eq(objects.originWorkId, originWorkId),
+          eq(objects.sourceType, "ai_extract"),
+          isNull(objects.deletedAt),
+        ),
+      )
+      .orderBy(asc(objects.createdAt))
       .limit(1);
 
     if (!row) return null;
@@ -306,6 +420,14 @@ export class SqliteObjectRepository implements ObjectRepository {
 
     if (query.status) {
       conditions.push(eq(objects.status, query.status));
+    }
+
+    if (query.aiStatus) {
+      conditions.push(eq(objects.aiStatus, query.aiStatus));
+    }
+
+    if (query.valueLevel) {
+      conditions.push(eq(objects.valueLevel, query.valueLevel));
     }
 
     if (query.search) {
@@ -496,6 +618,14 @@ export class SqliteObjectRepository implements ObjectRepository {
       throw new ValidationError("非法的作品状态", { status: input.to });
     }
 
+    // 「已实践」不是纯状态位：它必须同时沉淀内库资产（规格 v2.0 第 7 节第 2 条）。
+    if (input.to === "practiced") {
+      throw new ConflictError("标记「已实践」必须走实践结算接口，以保证立即沉淀为内库资产", {
+        id: input.objectId,
+        to: input.to,
+      });
+    }
+
     const current = await this.findById(input.objectId);
 
     if (!current) {
@@ -514,7 +644,7 @@ export class SqliteObjectRepository implements ObjectRepository {
       });
     }
 
-    // 状态机在这里是唯一的写入口：非法迁移与「外库直接 practiced」都先于 SQL 被拒绝。
+    // 状态机在这里是唯一的写入口：非法迁移与库别限制都先于 SQL 被拒绝。
     assertTransition(current.status, input.to, { library: current.library });
 
     const expectedRevision = input.expectedRevision ?? current.revision;
@@ -532,6 +662,8 @@ export class SqliteObjectRepository implements ObjectRepository {
         .update(objects)
         .set({
           status: input.to,
+          // 发布时间只在第一次进入 published 时记录，回退后重发不覆盖原始时间。
+          ...(input.to === "published" && !current.publishedAt ? { publishedAt: now } : {}),
           updatedAt: now,
           revision: current.revision + 1,
         })
@@ -713,12 +845,22 @@ export class SqliteObjectRepository implements ObjectRepository {
       });
     }
 
-    // 先于数据库 CHECK 给出可读错误：已 practiced 的作品不能迁回外库。
-    if (current.type === "work" && input.to === "external" && current.status === "practiced") {
+    // 作品只存在于外库（ADR-029 取代 ADR-008 的「先迁内库才能 practiced」）。
+    if (current.type === "work" && input.to === "internal") {
       throw new DomainError(
-        "EXTERNAL_LIBRARY_PRACTICED",
-        "已 practiced 的作品不能迁回外库",
+        "WORK_MUST_BE_EXTERNAL",
+        "作品不能迁入内库：已实践时由实践结算生成内库资产",
         { id: input.objectId, status: current.status },
+      );
+    }
+
+    // 规格 v2.0 规则 3：进入内库只有两条路——6 维高分自动通过、人工复核批准。
+    // 手工改库别会绕过打分与 5 维评估，因此资产外→内一律拒绝；内→外仍允许留痕。
+    if (current.type === "asset" && input.to === "internal") {
+      throw new DomainError(
+        "LIBRARY_ENTRY_DENIED",
+        "外库资产只能通过 AI 高分或人工复核进入内库",
+        { id: input.objectId, aiStatus: current.aiStatus },
       );
     }
 
@@ -801,5 +943,494 @@ export class SqliteObjectRepository implements ObjectRepository {
 
     return rows.map(toLibraryEvent);
   }
+
+  async applyAiScore(input: ApplyAiScoreInput): Promise<BusinessObject> {
+    const now = input.now ?? nowIso();
+    const current = await this.findById(input.objectId);
+
+    if (!current) {
+      throw new NotFoundError("对象不存在或已删除", { id: input.objectId });
+    }
+
+    if (current.type !== "asset") {
+      throw new ValidationError("只有资产可以打 AI 分", { id: input.objectId, type: current.type });
+    }
+
+    if (current.library !== "external") {
+      throw new ConflictError("只有外库资产需要打分，内库资产请直接重评价值", {
+        id: input.objectId,
+        library: current.library,
+      });
+    }
+
+    const promote = input.detail.verdict === "auto_pass";
+
+    if (promote && !input.assessment) {
+      throw new ValidationError("自动进入内库必须同时写入 5 维价值评估", {
+        id: input.objectId,
+      });
+    }
+
+    const expectedRevision = input.expectedRevision ?? current.revision;
+
+    if (expectedRevision !== current.revision) {
+      throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+        id: input.objectId,
+        expectedRevision,
+        actualRevision: current.revision,
+      });
+    }
+
+    const patch: Partial<NewObjectRow> = {
+      aiStatus: input.detail.verdict,
+      aiScore: input.detail.total,
+      aiScoreDetail: JSON.stringify(input.detail),
+      updatedAt: now,
+      revision: current.revision + 1,
+    };
+
+    if (promote && input.assessment) {
+      patch.library = "internal";
+      patch.libraryChangedAt = now;
+      patch.valueLevel = input.assessment.valueLevel;
+      patch.valueScores = JSON.stringify(input.assessment.valueScores);
+      patch.valueAssessedAt = input.assessment.valueAssessedAt;
+    }
+
+    try {
+      // 打分、转库、价值评估、审计、入队必须同时成立：不允许出现
+      // 「已在内库但没有等级」或「分数写了但库别没动」。
+      const updated = this.db.transaction((tx) => {
+        const row = tx
+          .update(objects)
+          .set(patch)
+          .where(
+            and(
+              eq(objects.id, input.objectId),
+              eq(objects.revision, expectedRevision),
+              isNull(objects.deletedAt),
+            ),
+          )
+          .returning()
+          .get();
+
+        if (!row) {
+          throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+            id: input.objectId,
+          });
+        }
+
+        if (promote) {
+          tx.insert(libraryEvents)
+            .values({
+              id: ulid(),
+              objectId: input.objectId,
+              fromLibrary: "external",
+              toLibrary: "internal",
+              reason: `AI 打分 ${input.detail.total} 分，自动沉淀（≥75）`,
+              actorSub: input.actor.sub,
+              createdAt: now,
+            })
+            .run();
+        }
+
+        writeAudit(tx, {
+          actor: input.actor,
+          action: "object.ai.score",
+          targetType: "asset",
+          targetId: input.objectId,
+          detail: {
+            total: input.detail.total,
+            verdict: input.detail.verdict,
+            model: input.detail.model,
+            promoted: promote,
+            title: current.title,
+          },
+          createdAt: now,
+        });
+
+        enqueueSyncJob(tx, "asset", input.objectId, "upsert", now);
+
+        return row;
+      });
+
+      return toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []);
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      return translateSqliteError(error);
+    }
+  }
+
+  async reviewAsset(input: ReviewAssetInput): Promise<BusinessObject> {
+    const now = input.now ?? nowIso();
+    const current = await this.findById(input.objectId);
+
+    if (!current) {
+      throw new NotFoundError("对象不存在或已删除", { id: input.objectId });
+    }
+
+    if (current.type !== "asset") {
+      throw new ValidationError("只有资产可以人工复核", { id: input.objectId, type: current.type });
+    }
+
+    if (current.aiStatus !== "needs_review") {
+      throw new ConflictError("只有待人工复核的资产可以复核", {
+        id: input.objectId,
+        aiStatus: current.aiStatus,
+      });
+    }
+
+    const approve = input.decision === "approve";
+
+    if (approve && !input.assessment) {
+      throw new ValidationError("人工通过必须同时写入 5 维价值评估", { id: input.objectId });
+    }
+
+    const expectedRevision = input.expectedRevision ?? current.revision;
+
+    if (expectedRevision !== current.revision) {
+      throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+        id: input.objectId,
+        expectedRevision,
+        actualRevision: current.revision,
+      });
+    }
+
+    const detail = mergeReviewDetail(current.aiScoreDetail, {
+      decision: input.decision,
+      note: input.note,
+      at: now,
+      actorSub: input.actor.sub,
+    });
+
+    const patch: Partial<NewObjectRow> = {
+      // 人工拒绝回到「低价值外库」，与 AI 低分共用同一个处置桶。
+      aiStatus: approve ? "approved" : "low_value",
+      aiScoreDetail: JSON.stringify(detail),
+      updatedAt: now,
+      revision: current.revision + 1,
+    };
+
+    if (approve && input.assessment) {
+      patch.library = "internal";
+      patch.libraryChangedAt = now;
+      patch.valueLevel = input.assessment.valueLevel;
+      patch.valueScores = JSON.stringify(input.assessment.valueScores);
+      patch.valueAssessedAt = input.assessment.valueAssessedAt;
+    }
+
+    try {
+      const updated = this.db.transaction((tx) => {
+        const row = tx
+          .update(objects)
+          .set(patch)
+          .where(
+            and(
+              eq(objects.id, input.objectId),
+              eq(objects.revision, expectedRevision),
+              isNull(objects.deletedAt),
+            ),
+          )
+          .returning()
+          .get();
+
+        if (!row) {
+          throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+            id: input.objectId,
+          });
+        }
+
+        if (approve) {
+          tx.insert(libraryEvents)
+            .values({
+              id: ulid(),
+              objectId: input.objectId,
+              fromLibrary: "external",
+              toLibrary: "internal",
+              reason: `人工复核通过${input.note ? `：${input.note}` : ""}`,
+              actorSub: input.actor.sub,
+              createdAt: now,
+            })
+            .run();
+        }
+
+        writeAudit(tx, {
+          actor: input.actor,
+          action: "object.ai.review",
+          targetType: "asset",
+          targetId: input.objectId,
+          detail: {
+            decision: input.decision,
+            note: input.note,
+            title: current.title,
+          },
+          createdAt: now,
+        });
+
+        enqueueSyncJob(tx, "asset", input.objectId, "upsert", now);
+
+        return row;
+      });
+
+      return toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []);
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      return translateSqliteError(error);
+    }
+  }
+
+  async applyValueAssessment(input: ApplyValueAssessmentInput): Promise<BusinessObject> {
+    const now = input.now ?? nowIso();
+    const current = await this.findById(input.objectId);
+
+    if (!current) {
+      throw new NotFoundError("对象不存在或已删除", { id: input.objectId });
+    }
+
+    if (current.type !== "asset") {
+      throw new ValidationError("只有资产需要价值评估", { id: input.objectId, type: current.type });
+    }
+
+    if (current.library !== "internal") {
+      throw new ConflictError("只有内库资产需要价值评估", {
+        id: input.objectId,
+        library: current.library,
+      });
+    }
+
+    const expectedRevision = input.expectedRevision ?? current.revision;
+
+    if (expectedRevision !== current.revision) {
+      throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+        id: input.objectId,
+        expectedRevision,
+        actualRevision: current.revision,
+      });
+    }
+
+    try {
+      const updated = this.db.transaction((tx) => {
+        const row = tx
+          .update(objects)
+          .set({
+            valueLevel: input.assessment.valueLevel,
+            valueScores: JSON.stringify(input.assessment.valueScores),
+            valueAssessedAt: input.assessment.valueAssessedAt,
+            updatedAt: now,
+            revision: current.revision + 1,
+          })
+          .where(
+            and(
+              eq(objects.id, input.objectId),
+              eq(objects.revision, expectedRevision),
+              isNull(objects.deletedAt),
+            ),
+          )
+          .returning()
+          .get();
+
+        if (!row) {
+          throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+            id: input.objectId,
+          });
+        }
+
+        writeAudit(tx, {
+          actor: input.actor,
+          action: "object.value.assess",
+          targetType: "asset",
+          targetId: input.objectId,
+          detail: {
+            level: input.assessment.valueLevel,
+            source: input.assessment.valueScores.source,
+            title: current.title,
+          },
+          createdAt: now,
+        });
+
+        enqueueSyncJob(tx, "asset", input.objectId, "upsert", now);
+
+        return row;
+      });
+
+      return toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []);
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      return translateSqliteError(error);
+    }
+  }
+
+  async settlePractice(input: SettlePracticeInput): Promise<SettlePracticeResult> {
+    const now = input.now ?? nowIso();
+    const current = await this.findById(input.workId);
+
+    if (!current) {
+      throw new NotFoundError("对象不存在或已删除", { id: input.workId });
+    }
+
+    if (current.type !== "work") {
+      throw new ValidationError("只有作品可以标记已实践", { id: input.workId, type: current.type });
+    }
+
+    if (current.library !== "external") {
+      throw new DomainError("WORK_MUST_BE_EXTERNAL", "作品只能在外库标记已实践", {
+        id: input.workId,
+        library: current.library,
+      });
+    }
+
+    if (current.status !== "published") {
+      throw new ConflictError("只有已发布的作品可以标记已实践", {
+        id: input.workId,
+        status: current.status,
+      });
+    }
+
+    if (current.settledAssetId) {
+      throw new ConflictError("该作品已经结算过，不能重复沉淀", {
+        id: input.workId,
+        settledAssetId: current.settledAssetId,
+      });
+    }
+
+    const expectedRevision = input.expectedRevision ?? current.revision;
+
+    if (expectedRevision !== current.revision) {
+      throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+        id: input.workId,
+        expectedRevision,
+        actualRevision: current.revision,
+      });
+    }
+
+    const assetId = input.asset.id ?? ulid();
+    const assetRow: NewObjectRow = {
+      id: assetId,
+      type: "asset",
+      title: input.asset.title,
+      description: input.asset.description,
+      titleNorm: normalizeSearchText(input.asset.title),
+      descriptionNorm: input.asset.description
+        ? normalizeSearchText(input.asset.description)
+        : null,
+      library: "internal",
+      source: input.asset.source,
+      origin: input.asset.origin,
+      categoryCode: input.asset.category,
+      priority: input.asset.priority,
+      archivedAt: null,
+      libraryChangedAt: now,
+      ownerSub: current.ownerSub,
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+      status: null,
+      sourceNote: null,
+      publishedAt: null,
+      practicedAt: null,
+      practiceMetrics: null,
+      settledAssetId: null,
+      sourceType: "practiced_work",
+      // 由用户手动确认「已实践」而进入内库，视同已批准。
+      aiStatus: "approved",
+      aiScore: null,
+      aiScoreDetail: null,
+      valueLevel: input.assessment.valueLevel,
+      valueScores: JSON.stringify(input.assessment.valueScores),
+      valueAssessedAt: input.assessment.valueAssessedAt,
+      useCount: 0,
+      lastUsedAt: null,
+      originWorkId: current.id,
+    };
+
+    try {
+      // 资产、标签、作品状态、审计、入队全在一个事务里：
+      // 任何一步失败都整体回滚，绝不留下「作品已实践但没有资产」的中间态。
+      const settled = this.db.transaction((tx) => {
+        const asset = tx.insert(objects).values(assetRow).returning().get();
+        replaceObjectTags(tx, asset.id, input.asset.tags);
+
+        const work = tx
+          .update(objects)
+          .set({
+            status: "practiced",
+            practicedAt: now,
+            practiceMetrics: jsonOrNull(input.metrics),
+            settledAssetId: asset.id,
+            // 不归档：practiced 是作品的正常终态，作品要继续能在默认列表、
+            // 词法检索、图谱与预览里查到；归档只由用户显式操作触发。
+            updatedAt: now,
+            revision: current.revision + 1,
+          })
+          .where(
+            and(
+              eq(objects.id, current.id),
+              eq(objects.revision, expectedRevision),
+              eq(objects.status, "published"),
+              eq(objects.library, "external"),
+              isNull(objects.deletedAt),
+            ),
+          )
+          .returning()
+          .get();
+
+        if (!work) {
+          throw new ConflictError("作品状态已变化，请重新读取后再标记已实践", {
+            id: current.id,
+          });
+        }
+
+        writeAudit(tx, {
+          actor: input.actor,
+          action: "object.practice",
+          targetType: "work",
+          targetId: current.id,
+          detail: {
+            title: current.title,
+            assetId: asset.id,
+            level: input.assessment.valueLevel,
+            metrics: input.metrics,
+          },
+          createdAt: now,
+        });
+
+        enqueueSyncJob(tx, "asset", asset.id, "upsert", now);
+        enqueueSyncJob(tx, "work", current.id, "upsert", now);
+
+        return { work, asset };
+      });
+
+      const tagGroups = loadTagLabels(this.db, [settled.work.id, settled.asset.id]);
+
+      return {
+        work: toObject(settled.work, tagGroups.get(settled.work.id) ?? []),
+        asset: toObject(settled.asset, tagGroups.get(settled.asset.id) ?? []),
+      };
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      return translateSqliteError(error);
+    }
+  }
+}
+
+/**
+ * 把人工复核痕迹并进已有的打分明细；旧数据没有明细时补一个最小骨架，
+ * 保证前端读到 `aiScoreDetail.review` 时结构稳定。
+ */
+function mergeReviewDetail(
+  detail: AiScoreDetail | null,
+  review: NonNullable<AiScoreDetail["review"]>,
+): AiScoreDetail {
+  const base: AiScoreDetail = detail ?? {
+    dimensions: [],
+    total: 0,
+    verdict: "needs_review",
+    model: "",
+    scoredAt: review.at,
+    source: "model",
+  };
+
+  return { ...base, review };
 }
 

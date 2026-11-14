@@ -7,6 +7,7 @@ import {
   sqliteTable,
   text,
   uniqueIndex,
+  type AnySQLiteColumn,
 } from "drizzle-orm/sqlite-core";
 
 /**
@@ -84,6 +85,25 @@ export const objects = sqliteTable(
     // 以下两列只有 work 有值，asset 必须为 NULL（status 由 CHECK 钉死）。
     status: text("status"),
     sourceNote: text("source_note"),
+    // ---- 作品生命周期（ADR-029）：只有 work 有值 ----
+    publishedAt: text("published_at"),
+    practicedAt: text("practiced_at"),
+    /** 实践数据快照（跳出率等），JSON 文本。 */
+    practiceMetrics: text("practice_metrics"),
+    /** 实践结算出的内库资产 id：一个作品最多结算一次（唯一索引）。 */
+    settledAssetId: text("settled_asset_id").references((): AnySQLiteColumn => objects.id),
+    // ---- 资产流转（ADR-029）：只有 asset 有值 ----
+    sourceType: text("source_type"),
+    aiStatus: text("ai_status"),
+    aiScore: integer("ai_score"),
+    aiScoreDetail: text("ai_score_detail"),
+    valueLevel: text("value_level"),
+    valueScores: text("value_scores"),
+    valueAssessedAt: text("value_assessed_at"),
+    useCount: integer("use_count").notNull().default(0),
+    lastUsedAt: text("last_used_at"),
+    /** practiced_work 资产的来源作品。 */
+    originWorkId: text("origin_work_id").references((): AnySQLiteColumn => objects.id),
   },
   (table) => [
     check("objects_type_check", sql`type in ('asset', 'work')`),
@@ -95,9 +115,12 @@ export const objects = sqliteTable(
       "objects_status_only_for_work",
       sql`type = 'work' OR status IS NULL`,
     ),
+    // 作品只存在于外库（ADR-029 取代 ADR-008）：内库只有资产。
+    check("objects_work_must_be_external", sql`type = 'asset' OR library = 'external'`),
+    // 「已实践」是外库作品的手动确认，内库不存在作品，因此这是冗余但廉价的护栏。
     check(
-      "objects_external_not_practiced",
-      sql`NOT (library = 'external' AND status = 'practiced')`,
+      "objects_practiced_requires_external",
+      sql`status IS NULL OR status <> 'practiced' OR library = 'external'`,
     ),
     // 取值域：应用层已收敛，这里钉死，避免绕过服务层写入脏值。
     check(
@@ -111,12 +134,54 @@ export const objects = sqliteTable(
       sql`type = 'work' OR source_note IS NULL`,
     ),
     check("objects_work_requires_category", sql`type = 'asset' OR category_code IS NOT NULL`),
+    // 作品专属字段对资产为 NULL；资产专属字段对作品为 NULL（use_count 保持 0）。
+    check(
+      "objects_work_only_fields",
+      sql`type = 'work' OR (published_at IS NULL AND practiced_at IS NULL
+            AND practice_metrics IS NULL AND settled_asset_id IS NULL)`,
+    ),
+    check(
+      "objects_asset_only_fields",
+      sql`type = 'asset' OR (source_type IS NULL AND ai_status IS NULL AND ai_score IS NULL
+            AND ai_score_detail IS NULL AND value_level IS NULL AND value_scores IS NULL
+            AND value_assessed_at IS NULL AND use_count = 0 AND last_used_at IS NULL
+            AND origin_work_id IS NULL)`,
+    ),
+    check(
+      "objects_source_type_check",
+      sql`source_type IS NULL OR source_type IN ('ai_extract', 'external_direct', 'practiced_work')`,
+    ),
+    check(
+      "objects_ai_status_check",
+      sql`ai_status IS NULL OR ai_status IN
+            ('unscored', 'auto_pass', 'needs_review', 'low_value', 'approved', 'rejected')`,
+    ),
+    check("objects_ai_score_check", sql`ai_score IS NULL OR (ai_score >= 0 AND ai_score <= 100)`),
+    check("objects_value_level_check", sql`value_level IS NULL OR value_level IN ('S','A','B','C')`),
+    check("objects_use_count_check", sql`use_count >= 0`),
+    // 规格 v2.0 规则 4：内库资产必须有 5 维分与等级。服务层在自动入库、
+    // 人工复核、实践结算时都会写这三列；数据库这里做最后一道，防止崩溃或
+    // 绕过服务层的直写留下「进了内库却没评估」的资产。
+    check(
+      "objects_internal_asset_requires_value",
+      sql`type <> 'asset' OR library <> 'internal'
+            OR (value_level IS NOT NULL AND value_scores IS NOT NULL
+                AND value_assessed_at IS NOT NULL)`,
+    ),
     index("objects_category_code_idx").on(table.categoryCode),
     /** 词法检索的候选面（ADR-024）：owner + 未删除 + 未归档。 */
     index("objects_owner_scope_idx").on(table.ownerSub, table.deletedAt, table.archivedAt),
     index("objects_type_status_idx").on(table.type, table.status),
     index("objects_library_idx").on(table.library),
     index("objects_updated_at_idx").on(table.updatedAt),
+    index("objects_ai_status_idx").on(table.type, table.aiStatus),
+    index("objects_value_level_idx").on(table.type, table.valueLevel),
+    // 一个作品最多结算出一个内库资产：并发点两次「已实践」也不会产生两条资产。
+    // 只约束 practiced_work：同一草稿可以产出多条 ai_extract 资产（origin_work_id
+    // 是来源线索，不是唯一键）；提炼幂等由服务层查重保证。
+    uniqueIndex("objects_origin_work_uq")
+      .on(table.originWorkId)
+      .where(sql`origin_work_id IS NOT NULL AND source_type = 'practiced_work'`),
   ],
 );
 

@@ -9113,3 +9113,444 @@ a.object-main:hover small {
     font-size: 14px;
   }
 }
+
+/* ============================================================
+   内容流转生命周期（规格 v2.0）：AI 评分 / 价值等级 / 实践沉淀
+   ============================================================ */
+
+/* ---- 徽标：与 .badge / .status-badge 同规格，只按语义色区分 ---- */
+.lifecycle-badge,
+.record-badge {
+  align-items: center;
+  border-radius: var(--r-pill);
+  display: inline-flex;
+  font-size: var(--fs-11);
+  font-weight: var(--fw-medium);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.lifecycle-badge {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+}
+
+.record-badge {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+}
+
+.lifecycle-badge.is-muted,
+.record-badge.is-muted {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.lifecycle-badge.is-ok,
+.record-badge.is-ok {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+
+.lifecycle-badge.is-info,
+.record-badge.is-info {
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+
+.lifecycle-badge.is-warn,
+.record-badge.is-warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+
+.lifecycle-badge.is-danger,
+.record-badge.is-danger {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+/* ---- 详情页：评分 / 价值面板 ---- */
+.lifecycle-panel {
+  margin-bottom: var(--sp-4);
+}
+
+.lifecycle-head {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-4);
+  justify-content: space-between;
+  padding: 18px var(--sp-6) var(--sp-3);
+}
+
+.lifecycle-head-copy {
+  min-width: 0;
+}
+
+.lifecycle-head-copy h2 {
+  font-size: var(--fs-15);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+  margin: 0;
+}
+
+.lifecycle-head-copy p {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  margin: var(--sp-1) 0 0;
+}
+
+.lifecycle-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lifecycle-body {
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-6) var(--sp-5);
+}
+
+.lifecycle-summary {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+}
+
+.lifecycle-score {
+  color: var(--text-1);
+  font-size: var(--fs-26);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-semibold);
+  line-height: 1.1;
+}
+
+.lifecycle-score small {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  font-weight: var(--fw-medium);
+  margin-left: 2px;
+}
+
+.lifecycle-verdict {
+  color: var(--text-2);
+  font-size: var(--fs-13);
+  line-height: 1.5;
+}
+
+.lifecycle-meta {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.lifecycle-hint {
+  color: var(--text-3);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* 等级方块：字母 + 语义底，一眼扫出 S/A/B/C */
+.lifecycle-level {
+  align-items: center;
+  border-radius: var(--r-sm);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--fs-16);
+  font-weight: var(--fw-semibold);
+  height: 32px;
+  justify-content: center;
+  line-height: 1;
+  min-width: 32px;
+}
+
+.lifecycle-level.is-s {
+  background: var(--ok-bg);
+  color: var(--ok-fg);
+}
+
+.lifecycle-level.is-a {
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+
+.lifecycle-level.is-b {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.lifecycle-level.is-c {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+
+.lifecycle-level.is-none {
+  background: var(--surface-2);
+  color: var(--text-3);
+}
+
+.lifecycle-toggle svg {
+  color: var(--text-3);
+  transition: transform 140ms ease;
+}
+
+.lifecycle-toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.lifecycle-review {
+  border-top: 1px dashed var(--line);
+  padding-top: var(--sp-3);
+}
+
+/* ---- 维度明细：标签 / 权重 / 得分 / 理由 ---- */
+.dim-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.dim-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.dim-head {
+  align-items: baseline;
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+}
+
+.dim-title {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dim-label {
+  color: var(--text-2);
+  font-size: var(--fs-12);
+  line-height: 1.45;
+}
+
+.dim-weight {
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  padding: 1px 6px;
+}
+
+.dim-score {
+  color: var(--text-1);
+  flex: 0 0 auto;
+  font-size: var(--fs-12);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--fw-semibold);
+}
+
+.dim-bar {
+  background: var(--surface-2);
+  border-radius: var(--r-pill);
+  height: 6px;
+  overflow: hidden;
+}
+
+.dim-fill {
+  background: var(--green-600);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 240ms ease;
+}
+
+.dim-fill.is-warn {
+  background: var(--warn-fg);
+}
+
+.dim-fill.is-danger {
+  background: var(--danger-fg);
+}
+
+.dim-reason {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.65;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 概览卡：第 5 格是「待人工复核」入口 ---- */
+.overview {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+/* 五等分时每格只有 130 多像素：收紧图标与内边距，让「待人工复核」
+   这类五个字的标签保持一行；万一放不下也按词平衡换行，不出现「待人工复/核」。 */
+@media (min-width: 1051px) {
+  .overview-item {
+    gap: var(--sp-2);
+    padding: 16px var(--sp-3);
+  }
+
+  .overview-icon {
+    height: 30px;
+    width: 30px;
+  }
+
+  .overview-copy span {
+    text-wrap: balance;
+  }
+}
+
+.overview-link {
+  color: inherit;
+  text-decoration: none;
+  transition: background 140ms ease;
+}
+
+.overview-link:hover {
+  background: var(--green-050);
+}
+
+.overview-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+@media (max-width: 1050px) {
+  .overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-item:nth-child(odd) {
+    border-left: 0;
+  }
+
+  .overview-item:nth-child(n + 3) {
+    border-top: 1px solid var(--line-soft);
+  }
+
+  .overview-item:nth-child(5) {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ---- 列表行：徽标放 meta 行，标题不跟着缩 ---- */
+.record-meta-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.record-meta-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 作品操作：AI 提炼与提炼结果 ---- */
+.object-step-ai {
+  background: var(--info-bg);
+  border-color: var(--line);
+  color: var(--info-fg);
+}
+
+.object-step-ai:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+  color: var(--info-fg);
+}
+
+.object-extract-list {
+  min-width: 0;
+}
+
+.object-extract-list a.meta-chip {
+  color: var(--text-2);
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.object-extract-list a.meta-chip:hover {
+  color: var(--text-1);
+}
+
+/* ---- 实践弹窗：数据反馈两列 ---- */
+.practice-grid {
+  display: grid;
+  gap: var(--sp-3) var(--sp-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* ---- 新建弹窗：库别说明 ---- */
+.library-hint {
+  color: var(--text-3);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+  margin: var(--sp-2) 0 0;
+}
+
+.type-card.is-disabled {
+  background: var(--surface-2);
+  border-color: var(--line-soft);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.type-card.is-disabled:hover {
+  background: var(--surface-2);
+  border-color: var(--line-soft);
+}
+
+.type-card.is-disabled .type-card-copy strong {
+  color: var(--text-3);
+}
+
+@media (max-width: 560px) {
+  .lifecycle-head {
+    padding: 14px var(--sp-4) var(--sp-2);
+  }
+
+  .lifecycle-body {
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
+  }
+
+  .lifecycle-toolbar {
+    width: 100%;
+  }
+
+  .practice-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .record-row-meta {
+    flex-wrap: wrap;
+    gap: 2px var(--sp-2);
+  }
+}

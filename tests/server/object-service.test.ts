@@ -115,7 +115,7 @@ describe("createObject / listObjects", () => {
       createObject(handle.db, actor("u1"), {
         type: "work",
         title: "播客稿",
-        library: "internal",
+        library: "external",
         category: "podcast",
       }),
     ).rejects.toBeInstanceOf(NotFoundError);
@@ -157,6 +157,31 @@ describe("createObject / listObjects", () => {
       expect(work.category).toBe("course");
     }
   });
+
+  it("作品不能直接建在内库（WORK_MUST_BE_EXTERNAL）", async () => {
+    await expect(
+      createObject(handle.db, actor("u1"), {
+        type: "work",
+        title: "内库作品",
+        library: "internal",
+        category: "course",
+      }),
+    ).rejects.toMatchObject({ code: "WORK_MUST_BE_EXTERNAL" });
+  });
+
+  it("内库资产创建时同步完成 5 维评估（未绑定模型时走确定性兜底）", async () => {
+    const asset = await createObject(handle.db, actor("u1"), {
+      type: "asset",
+      title: "内库资产",
+      library: "internal",
+    });
+
+    expect(asset.type).toBe("asset");
+    expect(asset.valueLevel).toBe("C");
+    expect(asset.valueScores?.source).toBe("fallback");
+    expect(asset.valueScores?.dimensions).toHaveLength(5);
+    expect(asset.valueAssessedAt).not.toBeNull();
+  });
 });
 
 describe("parseChangeStatusBody", () => {
@@ -184,7 +209,7 @@ describe("changeObjectStatus", () => {
     const work = await createObject(handle.db, actor("u1"), {
       type: "work",
       title: "一门课",
-      library: "internal",
+      library: "external",
       category: "course",
     });
 
@@ -228,7 +253,7 @@ describe("parseChangeLibraryBody", () => {
 });
 
 describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject", () => {
-  it("按身份完成编辑、迁移、归档与删除", async () => {
+  it("按身份完成编辑、归档与删除", async () => {
     const work = await createObject(handle.db, actor("u1"), {
       type: "work",
       title: "一门课",
@@ -247,13 +272,6 @@ describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject"
       updateObject(handle.db, actor("u2"), work.id, { title: "抢改", expectedRevision: 2 }),
     ).rejects.toBeInstanceOf(NotFoundError);
 
-    const moved = await changeObjectLibrary(handle.db, actor("u1"), work.id, {
-      to: "internal",
-      reason: "已复盘并确认",
-      expectedRevision: 2,
-    });
-    expect(moved.library).toBe("internal");
-
     const archived = await setObjectArchived(handle.db, actor("u1"), work.id, { archived: true });
     expect(archived.archivedAt).not.toBeNull();
     expect(await listObjects(handle.db, { ownerSub: "u1" })).toHaveLength(0);
@@ -263,10 +281,58 @@ describe("updateObject / changeObjectLibrary / setObjectArchived / deleteObject"
       0,
     );
   });
+
+  it("资产可迁出内库；作品与外库资产都不能手工迁入内库", async () => {
+    const asset = await createObject(handle.db, actor("u1"), {
+      type: "asset",
+      title: "内库资产",
+      library: "internal",
+    });
+
+    const moved = await changeObjectLibrary(handle.db, actor("u1"), asset.id, {
+      to: "external",
+      reason: "不再作为知识资产维护",
+    });
+    expect(moved.library).toBe("external");
+
+    // 规则 3：外库资产只能经 AI 高分或人工复核进入内库。
+    const external = await createObject(handle.db, actor("u1"), {
+      type: "asset",
+      title: "外库资产",
+      library: "external",
+    });
+
+    await expect(
+      changeObjectLibrary(handle.db, actor("u1"), external.id, {
+        to: "internal",
+        reason: "手工提升",
+      }),
+    ).rejects.toMatchObject({ code: "LIBRARY_ENTRY_DENIED" });
+
+    const work = await createObject(handle.db, actor("u1"), {
+      type: "work",
+      title: "一门课",
+      library: "external",
+      category: "course",
+    });
+
+    await expect(
+      changeObjectLibrary(handle.db, actor("u1"), work.id, {
+        to: "internal",
+        reason: "旧流程",
+      }),
+    ).rejects.toMatchObject({ code: "WORK_MUST_BE_EXTERNAL" });
+  });
 });
 
 describe("getObject / listObjectLibraryEvents", () => {
   it("按身份读取详情与迁移审计；他人对象一律 404", async () => {
+    const asset = await createObject(handle.db, actor("u1"), {
+      type: "asset",
+      title: "内库资产",
+      library: "internal",
+    });
+
     const work = await createObject(handle.db, actor("u1"), {
       type: "work",
       title: "一门课",
@@ -277,17 +343,17 @@ describe("getObject / listObjectLibraryEvents", () => {
     expect((await getObject(handle.db, "u1", work.id)).title).toBe("一门课");
     await expect(getObject(handle.db, "u2", work.id)).rejects.toBeInstanceOf(NotFoundError);
 
-    await changeObjectLibrary(handle.db, actor("u1"), work.id, {
-      to: "internal",
+    await changeObjectLibrary(handle.db, actor("u1"), asset.id, {
+      to: "external",
       reason: "已复盘确认",
     });
 
-    const events = await listObjectLibraryEvents(handle.db, "u1", work.id);
+    const events = await listObjectLibraryEvents(handle.db, "u1", asset.id);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
-      objectId: work.id,
-      fromLibrary: "external",
-      toLibrary: "internal",
+      objectId: asset.id,
+      fromLibrary: "internal",
+      toLibrary: "external",
       reason: "已复盘确认",
       actorSub: "u1",
     });
@@ -325,6 +391,21 @@ describe("parseListObjectsQuery", () => {
       limit: 20,
       offset: 5,
     });
+  });
+
+  it("支持资产流水线筛选 aiStatus / valueLevel（规格 v2.0）", () => {
+    const query = parseListObjectsQuery(
+      new URLSearchParams("type=asset&aiStatus=needs_review&valueLevel=S"),
+    );
+
+    expect(query).toEqual({ type: "asset", aiStatus: "needs_review", valueLevel: "S" });
+
+    expect(() => parseListObjectsQuery(new URLSearchParams("aiStatus=done"))).toThrow(
+      ValidationError,
+    );
+    expect(() => parseListObjectsQuery(new URLSearchParams("valueLevel=D"))).toThrow(
+      ValidationError,
+    );
   });
 
   it("越界或非法的筛选值一律报错", () => {

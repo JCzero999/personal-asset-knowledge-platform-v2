@@ -56,7 +56,8 @@ async function seedWork() {
   const work = await objects.create({
     type: "work",
     title: "如何做一门课",
-    library: "internal",
+    // 作品只存在于外库（ADR-029）；同步链路与库别无关。
+    library: "external",
     category: "article",
     ownerSub: OWNER,
     tags: ["教学"],
@@ -112,13 +113,8 @@ describe("runSyncOnce / upsert", () => {
   it("把最新的库别、归档状态写进 meta_fields，并把引用标记为已同步", async () => {
     const { work, ref } = await seedWork();
 
-    // 真实路径：跨库迁移与归档各自在写事务里入队，同一对象的 upsert 会合并成一条。
-    await objects.changeLibrary({
-      objectId: work.id,
-      to: "external",
-      reason: "来源已验证",
-      actorSub: OWNER,
-    });
+    // 作品只存在于外库（ADR-029），不能跨库迁移；归档同样在写事务里入队，
+    // 与创建时的 upsert 合并成一条，meta_fields 仍按最新状态渲染。
     await objects.archive(work.id);
 
     const gateway = new FakeGateway();

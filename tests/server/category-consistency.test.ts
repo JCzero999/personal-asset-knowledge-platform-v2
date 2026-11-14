@@ -47,7 +47,7 @@ describe("新建与编辑共用分类 / 标签字段", () => {
         {
           type: "work",
           title: "第一期",
-          library: "internal",
+          library: "external",
           category: category.code,
           tags: [tag.label],
         },
@@ -108,7 +108,7 @@ describe("新建与编辑共用分类 / 标签字段", () => {
       handle.db,
       actor("u1"),
       parseCreateObjectBody(
-        { type: "work", title: "不能没有分类", library: "internal", category: "article" },
+        { type: "work", title: "不能没有分类", library: "external", category: "article" },
         "u1",
       ),
     );
@@ -129,7 +129,7 @@ describe("新建与编辑共用分类 / 标签字段", () => {
       handle.db,
       actor("u1"),
       parseCreateObjectBody(
-        { type: "work", title: "旧作品", library: "internal", category: category.code },
+        { type: "work", title: "旧作品", library: "external", category: category.code },
         "u1",
       ),
     );
