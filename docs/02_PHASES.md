@@ -427,6 +427,20 @@
 - [x] **质量门**：`tsc --noEmit` 0；`eslint .` 0 error / 14 warning（既有）；`vitest run --maxWorkers=2` **51 文件 774 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` 41/41
 - [ ] **未验证**：真实 Logto 身份下的三栏布局截图未重拍（本轮验收走 mock 身份隔离实例）；低端集显实机帧率与触屏真机的手势未实测；生产构建的浏览器验收待本轮交付前补跑
 
+### Phase 6H：图谱三处实测问题 · Shift 看路径 · 底部搜索卡 · 相关文档（ADR-028，2026-11-14）
+
+> 用户截图标出三处：详情卡里「Shift + 单击另一个实体，可以直接连线看路径」点了没反应；右下角「问图谱」用的是本机模型，且位置样式要照首页搜索框改到页面最下方居中；详情卡要加「相关文档」入口，点了进文章详情。
+
+- [x] **问题1 修复**：3D 指针桥只上报「选中」意图，`MouseEvent.shiftKey` 在中间层丢失；补充 `SceneIntentOptions` 让 3D 意图带上 `shiftKey`，容器 `handleIntent` 统一走 `handleSelect(id, options)`，Shift 看路径在 2D / 3D 共用同一语义
+- [x] **问题2 重构**：LightRAG 改用 `only_need_context` 只做检索（`references[].file_path` 按 `<SEP>` 拆分、逐个过 ADR-011 归属过滤），答案由「设置 → 大模型」绑定的模型经 OpenAI 兼容 `/chat/completions` 生成；新增 `graph-answer-service.ts`（中文系统提示、4000 / 12000 字符上下文预算、800 token 上限、密钥只进请求头、上游错误体丢弃后按状态码给中文文案）；`POST /api/graph/query` 返回 `{ question, response, references, model, provider }`
+- [x] **问题2 版式**：删除右下角问答面板，新增 `graph-search-bar.tsx`——贴底居中 `min(720px, 100% − 32px)` 的玻璃搜索胶囊 + 浮在其上方的同宽结果卡（署名「由 provider/model 生成」并列出引用文档），dock 高度写入 `--graph-search-h` 供提示条与缩放按钮让位
+- [x] **问题3**：新增 `GET /api/graph/entity/documents?label=`，按实体在 LightRAG 的 `file_path` 反查本账号对象（≤10 条、按标题排序、来源为空时词法兜底、查不到返回空数组）；详情卡新增「相关文档」折叠区，展开现取（票据 + AbortController 丢弃跨实体迟到响应）并自动滚进可视区，条目链接 `/workspace/{id}`
+- [x] **版式实测（生产构建）**：1440 搜索卡 720×58 @ (510,826)，中心 870 = 内容区中心、底距 16；1920 720 宽居中、底距 16；390 内容区 314 宽、搜索卡 290 左右各 12、底距 12，详情抽屉（464 高）打开时 dock `display:none` 让位且无重叠；列表模式为静态面板、无玻璃层
+- [x] **行为实测**：2D 单击「知识管理」→ Shift 单击「卡片笔记」出现「知识管理 → 卡片笔记 · 1 跳」且选中留在起点；「相关文档」首条在可视区内，点击落在 `/workspace/6e0b1f10-…7c01`、详情栏 `data-selected=true`；底部搜索框提问后结果卡出现，假绑定模型收到 `Bearer` 密钥与检索上下文，署名「由 custom/round3-fake-model 生成」，页面不再出现「本机模型」
+- [x] **独立验收**：新增 `scripts/verify-graph-round3.mjs`（临时库 + 假 LightRAG + 假绑定模型 + 无头 Chromium，对 `next start` 生产包）；`scripts/verify-graph-glass.mjs` 改跑生产 `.next`、选择器迁到 `.graph-ask-dock` / `.graph-ask-form`，ADR-027 回归全过
+- [x] **质量门**：`tsc --noEmit` 0；`eslint` 0 error / 14 warning（既有）；`vitest` **54 文件 794 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败 · 字面量 26；`check:contrast` 41/41
+- [ ] **未验证**：3D 画布里「真按 Shift 点两个实体」未做像素级复现（无头下节点投影不可确定），以 3D 画布中心单击选中 + 2D 同一 `handleSelect` 覆盖；真实账号 + 真实供应商密钥下的问答未跑（验收用假模型，真实链路只实测了 LightRAG 检索段）
+
 ## 下一步行动
 
 按优先级：
@@ -434,7 +448,7 @@
 1. ~~**Phase 1 收尾**~~：已完成（2026-11-11）。测试账号 `pakp_test`（`sub` `7vjekboa76zu`）走通登录 → `/workspace`，`ownerSub` 已记入 [04_INTEGRATION.md](04_INTEGRATION.md)。
 2. ~~**前端登录态冒烟**~~：已完成。真实身份下 `/search`、`/workspace/[id]`、`/graph` 均渲染正常，创建资产 201、非法请求 400、匿名 401。
 3. ~~**失败路径实测**~~：已完成（2026-11-13，真实 RAGFlow 容器 + 隔离实例实测）。① **RAGFlow 不可用时**：上传内容返回 `500 INTERNAL`，`details.cause` 为 `fetch failed` 且带失败端点；语义检索降级为 `semantic.status = "unavailable"`，`/search` 页显示「语义检索暂不可用，当前只显示关键词匹配结果」而关键词结果照常返回；`/api/graph/status`、`/api/objects` 等本地接口仍 200。② **outbox 退避**：RAGFlow 停机后 PATCH 对象入队 `upsert`，第 1 次失败 `attempts=1`、`available_at +60s`，第 2 次 `attempts=2`、`+120s`，`last_error` 记录失败端点；RAGFlow 恢复后第 3 次投递成功、`last_error` 清空、引用回到 `synced`。③ **解析失败回写**：上传结构损坏的 PDF（RAGFlow 接受上传但解析报错），轮询后 `parseStatus = "failed"`、`parseError` 写入 RAGFlow 原始报错「cannot convert float NaN to integer」，`/api/parse/run` 统计 `failed: 1` 并带 `refId` / `documentId`。④ 图谱页与 RAGFlow 无关（后端是 LightRAG），停机期间 `/graph` 正常渲染，这一条也一并确认。
-4. **多轮问答会话**：需要 chat model API key；当前 RAGFlow 只有本地 embedding，检索可用但生成不可用。
+4. **多轮问答会话**：图谱侧已改由「设置 → 大模型」绑定的模型作答（Phase 6H），问答会话的多轮历史仍待做；RAGFlow 侧只有本地 embedding，检索可用但生成不可用，需要 chat model API key。
 5. **图谱强隔离（待做）**：读侧过滤已完成（ADR-011）；真正强隔离需按 `ownerSub` 拆分 LightRAG 实例 / 工作目录，触发条件是多账号同时使用图谱。
 6. ~~**生产运行检查**~~：已完成。`next build` + `next start`（3100）通过，health 200 / 首页 200 / 未登录 307 / sign-in 307 到 Logto；开机自启由 `scripts\autostart.ps1` + 启动文件夹负责。
 7. **管理员后台验收（待你本人确认）**：`.env.local` 已写入 `ADMIN_SUBS=gdv8t04dw4ca`（`JCzero001` 的 Logto `sub`）；用该账号登录后侧栏应出现「系统管理」，进入 `/admin` 可看到依赖服务与统计。若侧栏没有入口，重启开发服务让环境变量生效。本轮词表管理页已用测试账号（临时加入 `ADMIN_SUBS`，测后还原）完成真实登录实测，你自己账号的入口仍待亲自看一眼。
