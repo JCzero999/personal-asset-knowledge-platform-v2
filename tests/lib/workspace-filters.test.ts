@@ -15,6 +15,7 @@ const filters: WorkspaceFilters = {
   library: null,
   status: null,
   tag: null,
+  added: null,
   sort: "updated",
   archived: "active",
 };
@@ -42,6 +43,7 @@ describe("parseWorkspaceFilters", () => {
       library: "external",
       status: "published",
       tag: null,
+      added: null,
       sort: "title",
       archived: "only",
     });
@@ -75,6 +77,15 @@ describe("parseWorkspaceFilters", () => {
     expect(parseWorkspaceFilters({ tag: "  工具类 " }).tag).toBe("工具类");
     expect(parseWorkspaceFilters({ tag: "   " }).tag).toBeNull();
     expect(hasActiveFilters(parseWorkspaceFilters({ tag: "工具类" }))).toBe(true);
+  });
+
+  it("新增时间窗只接受 1d / 7d / 30d，其余退回不限", () => {
+    expect(parseWorkspaceFilters({ added: "7d" }).added).toBe("7d");
+    expect(parseWorkspaceFilters({ added: "30d" }).added).toBe("30d");
+    expect(parseWorkspaceFilters({ added: "90d" }).added).toBeNull();
+    expect(parseWorkspaceFilters({ added: "week" }).added).toBeNull();
+    expect(parseWorkspaceFilters({}).added).toBeNull();
+    expect(hasActiveFilters(parseWorkspaceFilters({ added: "7d" }))).toBe(true);
   });
 
   it("重复参数取第一个", () => {
@@ -124,6 +135,14 @@ describe("buildWorkspaceHref", () => {
     );
   });
 
+  it("新增时间窗写进 URL，摘掉后不留参数", () => {
+    expect(buildWorkspaceHref(filters, { added: "7d" })).toBe("/workspace?added=7d");
+    expect(buildWorkspaceHref({ ...filters, added: "7d" }, { added: null })).toBe("/workspace");
+    expect(
+      buildWorkspaceHref(filters, { added: "7d", type: "asset", library: "external" }),
+    ).toBe("/workspace?type=asset&library=external&added=7d");
+  });
+
   it("解析后再生成的地址可以往返一致", () => {
     const href = buildWorkspaceHref(filters, {
       q: "asset",
@@ -138,6 +157,7 @@ describe("buildWorkspaceHref", () => {
       library: "external",
       status: null,
       tag: null,
+      added: null,
       sort: "title",
       archived: "active",
     });
@@ -172,6 +192,20 @@ describe("toListObjectsQuery", () => {
       limit: 50,
     });
   });
+
+  it("新增时间窗换算成 createdSince（按注入的 now 计算）", () => {
+    const now = new Date("2026-11-14T04:00:00.000Z");
+    expect(toListObjectsQuery({ ...filters, added: "7d" }, 100, now).createdSince).toBe(
+      "2026-11-07T04:00:00.000Z",
+    );
+    expect(toListObjectsQuery({ ...filters, added: "1d" }, 100, now).createdSince).toBe(
+      "2026-11-13T04:00:00.000Z",
+    );
+    expect(toListObjectsQuery({ ...filters, added: "30d" }, 100, now).createdSince).toBe(
+      "2026-10-15T04:00:00.000Z",
+    );
+    expect(toListObjectsQuery(filters, 100, now)).not.toHaveProperty("createdSince");
+  });
 });
 
 describe("activeFilterChips", () => {
@@ -183,6 +217,7 @@ describe("activeFilterChips", () => {
         library: "external",
         status: "published",
         tag: "工具类",
+        added: "7d",
         sort: "title",
         archived: "only",
       }),
@@ -192,6 +227,7 @@ describe("activeFilterChips", () => {
       { key: "library", label: "外库" },
       { key: "status", label: "已发布" },
       { key: "tag", label: "标签「工具类」" },
+      { key: "added", label: "近 7 天" },
       { key: "archived", label: "已归档" },
       { key: "sort", label: "按标题排序" },
     ]);

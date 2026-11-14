@@ -1,0 +1,228 @@
+{
+  "generatedAt": "2026-11-14T04:16:22.454Z",
+  "sourceDb": "D:\\projects\\Personal Asset & Knowledge PlatformV2\\data\\app.db",
+  "baseUrl": "http://localhost:3155",
+  "samples": 5,
+  "results": [
+    {
+      "id": "01M7C0S0QME8S324W4APQZFNWW",
+      "title": "代理工具使用与退出注意事项",
+      "status": 200,
+      "elapsedMs": 1388,
+      "total": 39,
+      "verdict": "low_value",
+      "library": "external",
+      "valueLevel": null,
+      "model": "deepseek-chat",
+      "dimensions": [
+        {
+          "key": "completeness",
+          "score": 55,
+          "reason": "列出使用与退出要点，但无问题背景与完整步骤结构"
+        },
+        {
+          "key": "insight",
+          "score": 30,
+          "reason": "仅为代理工具通用常识复述，无个人视角或因果分析"
+        },
+        {
+          "key": "actionability",
+          "score": 45,
+          "reason": "有具体操作提示，但缺少检查清单与判断标准"
+        },
+        {
+          "key": "relevance",
+          "score": 25,
+          "reason": "与内库开发、案例类资产关联弱，互补性低"
+        },
+        {
+          "key": "timeliness",
+          "score": 40,
+          "reason": "依赖具体工具行为，底层逻辑较稳定但价值有限"
+        },
+        {
+          "key": "credibility",
+          "score": 35,
+          "reason": "AI提炼自建，无数据支撑与实践验证痕迹"
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "01M7C0S0QK604EWD60TSSW3TX3",
+      "title": "下载按钮不出现的排查路径",
+      "status": 200,
+      "elapsedMs": 1691,
+      "total": 46,
+      "verdict": "low_value",
+      "library": "external",
+      "valueLevel": null,
+      "model": "deepseek-chat",
+      "dimensions": [
+        {
+          "key": "completeness",
+          "score": 55,
+          "reason": "有排查顺序但缺问题背景与验证结论，结构较简"
+        },
+        {
+          "key": "insight",
+          "score": 40,
+          "reason": "属常见代理排查常识，无个人视角或因果分析"
+        },
+        {
+          "key": "actionability",
+          "score": 60,
+          "reason": "给出三步具体操作，但缺判断标准与失败分支"
+        },
+        {
+          "key": "relevance",
+          "score": 35,
+          "reason": "与内库开发降本及案例集主题关联弱，互补性低"
+        },
+        {
+          "key": "timeliness",
+          "score": 50,
+          "reason": "依赖系统代理机制，底层逻辑稳定但工具相关易过时"
+        },
+        {
+          "key": "credibility",
+          "score": 30,
+          "reason": "AI提炼自建，无数据支撑与实践验证痕迹"
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "01M7C0S0QJPAVKM7C69T97B6C6",
+      "title": "代理类工具启动自检清单",
+      "status": 200,
+      "elapsedMs": 1389,
+      "total": 44,
+      "verdict": "low_value",
+      "library": "external",
+      "valueLevel": null,
+      "model": "deepseek-chat",
+      "dimensions": [
+        {
+          "key": "completeness",
+          "score": 55,
+          "reason": "有启动确认、地址核对、异常处理三步，但缺前置条件与失败分支。"
+        },
+        {
+          "key": "insight",
+          "score": 30,
+          "reason": "仅复述启动自检常识，无因果分析或个人视角。"
+        },
+        {
+          "key": "actionability",
+          "score": 60,
+          "reason": "给出具体端口与重启动作，可执行但步骤较简略。"
+        },
+        {
+          "key": "relevance",
+          "score": 35,
+          "reason": "与内库开发降本指南弱相关，属补充但非核心。"
+        },
+        {
+          "key": "timeliness",
+          "score": 45,
+          "reason": "依赖具体端口与工具版本，底层逻辑稳定但易过时。"
+        },
+        {
+          "key": "credibility",
+          "score": 40,
+          "reason": "AI提炼自建，无数据支撑或实践验证痕迹。"
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "01M7C0S0QHMJE1Z22ZWKKPE12A",
+      "title": "证书信任错误的手动修复",
+      "status": 200,
+      "elapsedMs": 1487,
+      "total": 44,
+      "verdict": "low_value",
+      "library": "external",
+      "valueLevel": null,
+      "model": "deepseek-chat",
+      "dimensions": [
+        {
+          "key": "completeness",
+          "score": 55,
+          "reason": "问题-方法-结论结构基本完整，但缺少具体操作步骤和配置示例"
+        },
+        {
+          "key": "insight",
+          "score": 40,
+          "reason": "仅描述常见证书信任问题，属常识性排障，无个人视角或因果分析"
+        },
+        {
+          "key": "actionability",
+          "score": 45,
+          "reason": "给出两种方向但无具体命令、路径或配置项，难以直接落地"
+        },
+        {
+          "key": "relevance",
+          "score": 35,
+          "reason": "与内库现有开发指南和案例集关联弱，互补性有限"
+        },
+        {
+          "key": "timeliness",
+          "score": 60,
+          "reason": "证书信任机制底层逻辑稳定，但依赖具体工具版本场景"
+        },
+        {
+          "key": "credibility",
+          "score": 30,
+          "reason": "AI提炼且无实践痕迹、数据或来源验证"
+        }
+      ],
+      "error": null
+    },
+    {
+      "id": "01M7C0S0QFSGRPPFAD1TT2SHB2",
+      "title": "本地代理注入下载按钮原理",
+      "status": 200,
+      "elapsedMs": 1408,
+      "total": 50,
+      "verdict": "low_value",
+      "library": "external",
+      "valueLevel": null,
+      "model": "deepseek-chat",
+      "dimensions": [
+        {
+          "key": "completeness",
+          "score": 60,
+          "reason": "有机制说明和排查思路，但缺少端口配置、验证步骤等细节"
+        },
+        {
+          "key": "insight",
+          "score": 55,
+          "reason": "点明按钮缺失源于流量未走代理，有一定因果分析但较浅"
+        },
+        {
+          "key": "actionability",
+          "score": 50,
+          "reason": "给出检查代理端口和重载页面两步，但无具体操作与判断标准"
+        },
+        {
+          "key": "relevance",
+          "score": 30,
+          "reason": "与内库现有开发指南和案例集关联弱，互补性有限"
+        },
+        {
+          "key": "timeliness",
+          "score": 65,
+          "reason": "代理注入底层逻辑稳定，但依赖具体工具版本细节"
+        },
+        {
+          "key": "credibility",
+          "score": 35,
+          "reason": "AI提炼自建来源，无数据支撑与实践验证痕迹"
+        }
+      ],
+      "error": null
+    }
+  ]
+}

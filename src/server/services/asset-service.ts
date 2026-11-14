@@ -1,4 +1,6 @@
-import { inArray } from "drizzle-orm";
+import { createHash } from "node:crypto";
+
+import { asc, inArray } from "drizzle-orm";
 
 import { ConflictError, DomainError, ValidationError } from "../../domain/errors";
 import { MAX_TAGS_PER_OBJECT, normalizeTag } from "../../domain/vocabulary";
@@ -16,6 +18,7 @@ import {
   scoreAssetByModel,
   type AssetAiDeps,
 } from "./asset-ai";
+import { writeAudit } from "./audit-service";
 import { getObject } from "./object-service";
 
 /**
@@ -39,6 +42,15 @@ const MAX_INTERNAL_TITLES = 30;
 
 /** practice_metrics 的体积上限（JSON 文本字节数），防止把大块日志写进对象行。 */
 const MAX_PRACTICE_METRICS_BYTES = 4_000;
+
+/** 提炼提示词里展示的已有标签上限（控制上下文长度）。 */
+const MAX_PROMPT_TAGS = 60;
+
+/** 正文快照：只留前 2000 字，完整原文仍经 origin_work_id 回指作品。 */
+const SNAPSHOT_MAX_CHARS = 2_000;
+
+/** 读取正文的超时上限：RAGFlow 卡住不能拖住结算。 */
+const SNAPSHOT_READ_TIMEOUT_MS = 10_000;
 
 export interface AssetServiceDeps extends AssetAiDeps {
   /** 注入作品正文读取（测试用）：默认从 content_refs 指向的 RAGFlow 文档取已解析分块。 */
@@ -121,6 +133,84 @@ async function listInternalAssetTitles(db: AppDatabase, ownerSub: string): Promi
   });
 
   return rows.map((row) => row.title);
+}
+
+/** 提示词里展示的已有标签：让模型优先复用词表，而不是每篇都造新词。 */
+function listPromptTags(db: AppDatabase): string[] {
+  return db
+    .select({ label: tags.label })
+    .from(tags)
+    .orderBy(asc(tags.sortOrder), asc(tags.label))
+    .limit(MAX_PROMPT_TAGS)
+    .all()
+    .map((row) => row.label);
+}
+
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+interface ContentSnapshot {
+  contentHash: string;
+  contentSnapshot: string;
+  contentSnapshotAt: string;
+}
+
+/**
+ * 实践结算的正文快照（规格 v2.1 §4）：读正文 → sha256 + 前 2000 字。
+ *
+ * 读取失败或超时都只记审计、返回 null，**不阻塞结算**——「已实践必须立即
+ * 沉淀」是硬规则；快照只是让资产在作品大改后仍有据可查。
+ */
+async function readContentSnapshot(
+  db: AppDatabase,
+  actor: ActorContext,
+  workId: string,
+  deps: AssetServiceDeps,
+  at: string,
+): Promise<ContentSnapshot | null> {
+  const reader = deps.readContent ?? readWorkContentFromRagflow;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`读取正文超过 ${SNAPSHOT_READ_TIMEOUT_MS / 1_000} 秒`)),
+        SNAPSHOT_READ_TIMEOUT_MS,
+      );
+    });
+    const content = (
+      await Promise.race([reader(db, actor.sub, workId), timeout])
+    ).trim();
+
+    if (!content) return null;
+
+    return {
+      contentHash: sha256Hex(content),
+      contentSnapshot: content.slice(0, SNAPSHOT_MAX_CHARS),
+      contentSnapshotAt: at,
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "读取正文失败";
+
+    try {
+      writeAudit(db, {
+        actor,
+        action: "value.snapshot_failed",
+        targetType: "work",
+        targetId: workId,
+        detail: { reason },
+        result: "error",
+        createdAt: at,
+      });
+    } catch (auditError) {
+      console.error("[asset] 写快照失败审计时出错", auditError);
+    }
+
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -281,11 +371,16 @@ export async function extractAssetsFromWork(
     );
   }
 
-  const candidates = await extractAssetCandidates(db, work, content, deps);
+  const candidates = await extractAssetCandidates(db, work, content, deps, {
+    availableTags: listPromptTags(db),
+  });
 
   if (candidates.length === 0) return [];
 
   const repo = repoFor(db);
+  const at = nowIso();
+  // 快照口径（v2.1 §1）：excerpt 存 content_snapshot，hash 用整篇正文。
+  const contentHash = sha256Hex(content);
   const created: BusinessObject[] = [];
 
   for (const candidate of candidates) {
@@ -306,6 +401,11 @@ export async function extractAssetsFromWork(
         ownerSub: actor.sub,
         // 来源线索：批量提炼的资产都指回触发它的草稿（幂等查重也看这一列）。
         originWorkId: work.id,
+        // 正文快照：模型逐字摘录的片段 + 整篇正文 hash，作品大改后仍可核对。
+        contentHash,
+        contentSnapshot: candidate.excerpt,
+        contentSnapshotAt: at,
+        now: at,
       }),
     );
   }
@@ -475,12 +575,15 @@ export async function practiceWork(
   }
 
   const at = nowIso();
+  // 快照与模型评估都在事务外完成：RAGFlow 读取失败 / 模型失败都不能把
+  // 「已实践」卡在半路（快照失败只记审计，模型失败退回确定性兜底）。
+  const snapshot = await readContentSnapshot(db, actor, objectId, deps, at);
   const scores = await evaluateValueScores(db, work, deps, {
     now: at,
     fallbackOnError: true,
   });
 
-  return repoFor(db).settlePractice({
+  const settled = await repoFor(db).settlePractice({
     workId: objectId,
     expectedRevision: params.expectedRevision,
     metrics: params.metrics,
@@ -497,10 +600,30 @@ export async function practiceWork(
       priority: work.priority,
       source: work.source,
       origin: work.origin,
+      ...(snapshot ?? {}),
     },
     actor,
     now: at,
   });
+
+  if (scores.source === "fallback") {
+    // 兜底结算会让资产直接落 C 级，必须留痕供「批量重评 / 指标」发现。
+    try {
+      writeAudit(db, {
+        actor,
+        action: "value.fallback",
+        targetType: "asset",
+        targetId: settled.asset.id,
+        detail: { workId: objectId, reason: "模型不可用或返回脏数据，按确定性兜底评为 C" },
+        result: "error",
+        createdAt: at,
+      });
+    } catch (error) {
+      console.error("[asset] 写兜底审计失败", error);
+    }
+  }
+
+  return settled;
 }
 
 /* -------------------------------------------------------------------------- */

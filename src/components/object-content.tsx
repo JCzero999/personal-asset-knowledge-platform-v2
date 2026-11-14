@@ -15,6 +15,7 @@ import {
   parseStatusTones,
 } from "@/lib/content-format";
 import { contentRoleLabels } from "@/lib/object-labels";
+import { reportAssetUsage } from "./asset-usage";
 import { ContentEditor } from "./content-editor";
 import { Icon } from "./icon";
 
@@ -28,10 +29,13 @@ export function ObjectContent({
   objectId,
   objectTitle,
   refs,
+  usageObjectId = null,
 }: {
   objectId: string;
   objectTitle: string;
   refs: ContentRef[];
+  /** 资产的 id：打开原文 / 复制正文时上报有效调用；作品传 null。 */
+  usageObjectId?: string | null;
 }) {
   const router = useRouter();
   const idPrefix = useId();
@@ -39,6 +43,7 @@ export function ObjectContent({
   const attachmentInputRef = useRef<HTMLInputElement>(null);
 
   const [uploading, setUploading] = useState<ContentRole | null>(null);
+  const [copying, setCopying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [refreshing, startRefresh] = useTransition();
@@ -128,6 +133,27 @@ export function ObjectContent({
       existing: primaryRef && isEditableTextContent(primaryRef) ? primaryRef : null,
       replacing: hasPrimary,
     });
+  }
+
+  /** 复制主内容全文：成功即算一次有效调用（`copy`）。 */
+  async function copyPrimary(ref: ContentRef) {
+    if (copying) return;
+    setCopying(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/objects/${objectId}/content/${ref.id}`, {
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error("读取失败");
+      await navigator.clipboard.writeText(await response.text());
+      setToast("已复制全文，可以直接粘贴使用。");
+      if (usageObjectId) void reportAssetUsage(usageObjectId, "copy");
+    } catch {
+      setError("复制失败，可以点「查看原文」在新标签里手动选择。");
+    } finally {
+      setCopying(false);
+    }
   }
 
   return (
@@ -278,27 +304,57 @@ export function ObjectContent({
                   ) : null}
                 </div>
 
-                {ref.role === "primary" && isEditableTextContent(ref) ? (
-                  <button
-                    className="btn btn-ghost content-download"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => setEditor({ existing: ref, replacing: true })}
-                    aria-label={`编辑 ${ref.documentName ?? "主内容"} 的正文`}
-                  >
-                    <Icon name="edit" size={15} />
-                    编辑
-                  </button>
-                ) : null}
+                <div className="content-actions">
+                  {ref.role === "primary" ? (
+                    <a
+                      className="btn btn-ghost content-download"
+                      href={`/api/objects/${objectId}/content/${ref.id}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`在新标签查看 ${ref.documentName ?? "主内容"}`}
+                      onClick={() => {
+                        if (usageObjectId) void reportAssetUsage(usageObjectId, "open_source");
+                      }}
+                    >
+                      <Icon name="eye" size={15} />
+                      查看原文
+                    </a>
+                  ) : null}
 
-                <a
-                  className="btn btn-secondary content-download"
-                  href={`/api/objects/${objectId}/content/${ref.id}`}
-                  aria-label={`下载 ${ref.documentName ?? "内容文件"}`}
-                >
-                  <Icon name="download" size={15} />
-                  下载
-                </a>
+                  {ref.role === "primary" && isEditableTextContent(ref) ? (
+                    <button
+                      className="btn btn-ghost content-download"
+                      type="button"
+                      disabled={busy || copying}
+                      onClick={() => void copyPrimary(ref)}
+                    >
+                      <Icon name="copy" size={15} />
+                      {copying ? "复制中…" : "复制"}
+                    </button>
+                  ) : null}
+
+                  {ref.role === "primary" && isEditableTextContent(ref) ? (
+                    <button
+                      className="btn btn-ghost content-download"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setEditor({ existing: ref, replacing: true })}
+                      aria-label={`编辑 ${ref.documentName ?? "主内容"} 的正文`}
+                    >
+                      <Icon name="edit" size={15} />
+                      编辑
+                    </button>
+                  ) : null}
+
+                  <a
+                    className="btn btn-secondary content-download"
+                    href={`/api/objects/${objectId}/content/${ref.id}`}
+                    aria-label={`下载 ${ref.documentName ?? "内容文件"}`}
+                  >
+                    <Icon name="download" size={15} />
+                    下载
+                  </a>
+                </div>
               </li>
             );
           })}

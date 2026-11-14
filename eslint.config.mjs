@@ -18,6 +18,9 @@ export default defineConfig([
     // /graph 液态玻璃与 ego 安全区验收的隔离实例构建产物
     ".next-glass/**",
     ".next-glass-ego/**",
+    // v2.1 界面验收的隔离实例构建产物（scripts/verify-v21-ui.mjs、verify-v21-batch2.mjs）
+    ".next-v21/**",
+    ".next-v21b2/**",
     ".venv/**",
     "**/.venv/**",
     "agents/**",

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AI_DIMENSIONS, VALUE_DIMENSION_KEYS } from "../../src/domain/value";
@@ -22,10 +24,34 @@ interface ChatPlan {
   scoreError?: boolean;
 }
 
+const CONTENT = [
+  "选题四象限法把选题按「需求强度」和「差异度」两个维度切分，形成四个象限。第一象限是需求强、差异度高，适合优先投入；第二象限是需求强、差异度低，需要靠执行和渠道取胜；第三象限是需求弱、差异度高，适合小成本试验；第四象限是需求弱、差异度低，应当直接放弃。",
+  "交付检查清单用于开课前逐项确认：先确认课程目标与受众，再检查素材、演练与备份方案，最后确认通知、场地和设备。清单的价值不在于长，而在于每一项都能在出问题前被检查到，并且每次复盘后只增补真正踩过的坑，把经验变成下一次的默认动作。",
+].join("\n\n");
+
+/** 摘要 60–120 字、摘录 100–300 字且逐字摘自 CONTENT（v2.1 §1）。 */
 const EXTRACT_BODY = JSON.stringify({
   assets: [
-    { title: "选题四象限", description: "用需求与差异度筛选题", tags: ["复盘", "未登记标签"] },
-    { title: "交付检查清单", description: "开课前逐项确认", tags: [] },
+    {
+      title: "选题四象限法",
+      summary:
+        "选题四象限用需求强度和差异度两个维度把题目分成四类，只有需求强且差异度高的象限值得优先投入，其余象限要么靠执行取胜，要么小成本试验，要么直接放弃。",
+      scenario: "判断一个选题是否值得投入",
+      keyPoints: ["需求强、差异度高：优先投入资源", "需求弱、差异度低：直接放弃"],
+      excerpt:
+        "选题四象限法把选题按「需求强度」和「差异度」两个维度切分，形成四个象限。第一象限是需求强、差异度高，适合优先投入；第二象限是需求强、差异度低，需要靠执行和渠道取胜；第三象限是需求弱、差异度高，适合小成本试验；第四象限是需求弱、差异度低，应当直接放弃。",
+      tags: ["复盘", "未登记标签"],
+    },
+    {
+      title: "交付检查清单",
+      summary:
+        "交付检查清单把课程开始前必须确认的事项固定下来，依次检查目标与受众、素材与演练、通知与设备，价值在于每项都能在出问题前被发现，并在每次复盘后只增补真正踩过的坑。",
+      scenario: "开课前做最后确认",
+      keyPoints: ["按目标、素材、通知、设备的顺序逐项确认", "每次复盘后只增补真正踩过的坑"],
+      excerpt:
+        "交付检查清单用于开课前逐项确认：先确认课程目标与受众，再检查素材、演练与备份方案，最后确认通知、场地和设备。清单的价值不在于长，而在于每一项都能在出问题前被检查到，并且每次复盘后只增补真正踩过的坑，把经验变成下一次的默认动作。",
+      tags: [],
+    },
   ],
 });
 
@@ -91,8 +117,6 @@ function draftWork(title = "复盘方法论"): Promise<BusinessObject> {
   });
 }
 
-const CONTENT = "正文：选题四象限与交付检查清单的完整说明。";
-
 function deps(plan: ChatPlan = {}, content = CONTENT) {
   return {
     chat: plannedChat(plan),
@@ -108,7 +132,7 @@ describe("extractAssetsFromWork", () => {
     const assets = await extractAssetsFromWork(handle.db, actor("u1"), work.id, deps());
 
     expect(assets).toHaveLength(2);
-    expect(assets.map((asset) => asset.title)).toEqual(["选题四象限", "交付检查清单"]);
+    expect(assets.map((asset) => asset.title)).toEqual(["选题四象限法", "交付检查清单"]);
 
     for (const asset of assets) {
       expect(asset).toMatchObject({
@@ -130,6 +154,16 @@ describe("extractAssetsFromWork", () => {
     // 只挂词表里已有的标签，未知标签被丢弃（ADR-023 不允许隐式建词条）。
     expect(assets[0].tags).toEqual(["复盘"]);
     expect(assets[1].tags).toEqual([]);
+
+    // 原文摘录写入正文快照，hash 取整篇正文（v2.1 §1/§4）。
+    const hash = createHash("sha256").update(CONTENT, "utf8").digest("hex");
+    for (const asset of assets) {
+      expect(asset.contentHash).toBe(hash);
+      expect(asset.contentSnapshotAt).not.toBeNull();
+      expect(Array.from(asset.contentSnapshot ?? "").length).toBeGreaterThanOrEqual(100);
+      expect(Array.from(asset.contentSnapshot ?? "").length).toBeLessThanOrEqual(300);
+      expect(CONTENT).toContain(asset.contentSnapshot!);
+    }
 
     // 提炼不改动作品本身：仍是 draft，也不写实践字段。
     const after = await repo.findById(work.id);

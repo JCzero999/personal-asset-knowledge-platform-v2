@@ -35,8 +35,8 @@ const INDENT = "  ";
 export type EditorMode = "plain" | "markdown";
 
 const modeOptions: Array<{ value: EditorMode; label: string; hint: string }> = [
-  { value: "plain", label: "纯文本", hint: "行号与自动缩进，适合笔记、代码片段和草稿" },
   { value: "markdown", label: "Markdown", hint: "左侧写、右侧即时预览，适合结构化文章" },
+  { value: "plain", label: "纯文本", hint: "行号与自动缩进，适合笔记、代码片段和草稿" },
 ];
 
 export interface ContentEditorProps {
@@ -84,11 +84,21 @@ export function ContentEditor({
   const idPrefix = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  /**
+   * 左写右预览的双向滚动同步：谁在驱动、下一次回波要不要丢掉、合并到哪一帧。
+   * 不放进 state，滚动不该触发 React 渲染。
+   */
+  const scrollSync = useRef<{ owner: "write" | "preview" | null; frame: number }>({
+    owner: null,
+    frame: 0,
+  });
 
   const [text, setText] = useState("");
   const [loadedText, setLoadedText] = useState("");
+  // 新建正文默认 Markdown（平时写得最多的格式）；编辑已有内容仍按文件类型识别。
   const [mode, setMode] = useState<EditorMode>(
-    isMarkdownContent(existing) ? "markdown" : "plain",
+    existing === null || isMarkdownContent(existing) ? "markdown" : "plain",
   );
   const [loading, setLoading] = useState(existing !== null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -223,10 +233,62 @@ export function ContentEditor({
     setText(input.value);
   }
 
+  // 组件卸载时取消还在排队的那一帧，避免写到已经不在的节点上。
+  useEffect(() => {
+    const state = scrollSync.current;
+    return () => {
+      if (state.frame) cancelAnimationFrame(state.frame);
+    };
+  }, []);
+
+  /** 按滚动百分比映射：两栏高度不同，保持「看到文章的相对位置」一致。 */
+  function mirrorScroll(from: HTMLElement, to: HTMLElement) {
+    const fromMax = from.scrollHeight - from.clientHeight;
+    const toMax = to.scrollHeight - to.clientHeight;
+    if (fromMax <= 0 || toMax <= 0) return;
+
+    const next = Math.round((from.scrollTop / fromMax) * toMax);
+    // 差 1px 以内不写，浏览器取整造成的回波在这里就断掉了。
+    if (Math.abs(to.scrollTop - next) > 1) to.scrollTop = next;
+  }
+
+  function scheduleMirror(
+    owner: "write" | "preview",
+    from: HTMLElement,
+    to: HTMLElement,
+  ) {
+    const state = scrollSync.current;
+    // 对方正在驱动：这一条是我们自己写 scrollTop 引出来的回波，丢掉。
+    if (state.owner !== null && state.owner !== owner) return;
+    state.owner = owner;
+    if (state.frame) return;
+
+    state.frame = requestAnimationFrame(() => {
+      state.frame = 0;
+      mirrorScroll(from, to);
+      // 再等一帧才放开：回波事件排在帧之后，过早清标记会被下一次真实滚动误判。
+      requestAnimationFrame(() => {
+        state.owner = null;
+      });
+    });
+  }
+
   function syncScroll(event: UIEvent<HTMLTextAreaElement>) {
+    const write = event.currentTarget;
     if (gutterRef.current) {
-      gutterRef.current.scrollTop = event.currentTarget.scrollTop;
+      gutterRef.current.scrollTop = write.scrollTop;
     }
+
+    // 纯文本模式没有预览栏，行为保持原样。
+    const preview = previewRef.current;
+    if (!preview) return;
+    scheduleMirror("write", write, preview);
+  }
+
+  function syncPreviewScroll(event: UIEvent<HTMLDivElement>) {
+    const write = textareaRef.current;
+    if (!write) return;
+    scheduleMirror("preview", event.currentTarget, write);
   }
 
   return (
@@ -317,11 +379,12 @@ export function ContentEditor({
                 value={text}
                 onChange={(event) => setText(event.target.value)}
                 onKeyDown={handleTab}
+                onScroll={syncScroll}
               />
             </div>
             <div className={styles.previewPane}>
               <p className={styles.paneLabel}>预览</p>
-              <div className={styles.previewScroll}>
+              <div className={styles.previewScroll} ref={previewRef} onScroll={syncPreviewScroll}>
                 <MarkdownPreview text={text} />
               </div>
             </div>

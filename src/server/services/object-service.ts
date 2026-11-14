@@ -30,6 +30,7 @@ import type {
   LibraryChangeEvent,
   ListObjectsQuery,
   UpdateObjectInput,
+  ValueHistoryItem,
 } from "../ports/object-repository";
 import { SqliteObjectRepository } from "../repositories/sqlite-object-repository";
 import { evaluateValueScores } from "./asset-ai";
@@ -42,6 +43,8 @@ import { listActiveCategoryCodes } from "./vocabulary-service";
 
 const MAX_TITLE = 200;
 const MAX_DESCRIPTION = 5_000;
+/** `added=1d|7d|30d`：首页「今日 / 本周 / 本月新增」一键筛选。 */
+const ADDED_WINDOW_DAYS: Record<string, number> = { "1d": 1, "7d": 7, "30d": 30 };
 
 function asRecord(body: unknown): Record<string, unknown> {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -442,7 +445,10 @@ export async function setObjectArchived(
 }
 
 /** 列表筛选参数只接受已知取值，非法值直接报错，不做静默忽略。 */
-export function parseListObjectsQuery(searchParams: URLSearchParams): ListObjectsQuery {
+export function parseListObjectsQuery(
+  searchParams: URLSearchParams,
+  now: Date = new Date(),
+): ListObjectsQuery {
   const query: ListObjectsQuery = {};
 
   const type = searchParams.get("type");
@@ -532,6 +538,20 @@ export function parseListObjectsQuery(searchParams: URLSearchParams): ListObject
     }
   }
 
+  const added = searchParams.get("added");
+  if (added !== null) {
+    const days = Object.hasOwn(ADDED_WINDOW_DAYS, added) ? ADDED_WINDOW_DAYS[added] : undefined;
+
+    if (!days) {
+      throw new ValidationError("added 取值非法", {
+        field: "added",
+        allowed: Object.keys(ADDED_WINDOW_DAYS),
+      });
+    }
+
+    query.createdSince = new Date(now.getTime() - days * 24 * 60 * 60 * 1_000).toISOString();
+  }
+
   return query;
 }
 
@@ -592,4 +612,31 @@ export async function listObjectLibraryEvents(
   const repo = new SqliteObjectRepository(db);
   await requireOwned(repo, ownerSub, objectId);
   return repo.listLibraryEvents(objectId);
+}
+
+/** 价值评估历史：默认 20 条、最多 50 条，倒序；跨 owner 一律 404。 */
+export async function listObjectValueHistory(
+  db: AppDatabase,
+  ownerSub: string,
+  objectId: string,
+  limit: number,
+): Promise<ValueHistoryItem[]> {
+  const repo = new SqliteObjectRepository(db);
+  await requireOwned(repo, ownerSub, objectId);
+  return repo.listValueHistory(objectId, limit);
+}
+
+/** `GET /value-history?limit=` 的解析：缺省 20，范围 1–50。 */
+export function parseValueHistoryLimit(searchParams: URLSearchParams): number {
+  const raw = searchParams.get("limit");
+
+  if (raw === null || raw.trim() === "") return 20;
+
+  const value = Number(raw);
+
+  if (!Number.isInteger(value) || value < 1 || value > 50) {
+    throw new ValidationError("limit 必须是 1~50 的整数", { field: "limit" });
+  }
+
+  return value;
 }

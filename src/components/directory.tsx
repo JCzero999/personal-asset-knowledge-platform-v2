@@ -120,7 +120,7 @@ function VocabularyGroup({
   }
   if (items.length === 0) return null;
 
-  return <DirGroup label="分类与标签" items={items} />;
+  return <DirGroup label="分类与标签" items={items} nested />;
 }
 
 function AccountGroup({
@@ -137,7 +137,7 @@ function AccountGroup({
     { label: "角色", href: "/admin/roles", active: active === "/admin/roles" },
   ];
 
-  return <DirGroup label="账号" items={items} />;
+  return <DirGroup label="账号" items={items} nested />;
 }
 
 /** 工作台、检索、图谱三个模块的「管理」入口：只有词表与账号两组。 */

@@ -1,6 +1,7 @@
 import type {
   AiStatus,
   AssetSourceType,
+  AssetUsageKind,
   BusinessObject,
   Category,
   Library,
@@ -11,7 +12,7 @@ import type {
   ValueLevel,
   WorkStatus,
 } from "../../domain/objects";
-import type { AiScoreDetail, ValueScores } from "../../domain/value";
+import type { AiScoreDetail, ValueAssessmentTrigger, ValueScores } from "../../domain/value";
 import type { ActorContext } from "../authz";
 
 /**
@@ -50,6 +51,10 @@ export interface CreateObjectInput {
   valueAssessedAt?: string | null;
   /** practiced_work 资产的来源作品。 */
   originWorkId?: string | null;
+  /** 正文快照（v2.1 §4）：整篇 sha256、前 2000 字与写入时间。 */
+  contentHash?: string | null;
+  contentSnapshot?: string | null;
+  contentSnapshotAt?: string | null;
   /** 由实现注入统一时钟；主要在测试中使用。 */
   now?: string;
 }
@@ -92,6 +97,8 @@ export interface ListObjectsQuery {
   includeArchived?: boolean;
   /** 只返回已归档对象（归档视图）。 */
   archivedOnly?: boolean;
+  /** 只看该时间点之后创建的对象（`added=1d|7d|30d` 的解析结果）。 */
+  createdSince?: string;
   limit?: number;
   offset?: number;
 }
@@ -193,7 +200,56 @@ export interface ApplyValueAssessmentInput {
   expectedRevision?: number;
   assessment: ValueAssessmentInput;
   actor: ActorContext;
+  /** 历史触发来源；默认 manual_reassess（用户主动重评）。 */
+  trigger?: ValueAssessmentTrigger;
+  /** 历史里展示的原因；默认「主动重评」。 */
+  reason?: string;
+  /** 历史里的评估人；默认 actor.sub，动态调整为 system。 */
+  assessedBy?: string;
+  /** 动态升降级：同事务更新 last_level_adjust_at（24h 节流用）。 */
+  markLevelAdjusted?: boolean;
   now?: string;
+}
+
+/** 使用事件（v2.1 §2）。 */
+export interface AssetUsageEvent {
+  id: string;
+  assetId: string;
+  kind: AssetUsageKind;
+  occurredAt: string;
+  actorSub: string;
+}
+
+export interface RecordUsageInput {
+  assetId: string;
+  kind: AssetUsageKind;
+  actor: ActorContext;
+  now?: string;
+}
+
+export interface RecordUsageResult {
+  object: BusinessObject;
+  /** false = 1 小时内同 asset + kind + actor 已记过，本次不计数。 */
+  recorded: boolean;
+}
+
+export interface SetValueLockInput {
+  objectId: string;
+  locked: boolean;
+  actor: ActorContext;
+  now?: string;
+}
+
+/** 价值评估历史的一行（GET /api/objects/{id}/value-history 的形状）。 */
+export interface ValueHistoryItem {
+  id: string;
+  assessedAt: string;
+  assessedBy: string;
+  trigger: ValueAssessmentTrigger;
+  valueLevel: ValueLevel;
+  valueScores: ValueScores | null;
+  prevLevel: ValueLevel | null;
+  reason: string | null;
 }
 
 /** 实践结算：建内库资产 + 推进作品状态（保留可查、不归档），必须原子完成。 */
@@ -211,6 +267,10 @@ export interface SettlePracticeInput {
     priority: Priority;
     source: ObjectSource;
     origin: ObjectOrigin;
+    /** 正文快照（v2.1 §4）；读取失败时缺省，不影响结算。 */
+    contentHash?: string | null;
+    contentSnapshot?: string | null;
+    contentSnapshotAt?: string | null;
   };
   actor: ActorContext;
   now?: string;
@@ -280,4 +340,16 @@ export interface ObjectRepository {
 
   /** 实践结算：单事务建内库资产 + 作品 practiced / 回指资产（不归档）。 */
   settlePractice(input: SettlePracticeInput): Promise<SettlePracticeResult>;
+
+  /** 使用事件窗口查询（v2.1 §2）：用作 1 小时去重与近 30 天计数。 */
+  findUsageInWindow(assetId: string, sinceIso: string): Promise<AssetUsageEvent[]>;
+
+  /** 记录一次有效调用：事件 + use_count / last_used_at + 审计，单事务。 */
+  recordUsage(input: RecordUsageInput): Promise<RecordUsageResult>;
+
+  /** 手动锁定 / 解锁等级：只改 value_level_locked，写审计。 */
+  setValueLock(input: SetValueLockInput): Promise<BusinessObject>;
+
+  /** 价值评估历史，按评估时间倒序。 */
+  listValueHistory(assetId: string, limit: number): Promise<ValueHistoryItem[]>;
 }

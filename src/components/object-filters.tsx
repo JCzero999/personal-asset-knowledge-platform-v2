@@ -102,6 +102,14 @@ export function ObjectFilters({
   const statusDisabled = filters.type === "asset";
   const statusHintId = `${idPrefix}-status-hint`;
 
+  // 类型快捷筛选：内外库里资产和作品混在一起时，一键只看某一类。
+  // 与下拉「类型」同源（都写 URL 的 type），这里只是更好点的入口。
+  const typeOptions: Array<{ value: ObjectType | null; label: string }> = [
+    { value: null, label: "全部" },
+    { value: "asset", label: "资产" },
+    { value: "work", label: "作品" },
+  ];
+
   // 只用有引用的标签，避免下拉里堆满 0 次的词条；当前选中的即使 0 次也保留，
   // 否则刷新后下拉会显示「全部标签」而结果仍是按标签筛过的。
   const tagOptions = (() => {
@@ -196,6 +204,27 @@ export function ObjectFilters({
           })}
         </div>
       </form>
+
+      <div className="type-switch" role="group" aria-label="内容类型">
+        {typeOptions.map((option) => {
+          const active = filters.type === option.value;
+
+          return (
+            <Link
+              className={`type-option${active ? " is-active" : ""}`}
+              href={withLifecycleParams(
+                buildWorkspaceHref(filters, { type: option.value }),
+                lifecycle,
+              )}
+              aria-current={active ? "page" : undefined}
+              scroll={false}
+              key={option.label}
+            >
+              {option.label}
+            </Link>
+          );
+        })}
+      </div>
 
       <div className="filters-fields">
         <label className="filter-field">

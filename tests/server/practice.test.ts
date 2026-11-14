@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { VALUE_DIMENSION_KEYS } from "../../src/domain/value";
@@ -233,5 +235,56 @@ describe("practiceWork", () => {
     await expect(
       practiceWork(handle.db, actor("u2"), work.id, {}, { chat: chat() }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("结算时写入正文快照：整篇 sha256 + 前 2000 字", async () => {
+    const work = await publishedWork("快照");
+    const content = "复盘三步法：事实与判断分开记录，单点归因，写成下一次动作。".repeat(120);
+
+    const settled = await practiceWork(
+      handle.db,
+      actor("u1"),
+      work.id,
+      {},
+      { chat: chat(), readContent: async () => content },
+    );
+
+    expect(settled.asset.contentHash).toBe(
+      createHash("sha256").update(content, "utf8").digest("hex"),
+    );
+    expect(settled.asset.contentSnapshot).toBe(content.slice(0, 2_000));
+    expect(Array.from(settled.asset.contentSnapshot ?? "")).toHaveLength(2_000);
+    expect(settled.asset.contentSnapshotAt).not.toBeNull();
+  });
+
+  it("读正文失败不阻塞结算：资产照常沉淀，写一条失败审计", async () => {
+    const work = await publishedWork("读不到正文");
+
+    const settled = await practiceWork(
+      handle.db,
+      actor("u1"),
+      work.id,
+      {},
+      {
+        chat: chat(),
+        readContent: async () => {
+          throw new Error("RAGFlow 超时");
+        },
+      },
+    );
+
+    expect(settled.work.status).toBe("practiced");
+    expect(settled.asset.library).toBe("internal");
+    expect(settled.asset.contentHash).toBeNull();
+    expect(settled.asset.contentSnapshot).toBeNull();
+
+    const audit = handle.sqlite
+      .prepare(
+        "select action, result, target_id from audit_events where action = 'value.snapshot_failed'",
+      )
+      .all() as { action: string; result: string; target_id: string }[];
+    expect(audit).toEqual([
+      { action: "value.snapshot_failed", result: "error", target_id: work.id },
+    ]);
   });
 });

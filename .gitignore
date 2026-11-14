@@ -8,6 +8,8 @@
 /.next-build
 /.next-failtest
 /.next-verify
+/.next-v21
+/.next-v21b2
 /out
 
 # production

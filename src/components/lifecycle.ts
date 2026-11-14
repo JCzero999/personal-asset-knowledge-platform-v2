@@ -139,6 +139,17 @@ export const valueLevelDescriptions: Record<ValueLevel, string> = {
   C: "观察资产 · 价值较低，考虑降级或归档",
 };
 
+/** 评估历史的触发来源（ADR-030）→ 中文；未知值原样显示，历史不会因此空白。 */
+export const valueTriggerLabels: Record<string, string> = {
+  create: "创建",
+  settle: "实践沉淀",
+  review: "复核通过",
+  manual_reassess: "手动重评",
+  auto_upgrade: "自动升级",
+  auto_downgrade: "自动降级",
+  migration: "迁移",
+};
+
 /** 分数在进度条里的占比；AI 维度满分 100，价值维度满分 5。超出时截断。 */
 export function scorePercent(score: number | undefined, max: number): number {
   if (typeof score !== "number" || !Number.isFinite(score) || max <= 0) return 0;

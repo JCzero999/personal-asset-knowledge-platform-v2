@@ -14,6 +14,7 @@ import {
 } from "./lifecycle";
 import {
   activeFilterChips,
+  addedWindowLabels,
   buildWorkspaceHref,
   defaultWorkspaceFilters,
   hasActiveFilters,
@@ -27,6 +28,7 @@ import type { VocabularySnapshot } from "@/domain/vocabulary";
 import { CreateObjectButton } from "./create-object-dialog";
 import { WorkspaceDirectory, type WorkspaceCounts } from "./directory";
 import { Icon, type IconName } from "./icon";
+import { ListResizer } from "./list-resizer";
 import { NavRail } from "./nav-rail";
 import { ObjectDetail } from "./object-detail";
 import { ObjectFilters } from "./object-filters";
@@ -113,16 +115,37 @@ function Overview({
     { aiStatus: "needs_review", valueLevel: null },
   );
 
+  // 五个指标都能点：整卡可点，带着对应筛选进列表（与「待人工复核」一致）。
   const overview: Array<{
     label: string;
     value: number;
     icon: IconName;
-    href?: string;
+    href: string;
   }> = [
-    { label: "全部内容", value: counts.total, icon: "inbox" },
-    { label: "资产", value: counts.assets, icon: "archive" },
-    { label: "作品", value: counts.works, icon: "workflow" },
-    { label: "本周新增", value: weeklyCount, icon: "clock" },
+    {
+      label: "全部内容",
+      value: counts.total,
+      icon: "inbox",
+      href: buildWorkspaceHref(defaultWorkspaceFilters),
+    },
+    {
+      label: "资产",
+      value: counts.assets,
+      icon: "archive",
+      href: buildWorkspaceHref(defaultWorkspaceFilters, { type: "asset" }),
+    },
+    {
+      label: "作品",
+      value: counts.works,
+      icon: "workflow",
+      href: buildWorkspaceHref(defaultWorkspaceFilters, { type: "work" }),
+    },
+    {
+      label: "本周新增",
+      value: weeklyCount,
+      icon: "clock",
+      href: buildWorkspaceHref(defaultWorkspaceFilters, { added: "7d" }),
+    },
     { label: "待人工复核", value: needsReview, icon: "alert", href: reviewHref },
   ];
 
@@ -155,7 +178,7 @@ function Overview({
             </>
           );
 
-          return item.href ? (
+          return (
             <Link
               className="overview-item overview-link"
               href={item.href}
@@ -164,10 +187,6 @@ function Overview({
             >
               {body}
             </Link>
-          ) : (
-            <div className="overview-item" key={item.label}>
-              {body}
-            </div>
           );
         })}
       </section>
@@ -271,6 +290,9 @@ function listHeading(filters: WorkspaceFilters, lifecycle: LifecycleFilters): { 
   if (filters.q) {
     return { title: "搜索结果", note: `关键字「${filters.q}」` };
   }
+  if (filters.added && !filters.type && !filters.library && !filters.tag) {
+    return { title: "最近新增", note: addedWindowLabels[filters.added] };
+  }
   if (filters.tag) {
     return { title: `标签：${filters.tag}`, note: "按标签筛选" };
   }
@@ -339,8 +361,30 @@ export function WorkspaceView({
   const filtersActive = hasActiveFilters(filters) || lifecycleActive;
   const heading = listHeading(filters, lifecycle);
   const conditions = [...activeFilterChips(filters), ...lifecycleChips(lifecycle)];
+  // 每个条件都能单独摘掉：按 key 还原成「去掉这一项」的链接，其余条件原样保留。
+  function chipHref(key: string): string {
+    if (key === "aiStatus") {
+      return withLifecycleParams(buildWorkspaceHref(filters), { ...lifecycle, aiStatus: null });
+    }
+    if (key === "valueLevel") {
+      return withLifecycleParams(buildWorkspaceHref(filters), { ...lifecycle, valueLevel: null });
+    }
+
+    const patch: Partial<WorkspaceFilters> =
+      key === "q" ? { q: "" }
+      : key === "type" ? { type: null }
+      : key === "library" ? { library: null }
+      : key === "status" ? { status: null }
+      : key === "tag" ? { tag: null }
+      : key === "added" ? { added: null }
+      : key === "archived" ? { archived: "active" }
+      : key === "sort" ? { sort: "updated" }
+      : {};
+
+    return withLifecycleParams(buildWorkspaceHref(filters, patch), lifecycle);
+  }
   const hasConditions = Boolean(
-    filters.q || filters.type || filters.library || filters.status || filters.tag || lifecycleActive,
+    filters.q || filters.type || filters.library || filters.status || filters.tag || filters.added || lifecycleActive,
   );
   // 点开一条时保留当前筛选，返回列表仍是同一份结果。
   const listHref = withLifecycleParams(buildWorkspaceHref(filters), lifecycle);
@@ -413,6 +457,26 @@ export function WorkspaceView({
           <CreateObjectButton label="新建" vocabulary={vocabulary} canManageVocabulary={hasPermission(session, "vocabulary:category:write")} />
         </header>
 
+        {conditions.length > 0 ? (
+          <div className="filter-chips" role="group" aria-label="当前筛选条件">
+            {conditions.map((condition) => (
+              <Link
+                className="filter-chip"
+                href={chipHref(condition.key)}
+                scroll={false}
+                aria-label={`移除筛选：${condition.label}`}
+                key={condition.key}
+              >
+                {condition.label}
+                <Icon name="x" size={12} />
+              </Link>
+            ))}
+            <Link className="filter-chip is-clear" href="/workspace" scroll={false}>
+              清空
+            </Link>
+          </div>
+        ) : null}
+
         <RecordList
           objects={objects}
           selectedId={selected?.id ?? null}
@@ -427,6 +491,8 @@ export function WorkspaceView({
           </div>
         </RecordList>
       </section>
+
+      <ListResizer />
 
       <main className="record-detail">
         <div className="detail-scroll">

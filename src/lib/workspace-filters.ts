@@ -26,6 +26,22 @@ export const sortLabels: Record<WorkspaceSort, string> = {
 /** active = 在用（不含归档）；only = 只看已归档。 */
 export type ArchiveScope = "active" | "only";
 
+/** 新增时间窗：首页「本周新增」等入口带过来的 createdSince 条件。 */
+export const addedWindows = ["1d", "7d", "30d"] as const;
+export type AddedWindow = (typeof addedWindows)[number];
+
+export const addedWindowLabels: Record<AddedWindow, string> = {
+  "1d": "近 24 小时",
+  "7d": "近 7 天",
+  "30d": "近 30 天",
+};
+
+export const addedWindowDays: Record<AddedWindow, number> = {
+  "1d": 1,
+  "7d": 7,
+  "30d": 30,
+};
+
 export interface WorkspaceFilters {
   /** 标题或描述关键字，已 trim。 */
   q: string;
@@ -34,6 +50,8 @@ export interface WorkspaceFilters {
   status: WorkStatus | null;
   /** 标签名称（展示写法）；查询前由仓储按归一化键匹配。 */
   tag: string | null;
+  /** 只看最近 N 天创建的内容；null = 不限。 */
+  added: AddedWindow | null;
   sort: WorkspaceSort;
   archived: ArchiveScope;
 }
@@ -44,6 +62,7 @@ export const defaultWorkspaceFilters: WorkspaceFilters = {
   library: null,
   status: null,
   tag: null,
+  added: null,
   sort: "updated",
   archived: "active",
 };
@@ -88,7 +107,10 @@ export function parseWorkspaceFilters(params: WorkspaceSearchParams): WorkspaceF
   const archived: ArchiveScope = readParam(params, "archived") === "only" ? "only" : "active";
   const tag = readParam(params, "tag").slice(0, 64) || null;
 
-  return { q: readParam(params, "q"), type, library, status, tag, sort, archived };
+  const addedRaw = readParam(params, "added");
+  const added = addedWindows.includes(addedRaw as AddedWindow) ? (addedRaw as AddedWindow) : null;
+
+  return { q: readParam(params, "q"), type, library, status, tag, added, sort, archived };
 }
 
 /** 是否偏离了默认视图（决定标题、空状态文案与「清空筛选」是否出现）。 */
@@ -99,6 +121,7 @@ export function hasActiveFilters(filters: WorkspaceFilters): boolean {
     filters.library !== null ||
     filters.status !== null ||
     filters.tag !== null ||
+    filters.added !== null ||
     filters.sort !== defaultWorkspaceFilters.sort ||
     filters.archived !== defaultWorkspaceFilters.archived
   );
@@ -123,6 +146,7 @@ export function buildWorkspaceHref(
   if (next.library) params.set("library", next.library);
   if (next.status) params.set("status", next.status);
   if (next.tag) params.set("tag", next.tag);
+  if (next.added) params.set("added", next.added);
   if (next.sort !== "updated") params.set("sort", next.sort);
   if (next.archived === "only") params.set("archived", "only");
 
@@ -134,6 +158,7 @@ export function buildWorkspaceHref(
 export function toListObjectsQuery(
   filters: WorkspaceFilters,
   limit: number,
+  now: Date = new Date(),
 ): Omit<ListObjectsQuery, "ownerSub"> {
   return {
     ...(filters.q ? { search: filters.q } : {}),
@@ -141,6 +166,13 @@ export function toListObjectsQuery(
     ...(filters.library ? { library: filters.library } : {}),
     ...(filters.status ? { status: filters.status } : {}),
     ...(filters.tag ? { tag: filters.tag } : {}),
+    ...(filters.added
+      ? {
+          createdSince: new Date(
+            now.getTime() - addedWindowDays[filters.added] * 86_400_000,
+          ).toISOString(),
+        }
+      : {}),
     sort: filters.sort,
     ...(filters.archived === "only" ? { archivedOnly: true } : {}),
     limit,
@@ -168,6 +200,9 @@ export function activeFilterChips(filters: WorkspaceFilters): ActiveFilterChip[]
   }
   if (filters.tag) {
     chips.push({ key: "tag", label: `标签「${filters.tag}」` });
+  }
+  if (filters.added) {
+    chips.push({ key: "added", label: addedWindowLabels[filters.added] });
   }
   if (filters.archived === "only") chips.push({ key: "archived", label: "已归档" });
   if (filters.sort !== "updated") {

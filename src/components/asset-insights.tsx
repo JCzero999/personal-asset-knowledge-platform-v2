@@ -17,10 +17,22 @@ import {
   scorePercent,
   valueBadge,
   valueLevelDescriptions,
+  valueTriggerLabels,
   weightPercent,
   type DimensionLike,
   type LifecycleBadge,
 } from "./lifecycle";
+
+/** GET /api/objects/{id}/value-history 的一行（与服务端口类型同形）。 */
+interface ValueHistoryItem {
+  id: string;
+  assessedAt: string;
+  assessedBy: string;
+  trigger: string;
+  valueLevel: string;
+  prevLevel: string | null;
+  reason: string | null;
+}
 
 /**
  * 资产详情里的评分与价值面板（规格 v2.0 第 5、6 节）。
@@ -380,11 +392,35 @@ function ValuePanel({
   const [expanded, setExpanded] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lockPending, setLockPending] = useState(false);
+  const [history, setHistory] = useState<ValueHistoryItem[] | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyId = `${idPrefix}-history`;
 
   const level = readValueLevel(object);
   const badge = valueBadge(object);
   const scores = object.valueScores;
   const dimensions = Array.isArray(scores?.dimensions) ? scores.dimensions : [];
+  const locked = object.valueLevelLocked;
+
+  // 评估历史只在面板挂载时取一次；数量要显示在折叠按钮上，所以不等展开再请求。
+  useEffect(() => {
+    let alive = true;
+
+    fetch(`/api/objects/${object.id}/value-history?limit=20`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { items?: ValueHistoryItem[] } | null) => {
+        if (!alive || !Array.isArray(data?.items)) return;
+        setHistory(data.items);
+      })
+      .catch(() => {
+        // 历史取不到不影响面板其它信息，静默留白。
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, [object.id]);
 
   async function reassess() {
     if (pending) return;
@@ -402,6 +438,30 @@ function ValuePanel({
     }
   }
 
+  /** 锁定后自动升降级跳过这条资产；解锁立即恢复。 */
+  async function toggleLock() {
+    if (lockPending) return;
+    setLockPending(true);
+    setError(null);
+
+    try {
+      const result = await apiRequest<{ object: BusinessObject }>(
+        `/api/objects/${object.id}/value-lock`,
+        jsonBodyInit({ locked: !locked }),
+      );
+      onNotify(
+        result.object.valueLevelLocked
+          ? "已锁定等级，自动升降级会跳过这条资产"
+          : "已解锁，自动升降级恢复",
+      );
+      router.refresh();
+    } catch (cause) {
+      setError(apiErrorMessage(cause));
+    } finally {
+      setLockPending(false);
+    }
+  }
+
   return (
     <section className="panel lifecycle-panel" aria-labelledby={`${idPrefix}-heading`}>
       <header className="lifecycle-head">
@@ -411,10 +471,21 @@ function ValuePanel({
         </div>
         <div className="lifecycle-toolbar">
           {badge ? <Badge badge={badge} /> : <span className="lifecycle-badge is-muted">未评估</span>}
+          {locked ? <span className="lifecycle-badge is-info">已锁定</span> : null}
           <button
             className="chip-button"
             type="button"
-            disabled={pending}
+            disabled={pending || lockPending}
+            onClick={() => void toggleLock()}
+            aria-pressed={locked}
+          >
+            <Icon name="lock" size={13} />
+            {lockPending ? "处理中…" : locked ? "解锁等级" : "锁定等级"}
+          </button>
+          <button
+            className="chip-button"
+            type="button"
+            disabled={pending || lockPending}
             onClick={() => void reassess()}
           >
             {pending ? "评估中…" : "重新评估"}
@@ -436,11 +507,12 @@ function ValuePanel({
           </span>
           <span className="lifecycle-verdict">
             {level ? valueLevelDescriptions[level] : "还没有价值等级，运行一次评估即可生成"}
+            {locked ? "（已锁定，自动升降级不会改动）" : ""}
           </span>
         </div>
 
         <p className="lifecycle-meta">
-          {object.useCount > 0 ? `已调用 ${object.useCount} 次` : "还没有调用记录"}
+          {object.useCount > 0 ? `使用 ${object.useCount} 次` : "尚未使用"}
           {object.lastUsedAt ? ` · 最近 ${formatDateTime(object.lastUsedAt)}` : ""}
           {scores?.assessedAt ? ` · 评估于 ${formatDateTime(scores.assessedAt)}` : ""}
         </p>
@@ -464,6 +536,47 @@ function ValuePanel({
         ) : (
           <p className="lifecycle-hint">评估后会列出五个维度的得分与理由，作为升降级依据。</p>
         )}
+
+        {history && history.length > 0 ? (
+          <div className="value-history">
+            <button
+              className="text-button lifecycle-toggle"
+              type="button"
+              aria-expanded={historyOpen}
+              aria-controls={historyId}
+              onClick={() => setHistoryOpen((value) => !value)}
+            >
+              <Icon name="arrow-right" size={13} />
+              {historyOpen ? "收起评估历史" : `评估历史（${history.length}）`}
+            </button>
+            {historyOpen ? (
+              <ol className="value-timeline" id={historyId}>
+                {history.map((item) => (
+                  <li className="value-timeline-item" key={item.id}>
+                    <span className="value-timeline-dot" aria-hidden="true" />
+                    <div className="value-timeline-body">
+                      <div className="value-timeline-head">
+                        <span className="value-timeline-trigger">
+                          {valueTriggerLabels[item.trigger] ?? item.trigger}
+                        </span>
+                        <span className="value-timeline-level">
+                          {item.prevLevel ? `${item.prevLevel} → ` : ""}
+                          {item.valueLevel}
+                        </span>
+                        <time className="value-timeline-time" dateTime={item.assessedAt}>
+                          {formatDateTime(item.assessedAt)}
+                        </time>
+                      </div>
+                      {item.reason ? (
+                        <p className="value-timeline-reason">{item.reason}</p>
+                      ) : null}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );

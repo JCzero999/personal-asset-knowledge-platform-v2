@@ -2,7 +2,7 @@
 
 > **读者**：接手本项目的开发者 / AI、需要评估进度的协作者。
 > **写法**：只记录仓库里能核实的事实（提交、文件、测试、实测端口）。无法核实的标「未验证」，不写规划口吻的完成状态。
-> **快照时间**：2026-11-12 12:35（Asia/Shanghai），本轮形态与标签词表化（界面落地：弹窗 / 目录管理区 / 标签筛选 / 管理页）改动在工作区未提交，HEAD `208d518`，分支 `master`。测试基线 **25 个文件 259 项**（typecheck / lint / test 在本轮复跑通过）。真实登录、前端冒烟与图谱归属隔离的操作过程见 [08_RUN_LOG.md](08_RUN_LOG.md)。
+> **快照时间**：2026-11-14 12:50（Asia/Shanghai），规格 v2.1（Phase 6J / ADR-030）与六项界面体验修复已落地。测试基线 **66 个文件 916 项通过 / 3 项跳过**；typecheck / lint / check:theme / check:contrast / build 全绿，生产实例（3000）已迁移至 `0011` 并重启。真实登录、前端冒烟与图谱归属隔离的操作过程见 [08_RUN_LOG.md](08_RUN_LOG.md)。
 > **与其他文档的关系**：阶段定义以 [02_PHASES.md](02_PHASES.md) 为准，决策以 [03_DECISIONS.md](03_DECISIONS.md) 为准，接口以 [06_API.md](06_API.md) 为准。本文件不重复契约，只讲「怎么做的、踩过什么、怎么验证」。
 
 ---
@@ -300,6 +300,8 @@ Phase 3 按「依赖方向」拆成四个提交，工作区此后为干净状态
 | 113 | 作品目录里点标题周围一大片空白也会弹预览，和「全部内容」区域「点标题跳详情」的习惯不一致 | 列表行被做成「整行 Link + 标题按钮」，按钮的 `preventDefault` 让整行都变成预览热点；两处列表的点击语义因此分叉 | 改成 stretched link：行内一个绝对定位铺满整行的 `<Link>`（`z-index:0`）负责跳详情，标题做成 `z-index:1` 的 `<button>` 只负责预览；无预览上下文时标题退化回纯文本。两个列表共用同一段结构 | 一个区域要承载两种动作时，用「铺满的链接 + 抬高的按钮」而不是嵌套可交互元素；同一交互在多个列表出现，就抽成同一个组件，别各写一套 |
 | 114 | `/admin/llm` 点「应用并重启」返回成功，`restarted: true`，但图谱仍然一抽取就失败，引擎实际还在跑旧配置 | 三处叠加：① 进程查询脚本用空格拼 PowerShell 语句，`if (...)` 被当成 `Select-Object` 的参数，脚本 exit 1、stdout 为空；② 代码没检查退出码和空结果，照样往下走；③ 旧 `lightrag-server` 没被杀掉，新实例抢不到 9621 端口，健康检查由旧进程回答，于是「重启成功」 | 脚本改成分号分隔；`defaultRunPowerShell` 与非 0 退出码直接抛错；`restartLightrag` 在进程列表为空时抛「没有找到正在运行的 LightRAG 进程」并回滚 `.env`；`killProcessTree` 在 `taskkill` 非 0 时抛错。补两条单测锁住「查不到进程必须失败」与「脚本必须含分号」 | 「操作成功」只能由**可观测的外部状态变化**证明，不能由本进程返回码证明：重启后要确认进程 PID 变了、启动日志里的模型名是新的。任何被吞掉的 shell 退出码，都会把失败变成假成功 |
 | 115 | 图谱抽取失败，页面只写「未返回原因」，看不出是模型挂了还是网络不通 | LightRAG 的 `role_ollama_complete` 把底层 `httpx.ReadError` 吞掉，`doc_status.error_msg` 只剩 `C[1/29]: doc-…-chunk-000: ` 这样的空尾巴；同时引擎停留在旧配置、目标 Ollama 早已停止，两边都不报真因 | 新增 `model-endpoint-probe.ts`：按当前生效配置（库内 → 环境变量 → `infra/lightrag/.env` → 默认）直连供应商 `GET {base}/models`（Ollama 走 `/api/tags`），3 秒超时、30 秒缓存、永不抛错；`/api/graph/status` 在有失败对象时附带 `diagnosis`，图谱页在失败面板与进度区展示结论与下一步 | 上游吞异常时，别在它给的字段里找原因，直接去探它依赖的端点；诊断要么只读（不改配置、不重启），要么就明确写成一次操作。探测结果要说「能连但抽取仍失败」，否则会把服务健康误读成抽取成功 |
+| 116 | 改了提炼解析器后，`verify-lifecycle-v2.mjs` 报「提炼应产出 1 条资产，实际 0」「重复提炼应 409，实际 201」，看着像功能回归 | 脚本里的假模型还在返回旧格式 `{title, description}`，新解析器按模板要求 `summary / scenario / keyPoints / excerpt（逐字）/ tags`，把整条候选丢弃——于是 0 条资产，重复提炼自然也不会 409 | 夹具升级到新契约：mock RAGFlow 的正文抽成常量 `MOCK_BODY`，提炼夹具的 `excerpt` 直接 `MOCK_BODY.slice(0, 160)`，保证「逐字」永远成立；摘要按 60–120 字硬要求写（首版只有 32 字，被 `SUMMARY_MIN` 丢掉） | 验收脚本的假模型是「解析器契约的第二份实现」：改解析器必须同步改夹具，且夹具文本要从同一常量派生，别手写两遍 |
+| 117 | `npm run lint` 突然报 1297 条 error，`tsc` 却是 0 | `.next-v21` / `.next-v21b2` 是验收脚本的独立 dist 目录，只加进了 `.gitignore`，没进 `eslint.config.mjs` 的 `globalIgnores`，ESLint 把压缩后的产物当源码扫 | 两处都加：`.gitignore` 与 `globalIgnores`；顺带把两个目录写进 `tsconfig.json` 的 `include`，避免 tsc 也扫到 | 自定义构建目录必须三处同步（git / lint / tsconfig）；「门禁全绿」要跑在干净工作区上 |
 
 **通用预防**（比单条修复更重要）：
 
@@ -322,7 +324,9 @@ npm run check:contrast  # 四套主题的对比度；改图谱 / 主题色时必
 npm run build        # 改动涉及构建配置或路由时执行
 ```
 
-通过标准：typecheck / lint 无输出、测试全绿、`check:theme` 打印四行 `98 tokens PASS` 且退出 0、`check:contrast` 41/41。当前基线是 **51 个测试文件 774 项**（774 通过 + 3 项基准默认跳过，2026-11-13 Phase 6G 复跑确认）。
+通过标准：typecheck / lint 无输出、测试全绿、`check:theme` 打印四行 `98 tokens PASS` 且退出 0、`check:contrast` 41/41。当前基线是 **66 个测试文件 916 项**（916 通过 + 3 项基准默认跳过，2026-11-14 Phase 6J 复跑确认）；lint 基线是 **0 error / 16 warning**（既有 `fail` 未使用）。
+
+> **验收脚本产生的 `.next-*` 目录要同时进两处忽略**：`.gitignore` 与 `eslint.config.mjs` 的 `globalIgnores`。v2.1 验收用了 `.next-v21` / `.next-v21b2` 两个独立 dist 目录，只加 git 忽略时 `npm run lint` 报出 1297 条 error（扫描的是构建产物）。见第 4 节第 116 条。
 
 > 本机（Windows，内存偏紧）直接 `npm test` 会因 Vitest 默认 worker 池占满内存而崩（`FATAL ERROR: Committing semi space failed`，Exit 134，多个 worker "exited unexpectedly"）。门禁与本地复跑一律用 `node ./node_modules/vitest/vitest.mjs run --maxWorkers=2`；这不是测试失败，别去改代码。
 
@@ -476,6 +480,19 @@ node -e "const D=require('better-sqlite3');const d=new D('data/app.db',{readonly
 4. **断言口径**：横向溢出、console / page / network 错误默认都算失败；失败态场景里故意制造的 500 与对应的服务端日志按 URL / 文本白名单放行（问题 57 的同一口径）。
 5. **产物**：`docs/screenshots/phase6d-2d-{desktop,empty,list,mobile,error,center-error,status-unknown}.png` 与 `phase6d-3d-{default-entry,mobile-2d,low-tier,overbudget}.png`，桌面 1440×900、移动 390×844 dpr 2；`graph-perf.mjs` 另出 `phase6d-3d-{default,selection,low}.png`。均无水印。
 6. **读截图**：`center-error` 应保留旧图 + 一条红色横幅；`status-unknown` 应是「图谱状态暂时读不到」而不是「图谱还是空的」；`mobile` 不应有节点全贴在舞台边上。
+
+### 5.4.4 资产生命周期与 v2.1 交付验收（全部对生产构建跑）
+
+四条脚本都在**独立临时库 + 独立端口 + 假外部服务**上跑，不碰 `data/app.db`，也不碰 3000 上的实例。先 `npm run build`。
+
+| 脚本 | 覆盖 | 端口 / dist | 结果口径 |
+|------|------|-------------|----------|
+| `scripts/verify-lifecycle-v2.mjs` | 提炼（新模板契约）→ 六维打分三档出口 → 人工复核 → 发布 → 实践结算 → 价值重评 → 规则守卫 + 4 个页面渲染 | 3141 / `.next` | 打印「全部断言通过」 |
+| `scripts/verify-v21-ui.mjs` | 编辑器顺序与双向滚动联动、目录缩进 104 vs 88、`全部 / 资产 / 作品` 切换、拖拽分栏（340→460、刷新保持、键盘 16px、双击复位）、首页五指标、1440 / 390 断点 | 3132 / `.next-v21` | 同上 |
+| `scripts/verify-v21-batch2.mjs` | `added=7d` 胶囊、快照面板、停留 8 秒 / 打开原文各计一次、评估历史三条、锁定 / 解锁、新建内库二次确认、批量重评、390 / 1024 断点 | 3133 / `.next-v21b2` | 同上 |
+| `scripts/calibrate-model.mjs` | 真实模型对**真实库副本**逐条打分，输出六维明细 | 3155 / `.next` | 写 `docs/evaluation/calibration-latest.json` |
+
+`verify-lifecycle-v2.mjs` 对模型输出的依赖全部在脚本内的假模型里：改提炼提示词 / 解析器时必须同步改 `MOCK_BODY` 与夹具（第 4 节第 116 条）。`calibrate-model.mjs` 会真实消耗模型额度（5 条约 7 秒），并且**必须**在 `.env.local` 有 `SETTINGS_ENC_KEY` 时才能解密库里的供应商密钥。
 
 ### 5.5 外部服务连通性（已部署时）
 

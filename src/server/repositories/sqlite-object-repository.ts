@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
 
 import {
   isCategory,
@@ -7,12 +7,13 @@ import {
   isWorkStatus,
   type AiStatus,
   type AssetSourceType,
+  type AssetUsageKind,
   type BusinessObject,
   type Category,
   type ValueLevel,
   type WorkStatus,
 } from "../../domain/objects";
-import type { AiScoreDetail, ValueScores } from "../../domain/value";
+import type { AiScoreDetail, ValueAssessmentTrigger, ValueScores } from "../../domain/value";
 import { fallbackValueScores } from "../../domain/value";
 import { normalizeCategory, normalizeTag } from "../../domain/vocabulary";
 import { ConflictError, DomainError, NotFoundError, ValidationError } from "../../domain/errors";
@@ -24,12 +25,14 @@ import { ulid } from "../db/id";
 import { translateSqliteError } from "./sqlite-errors";
 import { replaceObjectTags } from "./tag-links";
 import {
+  assetUsageEvents,
   categories,
   libraryEvents,
   objectTags,
   objects,
   syncJobs,
   tags,
+  valueAssessmentHistory,
   type LibraryEventRow,
   type NewObjectRow,
   type ObjectRow,
@@ -37,6 +40,7 @@ import {
 import type {
   ApplyAiScoreInput,
   ApplyValueAssessmentInput,
+  AssetUsageEvent,
   ChangeLibraryInput,
   ChangeStatusInput,
   CreateObjectInput,
@@ -47,10 +51,14 @@ import type {
   LibraryChangeEvent,
   ListObjectsQuery,
   ObjectRepository,
+  RecordUsageInput,
+  RecordUsageResult,
   ReviewAssetInput,
+  SetValueLockInput,
   SettlePracticeInput,
   SettlePracticeResult,
   UpdateObjectInput,
+  ValueHistoryItem,
 } from "../ports/object-repository";
 import { normalizeSearchText } from "../../lib/search-query";
 
@@ -85,6 +93,57 @@ function enqueueSyncJob(
     .onConflictDoNothing()
     .run();
 }
+
+/**
+ * 价值历史（v2.1 §3）：append-only。所有写 `objects.value_*` 的路径都必须在
+ * 同一事务里先插这一条，再更新主表；`prev_*` 传更新前的旧值，创建类动作为 null。
+ */
+function insertValueHistory(
+  tx: Tx,
+  input: {
+    assetId: string;
+    at: string;
+    assessedBy: string;
+    trigger: ValueAssessmentTrigger;
+    level: ValueLevel;
+    scores: ValueScores | null;
+    prevLevel: ValueLevel | null;
+    prevScores: ValueScores | null;
+    reason: string | null;
+  },
+): void {
+  tx.insert(valueAssessmentHistory)
+    .values({
+      id: ulid(),
+      assetId: input.assetId,
+      assessedAt: input.at,
+      assessedBy: input.assessedBy,
+      trigger: input.trigger,
+      valueLevel: input.level,
+      valueScores: input.scores ? JSON.stringify(input.scores) : null,
+      prevLevel: input.prevLevel,
+      prevScores: input.prevScores ? JSON.stringify(input.prevScores) : null,
+      reason: input.reason,
+    })
+    .run();
+}
+
+function toUsageEvent(row: {
+  id: string;
+  assetId: string;
+  kind: string;
+  occurredAt: string;
+  actorSub: string;
+}): AssetUsageEvent {
+  return {
+    id: row.id,
+    assetId: row.assetId,
+    kind: row.kind as AssetUsageKind,
+    occurredAt: row.occurredAt,
+    actorSub: row.actorSub,
+  };
+}
+
 
 /**
  * `ObjectRepository` 的 SQLite 实现。
@@ -201,6 +260,11 @@ function toObject(row: ObjectRow, tagLabels: string[]): BusinessObject {
     valueAssessedAt: row.valueAssessedAt,
     useCount: row.useCount,
     lastUsedAt: row.lastUsedAt,
+    valueLevelLocked: row.valueLevelLocked,
+    contentHash: row.contentHash,
+    contentSnapshot: row.contentSnapshot,
+    contentSnapshotAt: row.contentSnapshotAt,
+    lastLevelAdjustAt: row.lastLevelAdjustAt,
     originWorkId: row.originWorkId,
   };
 
@@ -341,6 +405,11 @@ export class SqliteObjectRepository implements ObjectRepository {
       valueAssessedAt,
       useCount: 0,
       lastUsedAt: null,
+      valueLevelLocked: false,
+      contentHash: isWork ? null : (input.contentHash ?? null),
+      contentSnapshot: isWork ? null : (input.contentSnapshot ?? null),
+      contentSnapshotAt: isWork ? null : (input.contentSnapshotAt ?? null),
+      lastLevelAdjustAt: null,
       originWorkId: isWork ? null : (input.originWorkId ?? null),
     };
 
@@ -349,6 +418,25 @@ export class SqliteObjectRepository implements ObjectRepository {
       const created = this.db.transaction((tx) => {
         const inserted = tx.insert(objects).values(row).returning().get();
         replaceObjectTags(tx, inserted.id, input.tags ?? []);
+
+        // 内库资产在创建当下就有等级：同步补一条来源为 create 的历史。
+        if (!isWork && valueLevel && valueScores) {
+          insertValueHistory(tx, {
+            assetId: inserted.id,
+            at: now,
+            assessedBy: input.ownerSub,
+            trigger: "create",
+            level: valueLevel,
+            scores: valueScores,
+            prevLevel: null,
+            prevScores: null,
+            reason:
+              valueScores.source === "fallback"
+                ? "创建内库资产（模型不可用，确定性兜底评估）"
+                : "创建内库资产时评估",
+          });
+        }
+
         return inserted;
       });
 
@@ -428,6 +516,10 @@ export class SqliteObjectRepository implements ObjectRepository {
 
     if (query.valueLevel) {
       conditions.push(eq(objects.valueLevel, query.valueLevel));
+    }
+
+    if (query.createdSince) {
+      conditions.push(gte(objects.createdAt, query.createdSince));
     }
 
     if (query.search) {
@@ -1001,6 +1093,20 @@ export class SqliteObjectRepository implements ObjectRepository {
       // 打分、转库、价值评估、审计、入队必须同时成立：不允许出现
       // 「已在内库但没有等级」或「分数写了但库别没动」。
       const updated = this.db.transaction((tx) => {
+        if (promote && input.assessment) {
+          insertValueHistory(tx, {
+            assetId: input.objectId,
+            at: now,
+            assessedBy: input.actor.sub,
+            trigger: "create",
+            level: input.assessment.valueLevel,
+            scores: input.assessment.valueScores,
+            prevLevel: null,
+            prevScores: null,
+            reason: `AI 打分 ${input.detail.total} 分自动沉淀（≥75）`,
+          });
+        }
+
         const row = tx
           .update(objects)
           .set(patch)
@@ -1121,6 +1227,20 @@ export class SqliteObjectRepository implements ObjectRepository {
 
     try {
       const updated = this.db.transaction((tx) => {
+        if (approve && input.assessment) {
+          insertValueHistory(tx, {
+            assetId: input.objectId,
+            at: now,
+            assessedBy: input.actor.sub,
+            trigger: "review",
+            level: input.assessment.valueLevel,
+            scores: input.assessment.valueScores,
+            prevLevel: null,
+            prevScores: null,
+            reason: `人工复核通过${input.note ? `：${input.note}` : ""}`,
+          });
+        }
+
         const row = tx
           .update(objects)
           .set(patch)
@@ -1208,14 +1328,31 @@ export class SqliteObjectRepository implements ObjectRepository {
       });
     }
 
+    const trigger: ValueAssessmentTrigger = input.trigger ?? "manual_reassess";
+    const markAdjusted =
+      input.markLevelAdjusted ?? (trigger === "auto_upgrade" || trigger === "auto_downgrade");
+
     try {
       const updated = this.db.transaction((tx) => {
+        insertValueHistory(tx, {
+          assetId: input.objectId,
+          at: now,
+          assessedBy: input.assessedBy ?? input.actor.sub,
+          trigger,
+          level: input.assessment.valueLevel,
+          scores: input.assessment.valueScores,
+          prevLevel: current.valueLevel,
+          prevScores: current.valueScores,
+          reason: input.reason ?? "主动重评",
+        });
+
         const row = tx
           .update(objects)
           .set({
             valueLevel: input.assessment.valueLevel,
             valueScores: JSON.stringify(input.assessment.valueScores),
             valueAssessedAt: input.assessment.valueAssessedAt,
+            ...(markAdjusted ? { lastLevelAdjustAt: now } : {}),
             updatedAt: now,
             revision: current.revision + 1,
           })
@@ -1237,12 +1374,15 @@ export class SqliteObjectRepository implements ObjectRepository {
 
         writeAudit(tx, {
           actor: input.actor,
-          action: "object.value.assess",
+          action: trigger.startsWith("auto_") ? "object.value.adjust" : "object.value.assess",
           targetType: "asset",
           targetId: input.objectId,
           detail: {
             level: input.assessment.valueLevel,
+            prevLevel: current.valueLevel,
+            trigger,
             source: input.assessment.valueScores.source,
+            reason: input.reason ?? null,
             title: current.title,
           },
           createdAt: now,
@@ -1341,6 +1481,11 @@ export class SqliteObjectRepository implements ObjectRepository {
       valueAssessedAt: input.assessment.valueAssessedAt,
       useCount: 0,
       lastUsedAt: null,
+      valueLevelLocked: false,
+      contentHash: input.asset.contentHash ?? null,
+      contentSnapshot: input.asset.contentSnapshot ?? null,
+      contentSnapshotAt: input.asset.contentSnapshotAt ?? null,
+      lastLevelAdjustAt: null,
       originWorkId: current.id,
     };
 
@@ -1350,6 +1495,21 @@ export class SqliteObjectRepository implements ObjectRepository {
       const settled = this.db.transaction((tx) => {
         const asset = tx.insert(objects).values(assetRow).returning().get();
         replaceObjectTags(tx, asset.id, input.asset.tags);
+
+        insertValueHistory(tx, {
+          assetId: asset.id,
+          at: now,
+          assessedBy: input.actor.sub,
+          trigger: "settle",
+          level: input.assessment.valueLevel,
+          scores: input.assessment.valueScores,
+          prevLevel: null,
+          prevScores: null,
+          reason:
+            input.assessment.valueScores.source === "fallback"
+              ? "作品已实践自动沉淀（模型不可用，确定性兜底评估）"
+              : "作品已实践自动沉淀",
+        });
 
         const work = tx
           .update(objects)
@@ -1411,6 +1571,183 @@ export class SqliteObjectRepository implements ObjectRepository {
       if (error instanceof DomainError) throw error;
       return translateSqliteError(error);
     }
+  }
+
+  async findUsageInWindow(assetId: string, sinceIso: string): Promise<AssetUsageEvent[]> {
+    const rows = this.db
+      .select()
+      .from(assetUsageEvents)
+      .where(
+        and(
+          eq(assetUsageEvents.assetId, assetId),
+          gte(assetUsageEvents.occurredAt, sinceIso),
+        ),
+      )
+      .orderBy(desc(assetUsageEvents.occurredAt))
+      .all();
+
+    return rows.map(toUsageEvent);
+  }
+
+  async recordUsage(input: RecordUsageInput): Promise<RecordUsageResult> {
+    const now = input.now ?? nowIso();
+    const current = await this.findById(input.assetId);
+
+    if (!current) {
+      throw new NotFoundError("对象不存在或已删除", { id: input.assetId });
+    }
+
+    if (current.type !== "asset") {
+      throw new ValidationError("只有资产可以记录使用", {
+        id: input.assetId,
+        type: current.type,
+      });
+    }
+
+    try {
+      // 事件、计数、审计同一事务：不会出现「事件记了但 use_count 没动」。
+      const updated = this.db.transaction((tx) => {
+        tx.insert(assetUsageEvents)
+          .values({
+            id: ulid(),
+            assetId: input.assetId,
+            kind: input.kind,
+            occurredAt: now,
+            actorSub: input.actor.sub,
+          })
+          .run();
+
+        const row = tx
+          .update(objects)
+          .set({
+            useCount: sql`${objects.useCount} + 1`,
+            lastUsedAt: now,
+            updatedAt: now,
+            revision: current.revision + 1,
+          })
+          .where(
+            and(
+              eq(objects.id, input.assetId),
+              eq(objects.revision, current.revision),
+              isNull(objects.deletedAt),
+            ),
+          )
+          .returning()
+          .get();
+
+        if (!row) {
+          throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+            id: input.assetId,
+          });
+        }
+
+        writeAudit(tx, {
+          actor: input.actor,
+          action: "object.use",
+          targetType: "asset",
+          targetId: input.assetId,
+          detail: { kind: input.kind, useCount: row.useCount, title: current.title },
+          createdAt: now,
+        });
+
+        return row;
+      });
+
+      return {
+        object: toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []),
+        recorded: true,
+      };
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      return translateSqliteError(error);
+    }
+  }
+
+  async setValueLock(input: SetValueLockInput): Promise<BusinessObject> {
+    const now = input.now ?? nowIso();
+    const current = await this.findById(input.objectId);
+
+    if (!current) {
+      throw new NotFoundError("对象不存在或已删除", { id: input.objectId });
+    }
+
+    if (current.type !== "asset") {
+      throw new ValidationError("只有资产可以锁定等级", {
+        id: input.objectId,
+        type: current.type,
+      });
+    }
+
+    if (current.library !== "internal") {
+      throw new ConflictError("只有内库资产有等级可锁定", {
+        id: input.objectId,
+        library: current.library,
+      });
+    }
+
+    try {
+      const updated = this.db.transaction((tx) => {
+        const row = tx
+          .update(objects)
+          .set({
+            valueLevelLocked: input.locked,
+            updatedAt: now,
+            revision: current.revision + 1,
+          })
+          .where(
+            and(
+              eq(objects.id, input.objectId),
+              eq(objects.revision, current.revision),
+              isNull(objects.deletedAt),
+            ),
+          )
+          .returning()
+          .get();
+
+        if (!row) {
+          throw new ConflictError("对象已被其他写入修改，请重新读取后再提交", {
+            id: input.objectId,
+          });
+        }
+
+        writeAudit(tx, {
+          actor: input.actor,
+          action: "object.value.lock",
+          targetType: "asset",
+          targetId: input.objectId,
+          detail: { locked: input.locked, title: current.title },
+          createdAt: now,
+        });
+
+        return row;
+      });
+
+      return toObject(updated, loadTagLabels(this.db, [updated.id]).get(updated.id) ?? []);
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      return translateSqliteError(error);
+    }
+  }
+
+  async listValueHistory(assetId: string, limit: number): Promise<ValueHistoryItem[]> {
+    const rows = this.db
+      .select()
+      .from(valueAssessmentHistory)
+      .where(eq(valueAssessmentHistory.assetId, assetId))
+      .orderBy(desc(valueAssessmentHistory.assessedAt), desc(valueAssessmentHistory.id))
+      .limit(Math.max(1, limit))
+      .all();
+
+    return rows.map((row) => ({
+      id: row.id,
+      assessedAt: row.assessedAt,
+      assessedBy: row.assessedBy,
+      trigger: row.trigger as ValueAssessmentTrigger,
+      valueLevel: row.valueLevel as ValueLevel,
+      valueScores: parseJson<ValueScores>(row.valueScores),
+      prevLevel: row.prevLevel as ValueLevel | null,
+      reason: row.reason,
+    }));
   }
 }
 

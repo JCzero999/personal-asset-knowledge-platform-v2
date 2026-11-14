@@ -37,6 +37,11 @@ const work: BusinessObject = {
   valueAssessedAt: null,
   useCount: 0,
   lastUsedAt: null,
+  valueLevelLocked: false,
+  contentHash: null,
+  contentSnapshot: null,
+  contentSnapshotAt: null,
+  lastLevelAdjustAt: null,
   originWorkId: null,
 };
 

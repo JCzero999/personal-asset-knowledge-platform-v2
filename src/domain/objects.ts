@@ -71,6 +71,17 @@ export type AiStatus = (typeof aiStatuses)[number];
 export const valueLevels = ["S", "A", "B", "C"] as const;
 export type ValueLevel = (typeof valueLevels)[number];
 
+/**
+ * 「一次有效调用」（规格 v2.1 §2）：详情停留、打开原文、复制、引用。
+ * 前端只在明确动作发生时上报，服务端负责归属校验与 1 小时去重。
+ */
+export const assetUsageKinds = ["detail_dwell", "open_source", "copy", "reference"] as const;
+export type AssetUsageKind = (typeof assetUsageKinds)[number];
+
+export function isAssetUsageKind(value: unknown): value is AssetUsageKind {
+  return typeof value === "string" && (assetUsageKinds as readonly string[]).includes(value);
+}
+
 /** 实践数据快照（跳出率等），原样存 JSON，不解释字段含义。 */
 export type PracticeMetrics = Record<string, unknown>;
 
@@ -121,6 +132,14 @@ export interface ObjectBase {
   valueAssessedAt: string | null;
   useCount: number;
   lastUsedAt: string | null;
+  /** 手动锁定等级（v2.1 §2）：自动升降级一律跳过。 */
+  valueLevelLocked: boolean;
+  /** 正文快照（v2.1 §4）：整篇 sha256 与前 2000 字，沉淀/提炼时写入。 */
+  contentHash: string | null;
+  contentSnapshot: string | null;
+  contentSnapshotAt: string | null;
+  /** 最近一次自动升降级时间（24h 节流用）。 */
+  lastLevelAdjustAt: string | null;
   /** practiced_work 资产的来源作品 id。 */
   originWorkId: string | null;
 }

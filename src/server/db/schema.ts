@@ -102,6 +102,16 @@ export const objects = sqliteTable(
     valueAssessedAt: text("value_assessed_at"),
     useCount: integer("use_count").notNull().default(0),
     lastUsedAt: text("last_used_at"),
+    /** 手动锁定等级：自动升降级跳过锁定资产（v2.1 §2）。 */
+    valueLevelLocked: integer("value_level_locked", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    /** 沉淀时的正文 sha256 与前 2000 字快照（v2.1 §4）。 */
+    contentHash: text("content_hash"),
+    contentSnapshot: text("content_snapshot"),
+    contentSnapshotAt: text("content_snapshot_at"),
+    /** 最近一次自动升降级时间：24 小时内不再调整（v2.1 §2 安全阀）。 */
+    lastLevelAdjustAt: text("last_level_adjust_at"),
     /** practiced_work 资产的来源作品。 */
     originWorkId: text("origin_work_id").references((): AnySQLiteColumn => objects.id),
   },
@@ -412,6 +422,73 @@ export const auditEvents = sqliteTable(
 );
 
 /**
+ * 资产使用事件（规格 v2.1 §2）：一次记录 = 一次明确动作。
+ *
+ * `use_count` 是累计快照，事件流才是「最近 30 天用了几次」的事实来源；
+ * 同一资产同一动作同一人 1 小时内只记一次（服务层去重）。
+ */
+export const assetUsageEvents = sqliteTable(
+  "asset_usage_events",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => objects.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    occurredAt: text("occurred_at").notNull(),
+    actorSub: text("actor_sub").notNull(),
+  },
+  (table) => [
+    check(
+      "asset_usage_events_kind_check",
+      sql`kind in ('detail_dwell', 'open_source', 'copy', 'reference')`,
+    ),
+    index("asset_usage_events_asset_time_idx").on(table.assetId, table.occurredAt),
+  ],
+);
+
+/**
+ * 价值评估历史（规格 v2.1 §3，append-only）。
+ *
+ * 所有写 `objects.value_*` 的路径都先插一条历史再更新主表；`prev_*` 是更新前
+ * 的旧值，创建/沉淀/复核时为 NULL。`assessed_by` 存 actor sub、`system` 或
+ * `migration`，不设外键——用户删除后历史仍要可读。
+ */
+export const valueAssessmentHistory = sqliteTable(
+  "value_assessment_history",
+  {
+    id: text("id").primaryKey(),
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => objects.id, { onDelete: "cascade" }),
+    assessedAt: text("assessed_at").notNull(),
+    assessedBy: text("assessed_by").notNull(),
+    trigger: text("trigger").notNull(),
+    valueLevel: text("value_level").notNull(),
+    valueScores: text("value_scores"),
+    prevLevel: text("prev_level"),
+    prevScores: text("prev_scores"),
+    reason: text("reason"),
+  },
+  (table) => [
+    check(
+      "value_assessment_history_level_check",
+      sql`value_level in ('S', 'A', 'B', 'C')`,
+    ),
+    check(
+      "value_assessment_history_prev_level_check",
+      sql`prev_level is null or prev_level in ('S', 'A', 'B', 'C')`,
+    ),
+    check(
+      "value_assessment_history_trigger_check",
+      sql`"trigger" in ('create', 'settle', 'review', 'manual_reassess',
+            'auto_upgrade', 'auto_downgrade', 'migration')`,
+    ),
+    index("value_assessment_history_asset_time_idx").on(table.assetId, table.assessedAt),
+  ],
+);
+
+/**
  * 系统设置（ADR-025）。
  *
  * 值整段加密（`v1.<iv>.<tag>.<ciphertext>`，AES-256-GCM），密钥由
@@ -448,5 +525,9 @@ export type RoleRow = typeof roles.$inferSelect;
 export type PermissionRow = typeof permissions.$inferSelect;
 export type AuditEventRow = typeof auditEvents.$inferSelect;
 export type NewAuditEventRow = typeof auditEvents.$inferInsert;
+export type AssetUsageEventRow = typeof assetUsageEvents.$inferSelect;
+export type NewAssetUsageEventRow = typeof assetUsageEvents.$inferInsert;
+export type ValueAssessmentHistoryRow = typeof valueAssessmentHistory.$inferSelect;
+export type NewValueAssessmentHistoryRow = typeof valueAssessmentHistory.$inferInsert;
 export type SettingRow = typeof settings.$inferSelect;
 export type NewSettingRow = typeof settings.$inferInsert;

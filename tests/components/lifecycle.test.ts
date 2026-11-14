@@ -12,6 +12,7 @@ import {
   readValueLevel,
   scorePercent,
   valueBadge,
+  valueTriggerLabels,
   weightPercent,
   withLifecycleParams,
 } from "../../src/components/lifecycle";
@@ -52,6 +53,11 @@ const base = {
   valueAssessedAt: null,
   useCount: 0,
   lastUsedAt: null,
+  valueLevelLocked: false,
+  contentHash: null,
+  contentSnapshot: null,
+  contentSnapshotAt: null,
+  lastLevelAdjustAt: null,
   originWorkId: null,
   status: null,
   sourceNote: null,
@@ -233,5 +239,23 @@ describe("分数与权重", () => {
     expect(dimensionLabel({ key: "insight" }, "ai")).toBe("洞察深度 / 非显而易见性");
     expect(dimensionLabel({ key: "reuse" }, "value")).toBe("复用频率 / 复利潜力");
     expect(dimensionLabel({ key: "custom", label: "自定义维度" }, "ai")).toBe("自定义维度");
+  });
+
+  it("评估历史的七种触发来源都有中文，未知来源原样显示", () => {
+    const triggers = [
+      ["create", "创建"],
+      ["settle", "实践沉淀"],
+      ["review", "复核通过"],
+      ["manual_reassess", "手动重评"],
+      ["auto_upgrade", "自动升级"],
+      ["auto_downgrade", "自动降级"],
+      ["migration", "迁移"],
+    ] as const;
+
+    expect(Object.keys(valueTriggerLabels).sort()).toEqual(triggers.map(([key]) => key).sort());
+    for (const [key, label] of triggers) {
+      expect(valueTriggerLabels[key]).toBe(label);
+    }
+    expect(valueTriggerLabels["unknown"]).toBeUndefined();
   });
 });

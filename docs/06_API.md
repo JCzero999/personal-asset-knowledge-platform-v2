@@ -103,7 +103,7 @@
 
 ## 2. 对象数据结构
 
-`GET` / `POST` / `PATCH` 及动作接口返回的都是同一个对象结构；`GET /api/objects` 的数组元素也与之**完全一致**（没有列表专用的裁剪字段）。资产与作品共用基础字段，其余字段按 `type` 分成两组、互斥出现（ADR-029）：作品侧 `status` / `sourceNote` / `publishedAt` / `practicedAt` / `practiceMetrics` / `settledAssetId`，资产侧 `sourceType` / `aiStatus` / `aiScore` / `aiScoreDetail` / `valueLevel` / `valueScores` / `valueAssessedAt` / `useCount` / `lastUsedAt` / `originWorkId`。不属于自己那组的一律为 `null`（`useCount` 为 `0`），由数据库 CHECK 钉死。
+`GET` / `POST` / `PATCH` 及动作接口返回的都是同一个对象结构；`GET /api/objects` 的数组元素也与之**完全一致**（没有列表专用的裁剪字段）。资产与作品共用基础字段，其余字段按 `type` 分成两组、互斥出现（ADR-029）：作品侧 `status` / `sourceNote` / `publishedAt` / `practicedAt` / `practiceMetrics` / `settledAssetId`，资产侧 `sourceType` / `aiStatus` / `aiScore` / `aiScoreDetail` / `valueLevel` / `valueScores` / `valueAssessedAt` / `useCount` / `lastUsedAt` / `originWorkId`（ADR-030 起再加 `valueLevelLocked` / `lastLevelAdjustAt` / `contentHash` / `contentSnapshot` / `contentSnapshotAt`）。不属于自己那组的一律为 `null`（`useCount` 为 `0`，`valueLevelLocked` 为 `false`），由数据库 CHECK 钉死。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -136,8 +136,13 @@
 | `valueLevel` | 资产：`"S" \| "A" \| "B" \| "C"` \| null；作品：`null` | 5 维价值等级；**内库资产必有值**（数据库 CHECK 兜底） |
 | `valueScores` | 资产：object \| null；作品：`null` | 5 维明细 + `level` + `source`（`model` / `fallback` / `migration`）+ `assessedAt` |
 | `valueAssessedAt` | 资产：string \| null；作品：`null` | 最近一次价值评估时间 |
-| `useCount` | 资产：number；作品恒为 `0` | 被调用次数（动态调整机制的字段预留，当前不自动累加） |
-| `lastUsedAt` | 资产：string \| null；作品：`null` | 最近调用时间（同上，预留） |
+| `useCount` | 资产：number；作品恒为 `0` | 有效调用次数（v2.1 起由 `POST /api/objects/{id}/use` 累加，1 小时内同动作同人不重复计） |
+| `lastUsedAt` | 资产：string \| null；作品：`null` | 最近一次有效调用时间 |
+| `valueLevelLocked` | 资产：boolean；作品恒为 `false` | 手动锁定等级后为 `true`，自动升降级跳过该资产（见 4.19） |
+| `lastLevelAdjustAt` | 资产：string \| null；作品：`null` | 最近一次**自动**升降级时间，24 小时节流据此判断 |
+| `contentHash` | 资产：string \| null；作品：`null` | 沉淀 / 新建内库资产时正文的 SHA-256 |
+| `contentSnapshot` | 资产：string \| null；作品：`null` | 正文前 2000 字快照，作品删除或大改后仍可自证来源 |
+| `contentSnapshotAt` | 资产：string \| null；作品：`null` | 快照写入时间 |
 | `originWorkId` | 资产：string \| null；作品：`null` | 这条资产从哪个作品来的：AI 提炼指回草稿，实践沉淀指回已实践作品 |
 
 作品响应示例：
@@ -258,6 +263,12 @@
 | POST | `/api/objects/{id}/score` | 外库资产六维打分，按分数决定去向 | 200 |
 | POST | `/api/objects/{id}/review` | 人工复核待复核资产（通过 / 拒绝） | 200 |
 | POST | `/api/objects/{id}/value-assess` | 内库资产重做 5 维价值评估 | 200 |
+| POST | `/api/objects/{id}/use` | 记录一次有效调用（停留 / 打开原文 / 复制 / 引用） | 200 |
+| POST | `/api/objects/{id}/value-lock` | 锁定 / 解锁资产的价值等级 | 200 |
+| GET | `/api/objects/{id}/value-history` | 资产的价值评估历史（倒序） | 200 |
+| POST | `/api/objects/reassess` | 批量重评内库资产（按 id 或筛选，≤50 条） | 200 |
+| POST | `/api/admin/usage-review` | 按使用度跑一轮自动升降级（需 `settings:write`） | 200 |
+| GET | `/api/admin/value-metrics` | 兜底次数、重评失败数与等级分布（需 `settings:read`） | 200 |
 | POST | `/api/objects/{id}/content` | 上传 / 替换内容（multipart） | 201 |
 | GET | `/api/objects/{id}/content` | 列出对象的内容引用 | 200 |
 | GET | `/api/objects/{id}/content/{refId}` | 下载内容原文（二进制流） | 200 |
@@ -318,6 +329,7 @@
 | `status` | `draft` \| `finished` \| `published` \| `practiced` | 按作品状态筛选；其他值 → 400。资产 `status` 为 `null`，不会命中任何状态筛选 |
 | `aiStatus` | `unscored` \| `auto_pass` \| `needs_review` \| `low_value` \| `approved` \| `rejected` | 按资产的 AI 处置状态筛选；其他值 → 400。作品该项为 `null`，不会命中（见 4.14） |
 | `valueLevel` | `S` \| `A` \| `B` \| `C` | 按资产的价值等级筛选；其他值 → 400。作品该项为 `null`，不会命中（见 4.17） |
+| `added` | `1d` \| `7d` \| `30d` | 只看最近 1 / 7 / 30 天**创建**的对象（映射为 `createdSince = now − N 天`，按 `createdAt` 过滤，不是 `updatedAt`）；其他值 → 400。首页「本周新增」用它 |
 | `q` | 字符串，trim 后 ≤ 100 字符 | 标题或描述包含该关键字；大小写不敏感（SQLite `LIKE` 语义，ASCII 字母不区分大小写）。`%` 与 `_` **按字面量匹配**，不会被当成通配符；超长 → 400 |
 | `category` | 字符串，≤ 64 字符 | 按对象的 `category` **code 精确匹配**（单值，ADR-023 起不再有分类数组）；传入未知 code 返回空数组；超长 → 400 |
 | `tag` | 字符串，≤ 64 字符 | 标签名称精确匹配：先按词表归一化（全角转半角、空白压缩、小写）再解析到 `tag_id`，`Tool` 与 ` tool ` 命中同一条；词表里没有该标签时返回空数组，不报错；超长 → 400 |
@@ -1057,6 +1069,119 @@ curl -s -D headers.txt -o downloaded.bin \
 
 ---
 
+### 4.18 `POST /api/objects/{id}/use`
+
+记录一次**有效调用**（ADR-030）。一次调用指用户在详情页停留 ≥ 8 秒、点「查看原文」、复制正文，或引用到新作品——前端在这些明确动作发生时上报，不按浏览量计。
+
+**权限**：`object:write`。
+
+**请求体**：
+
+| 字段 | 取值 | 说明 |
+|------|------|------|
+| `kind` | `detail_dwell` \| `open_source` \| `copy` \| `reference` | 必填；其他值 → 400 |
+
+**去重**：同一 `asset + kind + actor` 在 **1 小时内只计一次**。重复上报返回 `200` + `recorded: false`，`useCount` 不变——既不报错也不重复计数（前端刷新详情时可能连续触发）。
+
+**副作用**：写一条 `asset_usage_events`，`useCount += 1`、`lastUsedAt = now`，审计 `object.use`；**只记调用、当场不改等级**。升降级由 `POST /api/admin/usage-review`（7.9）按 30 天窗口统一判定——这样同一资产不会因为一天点了几次就在 A / B 之间来回跳。
+
+**响应**：`200`，`{ "object": { ... }, "recorded": true }`。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | `kind` 缺失或非法 |
+| 401 / 403 | 未登录 / 缺 `object:write` |
+| 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
+| 409 `CONFLICT` | 对象是作品（只有资产能记使用） |
+
+---
+
+### 4.19 `POST /api/objects/{id}/value-lock`
+
+手动锁定 / 解锁资产的价值等级。锁定是给别人（和给模型）看的信号：这条资产重要，别被自动降级。
+
+**权限**：`object:write`。
+
+**请求体**：`{ "locked": true }` 或 `{ "locked": false }`，布尔值必填；其他类型 → 400。
+
+**响应**：`200`，`{ "object": { ... } }`，`valueLevelLocked` 已更新；审计写 `object.value.lock`，`detail.locked` 是新的锁定状态。
+
+**边界**：锁定只阻止**自动**升降级；用户主动点「重新评估」（4.17）仍可改等级，重评后锁定状态保持。
+
+**主要错误**：
+
+| 状态 / 错误码 | 场景 |
+|---------------|------|
+| 400 `VALIDATION_FAILED` | `locked` 不是布尔值 |
+| 401 / 403 | 未登录 / 缺 `object:write` |
+| 404 `NOT_FOUND` | 对象不存在 / 已删除 / 不属于当前用户 |
+| 409 `CONFLICT` | 对象是作品 |
+
+---
+
+### 4.20 `GET /api/objects/{id}/value-history`
+
+资产的价值评估历史，按评估时间倒序。回答「为什么从 B 变成 A」。
+
+**权限**：`object:read`。
+
+**查询参数**：`limit`，1–50 的整数，默认 20；越界或非数字 → 400。
+
+**响应**：`200`，`{ "items": [...] }`，每项：
+
+| 字段 | 说明 |
+|------|------|
+| `id` | 历史记录 id |
+| `assessedAt` | 评估时间 |
+| `assessedBy` | 操作者 `sub`；自动升降级记录的是触发那一轮复核的账号 |
+| `trigger` | `create` \| `settle` \| `review` \| `manual_reassess` \| `auto_upgrade` \| `auto_downgrade` \| `migration` |
+| `valueLevel` | 本次评估后的等级 |
+| `valueScores` | 本次 5 维明细（含 `source`） |
+| `prevLevel` | 前一个等级（首次为 `null`） |
+| `reason` | 说明文案，自动调级会写清依据（如「93 天未使用…复用维度降至 1 分，B → C」） |
+
+历史是 **append-only**：所有写 `value_*` 的路径先插一条历史再改主表，同一事务；不提供修改 / 删除接口。
+
+**主要错误**：401 / 403 / 404（对象不存在或不属于当前用户）/ 400（`limit` 非法）。
+
+---
+
+### 4.21 `POST /api/objects/reassess`
+
+批量重评内库资产：逐条重新跑 5 维模型评估，一条失败不影响其余条。
+
+**权限**：`object:write`。
+
+**请求体**（二选一，都不传则 400）：
+
+```json
+{ "ids": ["01J...", "01J..."] }
+```
+
+```json
+{ "filter": { "level": "C", "source": "fallback" } }
+```
+
+- `ids`：显式列表，最多 50 条，超过 → 400。
+- `filter.level`：`S` / `A` / `B` / `C`；`filter.source`：`model` / `fallback` / `rule` / `migration`（按 `valueScores.source` 筛，用来捞「模型挂了被判 C」的那批）；命中超过 50 条时只处理前 50 条。
+
+**响应**：`200`，逐条结果：
+
+```json
+{
+  "ok": [{ "id": "01J...", "title": "…", "valueLevel": "B" }],
+  "failed": [{ "id": "01J...", "message": "模型调用失败" }]
+}
+```
+
+失败写审计 `value.reassess_failed`，后台指标按这条计数（见 7.10）。批量重评会真实消耗模型额度。
+
+**主要错误**：400（既没 `ids` 也没 `filter`、取值非法、`ids` 超过 50 条）/ 401 / 403。
+
+---
+
 ## 5. 内容检索
 
 ### 5.1 `GET /api/search`
@@ -1653,8 +1778,8 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 | `user:read` | 查看用户与角色（7.5、7.7） | ✓ | ✓ | | |
 | `user:write` | 改用户角色与状态（7.6） | ✓ | | | |
 | `role:write` | 修改角色定义（预留，v1 无写入接口） | ✓ | | | |
-| `settings:read` | 查看大模型配置（8.1） | ✓ | ✓ | | |
-| `settings:write` | 修改 / 测试 / 应用大模型配置（8.2–8.4） | ✓ | ✓ | | |
+| `settings:read` | 查看大模型配置（8.1）、价值兜底指标（7.10） | ✓ | ✓ | | |
+| `settings:write` | 修改 / 测试 / 应用大模型配置（8.2–8.4）、跑使用度复核（7.9） | ✓ | ✓ | | |
 
 要点：
 
@@ -1887,6 +2012,60 @@ ADR-023 把「作品形态」改名为「分类」，接口路径一并从 `/api
 | 401 `UNAUTHORIZED` | 未登录 |
 | 403 `FORBIDDEN` | 缺 `audit:read` |
 | 500 `INTERNAL` | 数据库异常 |
+
+---
+
+### 7.9 `POST /api/admin/usage-review`
+
+按使用度跑一轮自动升降级（ADR-030）。遍历当前账号的内库资产，按「近 30 天调用次数」与「闲置天数」判定是否调级。
+
+**权限**：`settings:write`（会批量改价值等级，属于系统级操作；不新开权限项）。
+
+**请求体**：无字段。
+
+**规则**（全部在 `src/domain/value.ts`，此处只描述结果）：
+
+- **降级优先**：闲置 >90 天，或 90 天窗口里有 60 天零调用 → 降一级。
+- **升级**：近 30 天 ≥5 次调用且最近调用在 30 天内 → 升一级。
+- **约束**：单次最多动一级；S 封顶、C 兜底；同一资产 24 小时内只自动调整一次；`valueLevelLocked` 的资产直接跳过；调级只替换复用维度后按原阈值重算，不出现「只改等级」。降级时若复用维度单独下调跨不过 5 分档差，会从当前最高分维度继续逐点下调直到真正降一级（`valueScores.source = "rule"`，实际变化以历史里的 `prev_scores` 为准）。
+- 每次调级先写 `value_assessment_history`（`trigger = auto_upgrade | auto_downgrade`）再改主表。
+
+**响应**：`200`：
+
+```json
+{
+  "scanned": 24,
+  "adjusted": 2,
+  "skippedLocked": 1,
+  "failed": [{ "id": "01J...", "title": "…", "message": "…" }],
+  "items": [
+    { "id": "01J...", "title": "…", "from": "B", "to": "C", "trigger": "auto_downgrade", "reason": "93 天未使用…" }
+  ]
+}
+```
+
+逐条独立提交，一条失败不影响其他条。当前**没有后台定时任务**，只能手动触发；重复执行由 24 小时节流兜底。
+
+**主要错误**：401 / 403（缺 `settings:write`）/ 500。
+
+---
+
+### 7.10 `GET /api/admin/value-metrics`
+
+价值兜底与分布指标：一眼看出「模型是不是又挂了」。
+
+**权限**：`settings:read`。
+
+**响应**：`200`：
+
+| 字段 | 说明 |
+|------|------|
+| `fallbackToday` | 今天（UTC 零点起）因模型失败走确定性兜底的次数（审计 `value.fallback`） |
+| `fallback7d` | 近 7 天的兜底次数 |
+| `reassessFailed7d` | 近 7 天重评失败次数（审计 `value.reassess_failed`） |
+| `levelDistribution` | 当前账号内库资产的 `{ S, A, B, C }` 条数 |
+
+**主要错误**：401 / 403（缺 `settings:read`）。
 
 ---
 

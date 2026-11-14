@@ -49,7 +49,9 @@ export function CreateObjectButton({
   const [type, setType] = useState<ObjectType>("asset");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [library, setLibrary] = useState<Library>("internal");
+  const [library, setLibrary] = useState<Library>("external");
+  // 内库是打分与复核之后的归属（P2-1）：新资产默认走外库，直接进内库要显式勾选。
+  const [forceInternal, setForceInternal] = useState(false);
   const [tags, setTags] = useState<string[]>([]);
   const activeCategories = useMemo(
     () => vocabulary.categories.filter((item) => item.state === "active"),
@@ -99,7 +101,8 @@ export function CreateObjectButton({
     setType("asset");
     setTitle("");
     setDescription("");
-    setLibrary("internal");
+    setLibrary("external");
+    setForceInternal(false);
     setTags([]);
     setCategory(null);
   }
@@ -206,7 +209,10 @@ export function CreateObjectButton({
                       name={`${idPrefix}-type`}
                       value="asset"
                       checked={type === "asset"}
-                      onChange={() => setType("asset")}
+                      onChange={() => {
+                        setType("asset");
+                        if (!forceInternal) setLibrary("external");
+                      }}
                     />
                     <span className="type-card-icon"><Icon name="archive" size={19} /></span>
                     <span className="type-card-copy">
@@ -277,8 +283,14 @@ export function CreateObjectButton({
                 <legend className="field-label">放在哪里</legend>
                 <div className="library-grid">
                   <label
-                    className={`type-card ${library === "internal" ? "is-active" : ""}${type === "work" ? " is-disabled" : ""}`}
-                    title={type === "work" ? "作品先在外部库流转" : undefined}
+                    className={`type-card ${library === "internal" ? "is-active" : ""}${
+                      type === "work" || !forceInternal ? " is-disabled" : ""
+                    }`}
+                    title={
+                      type === "work"
+                        ? "作品先在外部库流转"
+                        : forceInternal ? undefined : "内库是打分与复核之后的归属"
+                    }
                   >
                     <input
                       className="sr-only"
@@ -286,12 +298,16 @@ export function CreateObjectButton({
                       name={`${idPrefix}-library`}
                       value="internal"
                       checked={library === "internal"}
-                      disabled={type === "work"}
+                      disabled={type === "work" || !forceInternal}
                       onChange={() => setLibrary("internal")}
                     />
                     <span className="type-card-copy">
                       <strong>内库</strong>
-                      <small>{type === "work" ? "作品先在外部库流转" : "长期复用"}</small>
+                      <small>
+                        {type === "work"
+                          ? "作品先在外部库流转"
+                          : forceInternal ? "跳过打分与复核" : "需先经打分与复核"}
+                      </small>
                     </span>
                   </label>
                   <label className={`type-card ${library === "external" ? "is-active" : ""}`}>
@@ -309,6 +325,25 @@ export function CreateObjectButton({
                     </span>
                   </label>
                 </div>
+                {type === "asset" ? (
+                  <label className="library-override">
+                    <input
+                      type="checkbox"
+                      checked={forceInternal}
+                      onChange={(event) => {
+                        const checked = event.target.checked;
+                        setForceInternal(checked);
+                        if (!checked) setLibrary("external");
+                      }}
+                    />
+                    <span>仍要直接进入内库（跳过外库打分与复核）</span>
+                  </label>
+                ) : null}
+                {type === "asset" && forceInternal && library === "internal" ? (
+                  <p className="library-warning" role="status">
+                    保存后直接进内库：不再走 AI 打分与人工复核，创建即做 5 维评估。
+                  </p>
+                ) : null}
                 <p className="library-hint">
                   {type === "work"
                     ? "作品先在外部库流转：草稿可 AI 提炼，发布后标记已实践即自动沉淀进内库。"

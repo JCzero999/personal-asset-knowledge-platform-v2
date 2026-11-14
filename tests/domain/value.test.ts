@@ -17,6 +17,8 @@ import {
   buildAiScoreDetail,
   buildValueScores,
   fallbackValueScores,
+  planDynamicAdjustment,
+  reuseScoreFor,
   valueLevelFor,
   type AiDimensionKey,
   type ValueDimensionKey,
@@ -171,5 +173,125 @@ describe("buildValueScores / fallbackValueScores", () => {
     expect(scores.model).toBeNull();
     expect(scores.dimensions.every((item) => item.score === 2)).toBe(true);
     expect(scores.assessedAt).toBe("2026-11-14T00:00:00.000Z");
+  });
+});
+
+describe("reuseScoreFor", () => {
+  it("按近 30 天调用次数落到 1–5 分", () => {
+    expect(reuseScoreFor(0)).toBe(1);
+    expect(reuseScoreFor(1)).toBe(2);
+    expect(reuseScoreFor(2)).toBe(2);
+    expect(reuseScoreFor(3)).toBe(3);
+    expect(reuseScoreFor(4)).toBe(3);
+    expect(reuseScoreFor(5)).toBe(4);
+    expect(reuseScoreFor(9)).toBe(4);
+    expect(reuseScoreFor(10)).toBe(5);
+    expect(reuseScoreFor(30)).toBe(5);
+  });
+});
+
+describe("planDynamicAdjustment", () => {
+  const NOW = "2026-11-14T00:00:00.000Z";
+
+  function plan(overrides: Partial<Parameters<typeof planDynamicAdjustment>[0]> = {}) {
+    return planDynamicAdjustment({
+      currentLevel: "B",
+      scores: flatValue(3),
+      useCount30d: 0,
+      daysSinceLastUse: 10,
+      locked: false,
+      lastAdjustedAt: null,
+      now: NOW,
+      ...overrides,
+    });
+  }
+
+  it("锁定或 24 小时内调过：一律不动", () => {
+    expect(plan({ locked: true, useCount30d: 10, daysSinceLastUse: 1 })).toBeNull();
+    expect(
+      plan({ useCount30d: 10, daysSinceLastUse: 1, lastAdjustedAt: "2026-11-13T01:00:00.000Z" }),
+    ).toBeNull();
+  });
+
+  it("刚好 24 小时可以再调", () => {
+    const right = plan({
+      useCount30d: 5,
+      daysSinceLastUse: 1,
+      lastAdjustedAt: "2026-11-13T00:00:00.000Z",
+    });
+
+    expect(right?.type).toBe("upgrade");
+  });
+
+  it("近 30 天 ≥5 次且 30 天内有调用：升一级", () => {
+    const result = plan({ useCount30d: 5, daysSinceLastUse: 1 });
+
+    expect(result?.type).toBe("upgrade");
+    expect(result?.level).toBe("A");
+    expect(result?.scores.level).toBe("A");
+    expect(result?.scores.source).toBe("rule");
+    expect(result?.scores.dimensions.find((item) => item.key === "reuse")?.score).toBe(4);
+    expect(result?.scores.assessedAt).toBe(NOW);
+  });
+
+  it("调用不足 5 次或已超 30 天不使用：不升级", () => {
+    expect(plan({ useCount30d: 4, daysSinceLastUse: 1 })).toBeNull();
+    expect(plan({ useCount30d: 10, daysSinceLastUse: 31 })).toBeNull();
+  });
+
+  it("S 级封顶，不会升到不存在的等级", () => {
+    const result = plan({
+      currentLevel: "S",
+      scores: flatValue(4),
+      useCount30d: 10,
+      daysSinceLastUse: 1,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("升级最多一级：复用从 1 拉到 5 也不会跳档", () => {
+    const result = plan({
+      currentLevel: "B",
+      scores: { ...flatValue(3), reuse: 1 },
+      useCount30d: 10,
+      daysSinceLastUse: 1,
+    });
+
+    expect(result?.level).toBe("A");
+  });
+
+  it("超过 90 天未用：降一级；正好 90 天不降", () => {
+    expect(plan({ useCount30d: 2, daysSinceLastUse: 90 })).toBeNull();
+
+    const result = plan({ useCount30d: 2, daysSinceLastUse: 91 });
+    expect(result?.type).toBe("downgrade");
+    expect(result?.level).toBe("C");
+  });
+
+  it("零调用且超过 60 天未用：降级；正好 60 天不降", () => {
+    expect(plan({ useCount30d: 0, daysSinceLastUse: 60 })).toBeNull();
+    expect(plan({ useCount30d: 0, daysSinceLastUse: 61 })?.type).toBe("downgrade");
+  });
+
+  it("降级保证真的掉一级：S 仅压复用仍不够时继续下调其他维度", () => {
+    const result = plan({
+      currentLevel: "S",
+      scores: flatValue(5),
+      useCount30d: 0,
+      daysSinceLastUse: 120,
+    });
+
+    expect(result?.type).toBe("downgrade");
+    expect(result?.level).toBe("A");
+    expect(result?.scores.level).toBe("A");
+    // 总分刚好落在 A 档下沿（20），不会一次掉两级。
+    expect(result?.scores.dimensions.reduce((sum, item) => sum + item.score, 0)).toBe(20);
+  });
+
+  it("C 级不再降", () => {
+    expect(
+      plan({ currentLevel: "C", scores: flatValue(2), useCount30d: 0, daysSinceLastUse: 200 }),
+    ).toBeNull();
   });
 });

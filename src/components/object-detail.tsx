@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 
 import { AssetInsights } from "@/components/asset-insights";
+import { AssetDwellTracker } from "@/components/asset-usage";
 import { ObjectActions } from "@/components/object-actions";
 import { ObjectContent } from "@/components/object-content";
 import { Icon } from "@/components/icon";
@@ -66,6 +67,7 @@ export function ObjectDetail({
 
   return (
     <>
+      {object.type === "asset" ? <AssetDwellTracker objectId={object.id} /> : null}
       <section className="panel detail-header" aria-labelledby="detail-heading">
         <div className="detail-heading">
           <span
@@ -181,6 +183,34 @@ export function ObjectDetail({
 
       {object.type === "asset" ? <AssetInsights object={object} /> : null}
 
+      {object.type === "asset" && object.contentSnapshot ? (
+        <section className="panel snapshot-panel" aria-labelledby="snapshot-heading">
+          <div className="panel-heading">
+            <div>
+              <h2 id="snapshot-heading">正文快照</h2>
+              <p>沉淀时保存的开头一段，用来确认这条资产和原文是否还对得上。</p>
+            </div>
+            <span className="meta-chip">
+              {object.contentSnapshotAt ? formatDateTime(object.contentSnapshotAt) : "沉淀时"}
+            </span>
+          </div>
+          <p className="snapshot-text">
+            {object.contentSnapshot.slice(0, 300)}
+            {object.contentSnapshot.length > 300 ? "…" : ""}
+          </p>
+          {object.originWorkId ? (
+            <Link
+              className="text-button snapshot-link"
+              href={`/workspace/${object.originWorkId}`}
+              scroll={false}
+            >
+              完整原文见原作品
+              <Icon name="arrow-right" size={13} />
+            </Link>
+          ) : null}
+        </section>
+      ) : null}
+
       <section className="panel content-panel" aria-labelledby="content-heading">
         <div className="panel-heading">
           <div>
@@ -190,7 +220,12 @@ export function ObjectDetail({
           <span className="meta-chip">{refs.length} 个文件</span>
         </div>
 
-        <ObjectContent objectId={object.id} objectTitle={object.title} refs={refs} />
+        <ObjectContent
+          objectId={object.id}
+          objectTitle={object.title}
+          refs={refs}
+          usageObjectId={object.type === "asset" ? object.id : null}
+        />
       </section>
     </>
   );

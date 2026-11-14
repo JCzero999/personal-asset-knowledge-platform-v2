@@ -622,3 +622,29 @@
 - **质量门（本轮实跑）**：`tsc --noEmit` 退出 0；`eslint` 0 error；`vitest` **870 通过 / 3 跳过**；`next build` 生产构建通过
 - **未验证 / 边界**：真实 RAGFlow 解析链路下的提炼（提炼读的是已解析正文，本机 RAGFlow 上的长文解析原先就有超时记录）只在假内容源上验过；模型质量本身（六维给分是否合理、5 维评级是否贴合）未在真实语料上评过，当前不把模型的给分当质量基线；动态调整（`use_count` 自动升降级、长期未调用提醒）只落字段未实现
 - **文档**：`00_SCOPE`（口径与规则）、`01_ARCHITECTURE`（§5.3 CHECK / §5.12 生命周期）、`03_DECISIONS`（ADR-029）、`09_USER_GUIDE`（新流程、常见问题、术语表）、`02_PHASES`（Phase 6I）、`06_API`（5 个新接口与列表筛选）
+
+## 2026-11-14（第二轮：六项界面体验问题 + 规格 v2.1：真实模型校准 / 有效调用与动态升降级 / 评估历史 / 正文快照）
+
+- **起因**：用户对 v2.0 交付提了 8 条复查意见（阈值口径、`§6.3` 动态调整未做、评估无历史、沉淀资产依赖作品正文、两种模型失败语义、新建可直接进内库、真实模型质量未评、含密钥的 `.env.bak` 未处理），并列出 6 个界面问题；随后给出《迭代提示词 V2.1》，要求按 P0 → P1 → P2 严格顺序补齐。本轮先出差距与实施计划（文件 / 接口 / 迁移级），再分派前端与主程并行实现，最后由总管做门禁、生产构建、端到端与界面验收
+- **ADR**：新增 **ADR-030**（有效调用定义、动态升降级、评估历史与轻量快照）；阈值 `75 / 60 / S≥21 / A≥16 / B≥11` **保持不变**（真实模型校准只跑出基线，未取得人工标注集，改阈值留待数据齐后另行决策）
+- **界面问题1（正文编辑器）**：`纯文本 / Markdown` 顺序改为 **Markdown 在前**并成为默认（`isMarkdownContent` 判定已存内容，纯文本作品仍按纯文本打开）；左右分栏滚动联动——任一侧滚动按百分比镜像另一侧，用「归属令牌 + `requestAnimationFrame`」避免互相打架导致的抖动，程序化滚动不抢焦点
+- **界面问题2（目录层级）**：`分类与标签`（管理分类 / 管理标签）与 `账号`（用户 / 角色）改为子一级，复用作品进程的 `.dir-group.is-nested`（缩进 16px，实测左边缘 104 与草稿 / 已完成一致，父项 88）
+- **界面问题3（内外库混排）**：列表上方新增三档类型切换 `全部 / 资产 / 作品`（`?type=`），当前档 `aria-current`；切换保留库别、复核状态、等级等其他筛选
+- **界面问题4（分栏过窄）**：目录与详情之间加可拖拽分隔条（`--list-width` CSS 变量，300–560px，双击复位 340，键盘 ←/→ ±16、Home/End 到端点），宽度存 `localStorage`，≤1100px 自动隐藏
+- **界面问题5（首页指标）**：五个指标全部可点——全部内容 `/workspace`、资产 `?type=asset`、作品 `?type=work`、本周新增 `?added=7d`、待人工复核保持原筛选；`GET /api/objects` 新增 `added=1d|7d|30d`（映射 `createdSince`），列表顶部显示「近 7 天」筛选胶囊可单独摘除
+- **界面问题6（提炼太碎）**：提炼提示词改为**模板化契约**——每条必须是可独立理解的知识单元、摘要 60–120 字结论先行、适用场景 ≤40 字、要点 2–4 条、`excerpt` 必须逐字摘自正文连续原文 100–300 字；解析器改为**严格模板校验**（缺字段 / 摘要过短 / 摘录非逐字一律丢弃并记日志），描述统一拼成 `摘要｜适用场景：…｜要点：…`，不再允许一句话碎片成条
+- **P0-1 真实模型校准**：新增 `scripts/calibrate-model.mjs`——用 SQLite backup 复制真实库到临时目录、起独立端口 `AUTH_MODE=mock` 实例，只读真实库磁盘副本、绝不改 3000 上的库；对真实外库资产逐条打分并输出六维明细。**首轮基线（5 条真实资产）**：总分 39 / 46 / 44 / 44 / 50，全部 `low_value`；拖分最重的是「关联与已有内库互补」（25–35）与「来源可信度」（30–40）。冷启动期内库近乎为空，「关联」维度系统性压低，属于已知偏差，写入 `docs/evaluation/model-calibration-v2.1.md`。**验收标准（一致率 ≥85%、等级偏差 ≤1 占 80%）尚缺人工标注集，未达标也未判定**
+- **P0-2 有效调用与动态升降级**：定义「一次有效调用」= 详情页停留 ≥8 秒 / 打开原文 / 复制 / 引用到新作品，前端在明确动作时上报 `POST /api/objects/{id}/use`（`kind = detail_dwell | open_source | copy | reference`，同资产同动作同人 **1 小时去重**，重复上报返回 `recorded: false`）；服务端写 `asset_usage_events`、`use_count += 1`、`last_used_at` 与审计 `object.use`——**上报只记数、不当场调级**
+- **动态规则（第一版）**：由 `POST /api/admin/usage-review` 统一按 30 天窗口判定，复用维度按近 30 天调用次数重算（≥10 → 5 分，≥5 → 4，≥3 → 3，≥1 → 2，0 → 1）。降级优先——闲置 >90 天或「90 天内有 60 天零调用」降一级；升级——近 30 天 ≥5 次且最近调用在 30 天内升一级；**单次最多动一级、S 封顶 C 兜底、同一资产 24 小时内只自动调整一次、锁定的资产跳过**；调级只替换复用维度后按原阈值重算，等级永远由分数推导，不出现「只改等级」；每次调级先写历史再改主表。**当前没有后台定时任务，「用时触发 + 每日补偿」未做，只能手动跑这一轮**
+- **P1-1 评估历史**：迁移 `drizzle/0011_usage_value_history.sql` 新增 `value_assessment_history`（append-only：`trigger` ∈ create / settle / review / manual_reassess / auto_upgrade / auto_downgrade / migration，另存 `prev_level` / `prev_scores` / `reason` / `assessed_by`）。所有写 `value_*` 的路径（创建、复核、重评、动态调级、实践结算、批量重评）**先插入历史再更新主表，同一事务**；迁移时为 6 条存量内库资产各补一条 `migration` 初始记录。详情页新增「评估历史」时间线，展示 `B → A`、触发方式与原因
+- **P1-2 正文轻量快照**：沉淀与新建内库资产时写入 `content_hash`（正文 SHA-256）、`content_snapshot`（前 2000 字）、`content_snapshot_at`；详情页优先展示快照并标注「完整原文见原作品」，`origin_work_id` 仍作为完整原文入口。作品被删或大改后，内库资产仍能独立说明自己从哪来
+- **P2 收紧新建入口**：新建对话框里「选内库」默认禁用，需勾选「我知道这会跳过外库打分与复核」才可启用，勾选后显示「保存后直接进内库：不再走 AI 打分与人工复核，创建即做 5 维评估」；后端继续允许（兼容既有调用），但用户侧默认走两条正路——AI 高分通过、实践沉淀
+- **P2 兜底可观测性与批量重评**：`POST /api/objects/reassess` 支持按 `{ids}` 或 `{filter:{level, source}}` 批量重评（单次 ≤50 条，逐条独立，一条失败不影响其余，失败写审计 `value.reassess_failed`）；`GET /api/admin/value-metrics` 返回今日 / 近 7 天兜底数、近 7 天重评失败数、内库 S/A/B/C 分布；列表页支持勾选后「批量重评」
+- **锁定等级**：`POST /api/objects/{id}/value-lock`（`{locked: true|false}`）给内库资产加锁，锁后自动升降级跳过并在判定文案里注明「已锁定」——重要资产不会被自动降级
+- **数据层**：`objects` 新增 5 列 `content_hash` / `content_snapshot` / `content_snapshot_at` / `value_level_locked` / `last_level_adjust_at`；新增表 `asset_usage_events`（`kind` CHECK、`asset_id + occurred_at` 索引）与 `value_assessment_history`（`trigger` CHECK、`asset_id + assessed_at DESC` 索引）
+- **接口**：新增 6 条——`POST /api/objects/{id}/use`、`GET /api/objects/{id}/value-history`、`POST /api/objects/{id}/value-lock`、`POST /api/objects/reassess`、`POST /api/admin/usage-review`、`GET /api/admin/value-metrics`；`GET /api/objects` 新增 `added` 筛选
+- **密钥处理**：`.gitignore` 增加 `infra/lightrag/.env.bak-*`（本地环境备份含密钥，永不入库）；该备份文件仍在磁盘上，删除与否由用户决定
+- **验收（本轮实跑）**：`scripts/verify-lifecycle-v2.mjs` 提炼夹具升级到新模板契约后**全部断言通过**（提炼 1 条、重复提炼 409、资产数不变、≥75 进内库、60 留复核、内库资产 0 条缺等级、4 个页面与 0 个脚本异常）；`scripts/verify-v21-ui.mjs`（1440 / 390、目录缩进、类型切换、拖拽分栏与持久化、首页五指标、编辑器顺序与双向滚动联动）全部通过；`scripts/verify-v21-batch2.mjs`（本周新增胶囊、快照面板、停留 8 秒计次、打开原文计次、评估历史三条、锁定 / 解锁、新建内库二次确认、批量重评、390 / 1024 断点）全部通过
+- **质量门**：`tsc --noEmit` 退出 0；`eslint` **0 error** / 16 warning（既有，均为未使用的 `fail`）；`vitest` **66 文件 916 通过 / 3 跳过**；`check:theme` 129 名 · 0 失败；`check:contrast` 41/41；`next build` 通过。生产实例（端口 3000）已迁移至 0011 并重启，6 条内库资产均有等级，`/api/health` 正常
+- **未验证 / 边界**：真实模型质量仍未达「一致率 ≥85%」的验收——缺 30–50 条人工标注集，本轮只有 5 条真实资产的基线（全 `low_value`，含冷启动偏差）；`excerpt` 逐字校验对换行 / 全角空格的容错只按「压缩空白后子串」处理，模型若改写仍会被丢弃；动态升降级只在夹具时间上验证，未经历真实 90 天尺度；批量重评会真实消耗模型额度，未做按账号配额
+- **文档**：`05_CHANGELOG`（本节）、`06_API`（6 个新接口 + `added` 筛选 + 新字段）、`02_PHASES`（Phase 6J）、`09_USER_GUIDE`（有效调用 / 锁定 / 评估历史 / 快照 / 新建内库确认）、`10_BACKLOG`（第 12–18 条闭环情况）、`03_DECISIONS`（ADR-030）、`docs/evaluation/model-calibration-v2.1.md`（新增）

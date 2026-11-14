@@ -38,7 +38,7 @@ import { resolveLlmConfigWithSource, type LlmConfig } from "./llm-settings-servi
  *   而提炼与打分没有兜底——它们的结果会直接决定资产去留，编不出来就是失败。
  */
 
-const EXTRACT_MAX_TOKENS = 1_600;
+const EXTRACT_MAX_TOKENS = 4_096;
 const SCORE_MAX_TOKENS = 900;
 const VALUE_MAX_TOKENS = 900;
 
@@ -183,28 +183,37 @@ const JSON_RULE = "只输出一个 JSON 对象，不要输出 Markdown 代码块
 
 export const EXTRACT_SYSTEM_PROMPT = [
   "你是「个人知识与资产平台」的内容提炼助手。",
-  "任务：从一篇作品正文里提炼出可以复用的知识资产（可复利、可迁移的知识单元）。",
+  "任务：从一篇作品正文里提炼 3–5 条可复用的知识资产（可独立理解、可迁移的知识单元）。",
   "",
   "规则：",
-  "1. 只依据给定正文，不要编造正文里没有的事实、数据或出处。",
-  "2. 每篇作品提炼 1–5 个资产；正文信息量不足时宁可少提炼。",
-  "3. 资产标题是名词性短语，20 字以内；描述写「是什么 + 为什么有用 + 怎么用」，200 字以内。",
-  "4. tags 用正文里已有的关键概念，2–5 个，短词优先。",
-  "5. 与正文无关时返回空数组。",
+  "1. 只依据给定正文，不得编造正文里没有的事实、数据或出处。",
+  "2. 每条必须是一个可独立理解的知识单元：至少包含一个完整判断或一组完整步骤；一句话碎片、只有名词短语的条目不得成条。",
+  "3. 不为凑数拆分：同一知识点不要拆成多条，同类碎片合并成一条；正文确实不足以支撑 3 条时可以少于 3 条，但至少要提炼 1 条。",
+  "4. title：动宾短语，不超过 30 字，不含序号（不要写「1.」「一、」）。",
+  "5. summary：60–120 字，结论先行，说清「是什么 + 为什么重要」。",
+  "6. scenario：不超过 40 字，说明适用场景。",
+  "7. keyPoints：2–4 条，每条不超过 50 字，是可执行要点，不要堆叠原句。",
+  "8. excerpt：100–300 字，必须逐字摘自正文的连续原文，不要改写、不要拼接，用于日后核对出处。",
+  "9. tags：1–3 个，优先复用「已有标签」里的词；没有合适的再给新的短词。",
+  "10. 与正文无关时返回空数组。",
   "",
   JSON_RULE,
-  '输出格式：{"assets":[{"title":"...","description":"...","tags":["..."]}]}',
+  '输出格式：{"assets":[{"title":"...","summary":"...","scenario":"...","keyPoints":["..."],"excerpt":"...","tags":["..."]}]}',
 ].join("\n");
 
 export function buildExtractUserPrompt(
   work: Pick<BusinessObject, "title" | "description">,
   content: string,
+  availableTags: readonly string[] = [],
 ): string {
   const description = work.description?.trim();
 
   return [
     `作品标题：${work.title}`,
     description ? `作品说明：${description}` : "",
+    availableTags.length > 0
+      ? `已有标签（能复用就复用）：${availableTags.join("、")}`
+      : "",
     "",
     "<正文>",
     content,
@@ -332,44 +341,195 @@ export function parseModelJson(text: string): unknown {
 
 export interface ExtractedAsset {
   title: string;
+  /** 由 summary + scenario + keyPoints 拼成，写入 objects.description。 */
   description: string;
+  summary: string;
+  scenario: string;
+  keyPoints: string[];
+  /** 逐字摘自原文的 100–300 字段落，同时作为资产的正文快照。 */
+  excerpt: string;
   tags: string[];
 }
 
-const MAX_EXTRACTED_ASSETS = 5;
-const MAX_EXTRACTED_TITLE = 200;
-const MAX_EXTRACTED_DESCRIPTION = 5_000;
+export interface ExtractDiscard {
+  index: number;
+  title: string;
+  reason: string;
+}
 
-/** 提炼结果收敛：字段缺失即丢弃该项，标题/描述超长直接截断（不因模型啰嗦整体失败）。 */
-export function parseExtractedAssets(text: string): ExtractedAsset[] {
+export interface ParseExtractOptions {
+  /**
+   * 作品正文：用于校验 excerpt 是否逐字摘自原文。
+   * 缺省时跳过逐字校验（只给直接调用解析器的测试留口子）。
+   */
+  sourceText?: string;
+  /** 丢弃条目的日志出口；默认 console.warn，测试可注入静默实现。 */
+  onDiscard?: (info: ExtractDiscard) => void;
+}
+
+const MAX_EXTRACTED_ASSETS = 5;
+const MAX_EXTRACTED_TITLE = 30;
+const SUMMARY_MIN = 60;
+const SUMMARY_MAX = 120;
+const SCENARIO_MAX = 40;
+const KEY_POINT_MIN = 2;
+const KEY_POINT_MAX = 4;
+const KEY_POINT_LENGTH = 50;
+const EXCERPT_MIN = 100;
+const EXCERPT_MAX = 300;
+const DESCRIPTION_MAX = 500;
+const TAG_MAX = 3;
+const TAG_LENGTH = 20;
+
+/** 按 Unicode 码点计数，避免 emoji / 生僻字把一个字符算成两个。 */
+function charLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function takeChars(value: string, max: number): string {
+  const chars = Array.from(value);
+
+  return chars.length <= max ? value : chars.slice(0, max).join("");
+}
+
+/** 去掉模型爱加的序号：「1.」「1、」「(1)」「一、」「第 1 条」。 */
+function stripLeadingNumbering(title: string): string {
+  return title
+    .replace(/^第[一二三四五六七八九十百\d]+[条点]\s*/, "")
+    .replace(/^第[一二三四五六七八九十百\d]+\s*[、.．]\s*/, "")
+    .replace(/^[(（]\s*\d{1,2}\s*[)）]\s*/, "")
+    .replace(/^\d{1,2}\s*[.、．:：)）]\s*/, "")
+    .replace(/^[一二三四五六七八九十]+\s*[、.．]\s*/, "")
+    .trim();
+}
+
+/**
+ * excerpt 校验：优先严格子串；模型偶尔把换行压成空格，退一步只忽略空白差异，
+ * 其余字符必须完全一致——改写、拼接、跨段拼贴都会被丢弃。
+ */
+function isVerbatimExcerpt(excerpt: string, source: string): boolean {
+  if (source.includes(excerpt)) return true;
+
+  const squash = (value: string) => value.replace(/\s+/g, " ").trim();
+
+  return squash(source).includes(squash(excerpt));
+}
+
+/**
+ * 提炼结果收敛（规格 v2.1 §1）：字段不全、似碎片的条目直接丢弃并记日志；
+ * 超长字段截断而不是让整批失败。
+ */
+export function parseExtractedAssets(
+  text: string,
+  options: ParseExtractOptions = {},
+): ExtractedAsset[] {
   const payload = parseModelJson(text) as { assets?: unknown };
   const raw = Array.isArray(payload?.assets) ? payload.assets : [];
+  const logDiscard =
+    options.onDiscard ??
+    ((info: ExtractDiscard) => {
+      console.warn("[extract] 丢弃不合格条目", info);
+    });
 
   const assets: ExtractedAsset[] = [];
 
-  for (const item of raw) {
-    if (typeof item !== "object" || item === null) continue;
+  for (const [index, item] of raw.entries()) {
+    if (assets.length >= MAX_EXTRACTED_ASSETS) break;
+
+    const discard = (title: string, reason: string) => {
+      logDiscard({ index, title, reason });
+    };
+
+    if (typeof item !== "object" || item === null) {
+      discard("", "条目不是对象");
+      continue;
+    }
 
     const record = item as Record<string, unknown>;
-    const title = typeof record.title === "string" ? record.title.trim() : "";
+    const title = stripLeadingNumbering(
+      typeof record.title === "string" ? record.title.trim() : "",
+    );
 
-    if (!title) continue;
+    if (!title) {
+      discard("", "缺少标题");
+      continue;
+    }
 
-    const description =
-      typeof record.description === "string" ? record.description.trim() : "";
+    const summaryRaw = typeof record.summary === "string" ? record.summary.trim() : "";
+
+    if (!summaryRaw) {
+      discard(title, "缺少摘要");
+      continue;
+    }
+
+    if (charLength(summaryRaw) < SUMMARY_MIN) {
+      discard(title, `摘要不足 ${SUMMARY_MIN} 字，疑似碎片`);
+      continue;
+    }
+
+    const summary = takeChars(summaryRaw, SUMMARY_MAX);
+    const scenarioRaw = typeof record.scenario === "string" ? record.scenario.trim() : "";
+
+    if (!scenarioRaw) {
+      discard(title, "缺少适用场景");
+      continue;
+    }
+
+    const scenario = takeChars(scenarioRaw, SCENARIO_MAX);
+
+    const keyPoints = (Array.isArray(record.keyPoints) ? record.keyPoints : [])
+      .filter((point): point is string => typeof point === "string")
+      .map((point) => takeChars(point.trim(), KEY_POINT_LENGTH))
+      .filter((point) => point.length > 0)
+      .slice(0, KEY_POINT_MAX);
+
+    if (keyPoints.length < KEY_POINT_MIN) {
+      discard(title, `要点不足 ${KEY_POINT_MIN} 条`);
+      continue;
+    }
+
+    const excerptRaw = typeof record.excerpt === "string" ? record.excerpt.trim() : "";
+
+    if (!excerptRaw) {
+      discard(title, "缺少原文摘录");
+      continue;
+    }
+
+    const excerpt = takeChars(excerptRaw, EXCERPT_MAX);
+
+    if (charLength(excerpt) < EXCERPT_MIN) {
+      discard(title, `原文摘录不足 ${EXCERPT_MIN} 字`);
+      continue;
+    }
+
+    if (options.sourceText && !isVerbatimExcerpt(excerpt, options.sourceText)) {
+      discard(title, "原文摘录不是正文的逐字片段");
+      continue;
+    }
+
+    const tags = [
+      ...new Set(
+        (Array.isArray(record.tags) ? record.tags : [])
+          .filter((tag): tag is string => typeof tag === "string")
+          .map((tag) => takeChars(tag.trim(), TAG_LENGTH))
+          .filter((tag) => tag.length > 0),
+      ),
+    ].slice(0, TAG_MAX);
+
+    // 标签不是知识单元的一部分：宁可空着让用户后补，也不因此丢掉内容。
 
     assets.push({
-      title: title.slice(0, MAX_EXTRACTED_TITLE),
-      description: description.slice(0, MAX_EXTRACTED_DESCRIPTION),
-      tags: Array.isArray(record.tags)
-        ? record.tags
-            .filter((tag): tag is string => typeof tag === "string" && tag.trim().length > 0)
-            .map((tag) => tag.trim())
-            .slice(0, 8)
-        : [],
+      title: takeChars(title, MAX_EXTRACTED_TITLE),
+      description: takeChars(
+        `${summary}｜适用场景：${scenario}｜要点：${keyPoints.join("；")}`,
+        DESCRIPTION_MAX,
+      ),
+      summary,
+      scenario,
+      keyPoints,
+      excerpt,
+      tags,
     });
-
-    if (assets.length >= MAX_EXTRACTED_ASSETS) break;
   }
 
   return assets;
@@ -498,18 +658,19 @@ export async function extractAssetCandidates(
   work: Pick<BusinessObject, "title" | "description">,
   content: string,
   deps: AssetAiDeps = {},
+  options: { availableTags?: readonly string[] } = {},
 ): Promise<ExtractedAsset[]> {
   const ai = createAssetAi(db, deps);
   requireConfigured(ai);
 
   const text = await ai.complete({
     system: EXTRACT_SYSTEM_PROMPT,
-    user: buildExtractUserPrompt(work, content),
+    user: buildExtractUserPrompt(work, content, options.availableTags ?? []),
     maxTokens: EXTRACT_MAX_TOKENS,
     temperature: 0.3,
   });
 
-  return parseExtractedAssets(text);
+  return parseExtractedAssets(text, { sourceText: content });
 }
 
 /** 6 维打分；模型失败直接抛错（调用方不该静默放过一条未评的资产）。 */

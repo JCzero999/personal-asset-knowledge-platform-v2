@@ -78,6 +78,13 @@
       "when": 1794618000000,
       "tag": "0010_asset_pipeline",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1794704400000,
+      "tag": "0011_usage_value_history",
+      "breakpoints": true
     }
   ]
 }

@@ -58,7 +58,32 @@ function downloadTextFile(filename: string, text: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-type Pending = "archive" | "export" | "delete";
+type Pending = "archive" | "export" | "delete" | "reassess";
+
+/** POST /api/objects/reassess 的返回：逐条成功 / 失败，一条失败不影响其余条。 */
+interface ReassessResult {
+  ok: { id: string; title: string; valueLevel: string | null }[];
+  failed: { id: string; message: string }[];
+}
+
+const REASSESS_LIMIT = 50;
+
+/** 两批兜底（C 级、fallback 评估）按 id 合并，同一条只算一次。 */
+function mergeReassess(first: ReassessResult, second: ReassessResult): ReassessResult {
+  const okIds = new Set(first.ok.map((item) => item.id));
+  const failedIds = new Set(first.failed.map((item) => item.id));
+
+  return {
+    ok: [
+      ...first.ok,
+      ...second.ok.filter((item) => !okIds.has(item.id) && !failedIds.has(item.id)),
+    ],
+    failed: [
+      ...first.failed,
+      ...second.failed.filter((item) => !okIds.has(item.id) && !failedIds.has(item.id)),
+    ],
+  };
+}
 
 export function RecordList({
   objects,
@@ -91,6 +116,7 @@ export function RecordList({
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [reassess, setReassess] = useState<ReassessResult | null>(null);
 
   // 刷新后可能少了已删除 / 已归档的条目；直接从当前列表里取交集，
   // 不靠 effect 回写状态，避免多一次渲染。
@@ -187,8 +213,7 @@ export function RecordList({
     }
   }
 
-  async function exportSelected() {
-    if (!hasSelection || busy) return;
+  async function exportSelected() {    if (!hasSelection || busy) return;
     const ids = [...selectedIds];
     setPending("export");
     setError(null);
@@ -227,6 +252,55 @@ export function RecordList({
       const exportedAt = new Date();
       downloadTextFile(exportFileName(exportedAt), buildExportMarkdown(items, exportedAt, categoryLabels));
       setToast(`已导出 ${items.length} 项`);
+    } catch (cause) {
+      setError(apiErrorMessage(cause));
+    } finally {
+      setPending(null);
+    }
+  }
+
+  /**
+   * 批量重评（v2.1 §5 兜底）：选中时只重评选中的内库资产；
+   * 没勾选时按「C 级」和「fallback 评估」两批兜底，结果按 id 合并。
+   */
+  async function runReassess() {
+    if (busy) return;
+    setPending("reassess");
+    setError(null);
+    setReassess(null);
+
+    try {
+      if (hasSelection) {
+        const ids = selectedIds.filter((id) => {
+          const object = objects.find((item) => item.id === id);
+          return object?.type === "asset" && object.library === "internal";
+        });
+
+        if (ids.length === 0) {
+          setError("选中的内容里没有内库资产，只有内库资产需要重评。");
+          return;
+        }
+        if (ids.length > REASSESS_LIMIT) {
+          setError(`一次最多重评 ${REASSESS_LIMIT} 条，当前选中 ${ids.length} 条，请减少选择。`);
+          return;
+        }
+
+        setReassess(
+          await apiRequest<ReassessResult>("/api/objects/reassess", jsonBodyInit({ ids })),
+        );
+      } else {
+        const lowLevel = await apiRequest<ReassessResult>(
+          "/api/objects/reassess",
+          jsonBodyInit({ filter: { level: "C" } }),
+        );
+        const fallback = await apiRequest<ReassessResult>(
+          "/api/objects/reassess",
+          jsonBodyInit({ filter: { source: "fallback" } }),
+        );
+        setReassess(mergeReassess(lowLevel, fallback));
+      }
+
+      router.refresh();
     } catch (cause) {
       setError(apiErrorMessage(cause));
     } finally {
@@ -273,6 +347,19 @@ export function RecordList({
             批量导出
           </button>
           <button
+            className="btn btn-secondary"
+            type="button"
+            disabled={busy}
+            onClick={() => void runReassess()}
+            title={
+              hasSelection
+                ? "重评选中的内库资产"
+                : "没勾选时重评当前 C 级与 fallback 评估的资产"
+            }
+          >
+            {pending === "reassess" ? "重评中…" : "批量重评"}
+          </button>
+          <button
             className="btn btn-ghost is-danger"
             type="button"
             disabled={!hasSelection || busy}
@@ -286,6 +373,42 @@ export function RecordList({
           <p className="record-bulk-error" role="alert">
             {error}
           </p>
+        ) : null}
+
+        {reassess ? (
+          <div className="record-bulk-result" role="status">
+            <p className="record-bulk-result-head">
+              {reassess.ok.length === 0 && reassess.failed.length === 0 ? (
+                "没有需要重评的资产（C 级与 fallback 评估都是空的）"
+              ) : (
+                <>
+                  重评完成：成功 <strong>{reassess.ok.length}</strong> 条、失败{" "}
+                  <strong>{reassess.failed.length}</strong> 条
+                </>
+              )}
+            </p>
+            {reassess.ok.length > 0 ? (
+              <ul className="record-bulk-result-list">
+                {reassess.ok.slice(0, 5).map((item) => (
+                  <li key={item.id}>
+                    {item.title}
+                    {item.valueLevel ? ` → ${item.valueLevel} 级` : ""}
+                  </li>
+                ))}
+                {reassess.ok.length > 5 ? <li>等 {reassess.ok.length} 条</li> : null}
+              </ul>
+            ) : null}
+            {reassess.failed.length > 0 ? (
+              <ul className="record-bulk-result-list is-failed">
+                {reassess.failed.slice(0, 3).map((item) => (
+                  <li key={item.id}>{item.message}</li>
+                ))}
+                {reassess.failed.length > 3 ? (
+                  <li>另有 {reassess.failed.length - 3} 条失败</li>
+                ) : null}
+              </ul>
+            ) : null}
+          </div>
         ) : null}
       </div>
 

@@ -431,4 +431,57 @@ describe("parseListObjectsQuery", () => {
     expect(parseListObjectsQuery(new URLSearchParams("archived=false")).includeArchived).toBeUndefined();
     expect(parseListObjectsQuery(new URLSearchParams("archived=only")).archivedOnly).toBe(true);
   });
+
+  it("added=1d|7d|30d 换算成 createdSince，非法值报错", () => {
+    const now = new Date("2026-11-14T00:00:00.000Z");
+
+    expect(parseListObjectsQuery(new URLSearchParams("added=1d"), now).createdSince).toBe(
+      "2026-11-13T00:00:00.000Z",
+    );
+    expect(parseListObjectsQuery(new URLSearchParams("added=7d"), now).createdSince).toBe(
+      "2026-11-07T00:00:00.000Z",
+    );
+    expect(parseListObjectsQuery(new URLSearchParams("added=30d"), now).createdSince).toBe(
+      "2026-10-15T00:00:00.000Z",
+    );
+    expect(parseListObjectsQuery(new URLSearchParams(), now).createdSince).toBeUndefined();
+
+    for (const bad of ["0d", "2d", "90d", "constructor"]) {
+      expect(() => parseListObjectsQuery(new URLSearchParams(`added=${bad}`), now)).toThrow(
+        ValidationError,
+      );
+    }
+  });
+});
+
+describe("listObjects createdSince（added=1d|7d|30d）", () => {
+  it("只返回窗口内创建的对象", async () => {
+    const { SqliteObjectRepository } = await import(
+      "../../src/server/repositories/sqlite-object-repository"
+    );
+    const repo = new SqliteObjectRepository(handle.db);
+
+    const old = await repo.create({
+      type: "asset",
+      title: "上个月新增",
+      library: "external",
+      ownerSub: "u1",
+      now: "2026-10-01T00:00:00.000Z",
+    });
+    const fresh = await repo.create({
+      type: "asset",
+      title: "本周新增",
+      library: "external",
+      ownerSub: "u1",
+      now: "2026-11-13T00:00:00.000Z",
+    });
+
+    const listed = await listObjects(handle.db, {
+      ownerSub: "u1",
+      createdSince: "2026-11-07T00:00:00.000Z",
+    });
+
+    expect(listed.map((item) => item.id)).toEqual([fresh.id]);
+    expect(listed.map((item) => item.id)).not.toContain(old.id);
+  });
 });
