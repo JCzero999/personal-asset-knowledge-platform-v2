@@ -147,3 +147,9 @@ agents/                    CrewAI 文档进度 Agent（非业务应用）
 2. 每次有意义的工作后更新 [docs/02_PHASES.md](docs/02_PHASES.md) 与 [docs/05_CHANGELOG.md](docs/05_CHANGELOG.md)。
 3. 方向变化必须新增 ADR，不得直接推翻已采纳决策。
 4. 文档与代码不一致时以代码为准，并回头修正文档；未实测的集成细节标注「待实测」，不得编造端口、地址或凭据。
+
+## 许可
+
+本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)：可免费用于个人学习、研究、实验等**非商业**用途，允许修改和分发（需保留许可与署名）。
+
+**商业用途需要单独授权**，请联系：1975824324@qq.com
